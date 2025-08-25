@@ -1,6 +1,6 @@
 import { dlog, derr } from '../types/debug';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -17,6 +17,10 @@ export async function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('trash')) {
         const t = db.createObjectStore('trash', { keyPath: 'id' });
         t.createIndex('byDeletedAt', 'deletedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('tags')) {
+        const t = db.createObjectStore('tags', { keyPath: 'name' });
+        t.createIndex('byCreatedAt', 'createdAt', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -177,5 +181,131 @@ export async function applyTags(ids: string[], addIds: string[] = [], removeIds:
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function listTags(): Promise<Array<{name:string;color?:string;createdAt?:number}>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('tags', 'readonly');
+    const os = tx.objectStore('tags');
+    const req = os.getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as any[];
+      rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function createTag(name: string, color?: string) {
+  const tag = (name ?? '').trim();
+  if (!tag) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('tags', 'readwrite');
+    const os = tx.objectStore('tags');
+    const g = os.get(tag);
+    g.onsuccess = () => {
+      if (!g.result) {
+        os.put({ name: tag, color, createdAt: Date.now() });
+      }
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+export async function renameTag(oldName: string, newName: string) {
+  const from = (oldName ?? '').trim();
+  const to   = (newName ?? '').trim();
+  if (!from || !to || from === to) return;
+
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['tags', 'videos', 'trash'], 'readwrite');
+    const ts = tx.objectStore('tags');
+    const vs = tx.objectStore('videos');
+    const rs = tx.objectStore('trash');
+
+    // move tag record (delete old, put new)
+    const g = ts.get(from);
+    g.onsuccess = () => {
+      const rec = g.result;
+      if (rec) {
+        const { name: _omit, ...rest } = rec;
+        ts.delete(from);
+        ts.put({ name: to, ...rest });
+      }
+    };
+    g.onerror = () => reject(g.error);
+
+    // replace in videos
+    const cur1 = vs.openCursor();
+    cur1.onsuccess = () => {
+      const c = cur1.result;
+      if (!c) return;
+      const row = c.value;
+      if (Array.isArray(row.tags) && row.tags.includes(from)) {
+        row.tags = row.tags.map((t: string) => (t === from ? to : t));
+        c.update(row);
+      }
+      c.continue();
+    };
+    cur1.onerror = () => reject(cur1.error);
+
+    // replace in trash
+    const cur2 = rs.openCursor();
+    cur2.onsuccess = () => {
+      const c = cur2.result;
+      if (!c) return;
+      const row = c.value;
+      if (Array.isArray(row.tags) && row.tags.includes(from)) {
+        row.tags = row.tags.map((t: string) => (t === from ? to : t));
+        c.update(row);
+      }
+      c.continue();
+    };
+    cur2.onerror = () => reject(cur2.error);
+
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
+  });
+}
+
+export async function deleteTag(name: string, cascade: boolean = true) {
+  const tag = (name ?? '').trim();
+  if (!tag) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const stores = cascade ? ['tags', 'videos', 'trash'] : ['tags'];
+    const tx = db.transaction(stores as any, 'readwrite');
+    const ts = tx.objectStore('tags');
+    ts.delete(tag);
+
+    if (cascade) {
+      const clean = (os: IDBObjectStore) => {
+        const cur = os.openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result;
+          if (!c) return;
+          const row = c.value;
+          if (Array.isArray(row.tags)) {
+            const before = row.tags.length;
+            row.tags = row.tags.filter((t: string) => t !== tag);
+            if (row.tags.length !== before) c.update(row);
+          }
+          c.continue();
+        };
+        cur.onerror = () => reject(cur.error);
+      };
+      clean((tx as any).objectStore('videos'));
+      clean((tx as any).objectStore('trash'));
+    }
+
+    tx.oncomplete = () => resolve();
+    tx.onerror    = () => reject(tx.error);
   });
 }

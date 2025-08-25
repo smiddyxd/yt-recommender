@@ -12,6 +12,7 @@ type Video = {
   tags?: string[];
 };
 type VideoRow = Video & { deletedAt?: number };
+type TagRec = { name: string; color?: string; createdAt?: number };
 
 async function send<T = any>(type: string, payload: any): Promise<T | void> {
   return new Promise((resolve) => {
@@ -110,7 +111,54 @@ export default function App() {
   const [showUndo, setShowUndo] = useState(false);
   
   const [showTagger, setShowTagger] = useState(false);
-  const [newTag, setNewTag] = useState('');
+
+  const [tags, setTags] = useState<TagRec[]>([]);
+  const [tagEditing, setTagEditing] = useState<string | null>(null);
+  const [tagEditValue, setTagEditValue] = useState('');
+  const [newSidebarTag, setNewSidebarTag] = useState('');
+
+  function addTag() {
+  const name = newSidebarTag.trim();
+  if (!name) return;
+  send('tags/create', { name }).then(() => {
+    setNewSidebarTag('');
+    loadTags();
+  });
+}
+
+function startRename(name: string) {
+  setTagEditing(name);
+  setTagEditValue(name);
+}
+
+function cancelRename() {
+  setTagEditing(null);
+  setTagEditValue('');
+}
+
+function commitRename() {
+  const from = tagEditing;
+  const to = tagEditValue.trim();
+  if (!from || !to || from === to) { cancelRename(); return; }
+  send('tags/rename', { oldName: from, newName: to }).then(() => {
+    cancelRename();
+    loadTags();
+    refresh(); // videos/trash updated
+  });
+}
+
+function removeTag(name: string) {
+  send('tags/delete', { name, cascade: true }).then(() => {
+    loadTags();
+    refresh(); // remove tag from videos/trash too
+  });
+}
+
+  async function loadTags() {
+    const resp: any = await send('tags/list', {});
+    if (resp && resp.items) setTags(resp.items as TagRec[]);
+    else setTags([]);
+  }
 
   async function deleteSelected() {
     const ids = Array.from(selected);
@@ -177,6 +225,7 @@ useEffect(() => {
   clearSelection();
   setPage(1);
   refresh(); // reload from the correct store
+  loadTags();
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, [view]);
 
@@ -186,18 +235,13 @@ useEffect(() => {
         dlog('UI got db/change:', msg.payload);
         refresh();
       }
+      if (msg.payload?.entity === 'tags')   loadTags();
     }
     chrome.runtime.onMessage.addListener(onMsg);
     return () => chrome.runtime.onMessage.removeListener(onMsg);
   }, []);
 
 
-  // All tags present in the current view (videos or trash)
-const allTags = useMemo(() => {
-  const set = new Set<string>();
-  for (const v of videos) for (const t of v.tags || []) set.add(t);
-  return Array.from(set).sort((a,b) => a.localeCompare(b));
-}, [videos]);
 
 // For selected items, how many have each tag?
 const selectedVideos = useMemo(() => videos.filter(v => selected.has(v.id)), [videos, selected]);
@@ -206,6 +250,8 @@ const tagCounts = useMemo(() => {
   for (const v of selectedVideos) for (const t of v.tags || []) m.set(t, (m.get(t) || 0) + 1);
   return m;
 }, [selectedVideos]);
+// AFTER: derive names from the registry we loaded via tags/list
+const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
 
 function toggleTag(tag: string) {
   const count = tagCounts.get(tag) || 0;
@@ -218,15 +264,6 @@ function toggleTag(tag: string) {
   }).then(() => refresh());
 }
 
-function createTag() {
-  const tag = (newTag || '').trim();
-  if (!tag || selectedCount === 0) return;
-  send('videos/applyTags', { ids: Array.from(selected), addIds: [tag] }).then(() => {
-    setNewTag('');
-    setShowTagger(true); // keep it open
-    refresh();
-  });
-}
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return videos;
@@ -254,13 +291,57 @@ function createTag() {
 return (
   <div className="page">
     <aside className="sidebar">
-      <div className="side-section">
-        <div className="side-title">Navigation</div>
-        <div className="side-buttons">
-          <button type="button" className="side-btn" disabled>All videos</button>
-          <button type="button" className="side-btn" disabled>Trash</button>
-        </div>
+<div className="side-section">
+  <div className="side-title">Tags</div>
+
+  {/* Create new tag */}
+  <div className="side-row">
+    <input
+      className="side-input"
+      type="text"
+      placeholder="New tag…"
+      value={newSidebarTag}
+      onChange={(e) => setNewSidebarTag(e.target.value)}
+      onKeyDown={(e) => { if (e.key === 'Enter') addTag(); }}
+    />
+    <button className="btn-ghost" onClick={addTag} disabled={!newSidebarTag.trim()}>
+      Add
+    </button>
+  </div>
+
+  {/* List of tags with rename/delete */}
+  <div className="tag-list">
+    {tags.length === 0 && <div className="muted">No tags yet.</div>}
+    {tags.map(t => (
+      <div className="tag-row" key={t.name}>
+        {tagEditing === t.name ? (
+          <>
+            <input
+              className="side-input"
+              type="text"
+              value={tagEditValue}
+              onChange={(e) => setTagEditValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRename();
+                if (e.key === 'Escape') cancelRename();
+              }}
+              autoFocus
+            />
+            <button className="btn-ghost" onClick={commitRename} disabled={!tagEditValue.trim()}>Save</button>
+            <button className="btn-ghost" onClick={cancelRename}>Cancel</button>
+          </>
+        ) : (
+          <>
+            <span className="tag-name">{t.name}</span>
+            <button className="btn-ghost" onClick={() => startRename(t.name)}>Rename</button>
+            <button className="btn-ghost" onClick={() => removeTag(t.name)}>Delete</button>
+          </>
+        )}
       </div>
+    ))}
+  </div>
+</div>
+
 
       <div className="side-section">
         <div className="side-title">Coming up</div>
@@ -384,24 +465,17 @@ return (
 {showTagger && (
   <div className="popover" role="dialog" aria-label="Tag items">
     <div className="popover-row">
-      <input
-        type="text"
-        className="tag-input"
-        value={newTag}
-        onChange={(e) => setNewTag(e.target.value)}
-        placeholder="New tag name…"
-        onKeyDown={(e) => { if (e.key === 'Enter') createTag(); }}
-      />
-      <button className="btn-ghost" onClick={createTag} disabled={!newTag.trim() || selectedCount === 0}>Add tag</button>
-      <div style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>
+      <div style={{ color: 'var(--muted)', fontSize: 12 }}>
         {selectedCount} selected
       </div>
-      <button className="btn-ghost" onClick={() => setShowTagger(false)}>Close</button>
+      <button className="btn-ghost" onClick={() => setShowTagger(false)} style={{ marginLeft: 'auto' }}>
+        Close
+      </button>
     </div>
 
     <div className="tag-grid">
-      {allTags.length === 0 && <div className="muted">No tags yet.</div>}
-      {allTags.map(tag => {
+      {availableTags.length === 0 && <div className="muted">No tags yet. Create tags in the sidebar.</div>}
+      {availableTags.map(tag => {
         const count = tagCounts.get(tag) || 0;
         const allHave = count === selectedCount && selectedCount > 0;
         const someHave = count > 0 && count < selectedCount;
@@ -412,7 +486,14 @@ return (
               type="checkbox"
               checked={allHave}
               ref={(el) => { if (el) el.indeterminate = someHave; }}
-              onChange={() => toggleTag(tag)}
+              onChange={() => {
+                const all = allHave;
+                send('videos/applyTags', {
+                  ids: Array.from(selected),
+                  addIds: all ? [] : [tag],
+                  removeIds: all ? [tag] : []
+                }).then(() => refresh());
+              }}
             />
             <span className="name">{tag}</span>
             {selectedCount > 0 && <span className="count">{count}/{selectedCount}</span>}

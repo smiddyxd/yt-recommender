@@ -5,6 +5,10 @@ export type Msg =
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' } } // optional push event
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
+  | { type: 'tags/list';    payload: {} }
+  | { type: 'tags/create';  payload: { name: string; color?: string } }
+  | { type: 'tags/rename';  payload: { oldName: string; newName: string } }
+  | { type: 'tags/delete';  payload: { name: string; cascade?: boolean } }
 
 export interface VideoSeed {
   id: string;
@@ -14,3 +18,5 @@ export interface VideoSeed {
   durationSec?: number | null;
   sources: Array<{ type: 'playlist' | 'panel'; id?: string | null; index?: number | null; seenAt: number }>;
 }
+
+export interface TagRec { name: string; color?: string; createdAt?: number }

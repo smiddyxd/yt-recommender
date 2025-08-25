@@ -1,6 +1,7 @@
 import { upsertVideo, moveToTrash, restoreFromTrash, applyTags } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
+import { listTags, createTag, renameTag, deleteTag } from './db';
 
 chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
   (async () => {
@@ -22,6 +23,24 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         dlog('videos/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
         await applyTags(ids || [], addIds, removeIds);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'tags/list') {
+        const items = await listTags();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'tags/create') {
+        await createTag(raw.payload?.name, raw.payload?.color);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'tags/rename') {
+        await renameTag(raw.payload?.oldName, raw.payload?.newName);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'tags/delete') {
+        const cascade = raw.payload?.cascade ?? true;
+        await deleteTag(raw.payload?.name, cascade);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        if (cascade) chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];

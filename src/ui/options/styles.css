@@ -437,3 +437,37 @@ footer {
   font-size: 12px;
 }
 .muted { color: var(--muted); }
+
+/* Sidebar Tag Manager */
+.side-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.side-input {
+  flex: 1;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.tag-list {
+  display: grid;
+  gap: 6px;
+}
+.tag-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.tag-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Popover: remove create-row spacing dependency */
+.popover-row { margin-bottom: 8px; }
