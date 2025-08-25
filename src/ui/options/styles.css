@@ -495,3 +495,104 @@ footer {
   gap: 8px;
   align-items: center;
 }
+.group-form { display: grid; gap: 8px; margin-bottom: 10px; }
+.group-form-actions { display: flex; gap: 8px; }
+/* Filters panel */
+.filters {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(20,24,29,0.4);
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  min-width: 240px;
+}
+
+.filter-chip .chip-head {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.filter-chip .chip-input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #16202a;
+  color: var(--text);
+}
+
+.filter-chip .chip-input.flags {
+  max-width: 64px;
+}
+
+.filter-chip .row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.filter-chip .chip-list {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.chip-check {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.chip-remove {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.add-filter {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+
+/* Duration layout */
+.duration-rows { display: grid; gap: 6px; }
+.duration-row {
+  display: grid;
+  grid-template-columns: auto 60px auto 60px auto 60px auto;
+  gap: 6px;
+  align-items: center;
+}
+.duration-row input[type="number"] {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #16202a;
+  color: var(--text);
+}

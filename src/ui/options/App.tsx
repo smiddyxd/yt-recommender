@@ -5,6 +5,7 @@ import { matches, type Condition, type Group as GroupRec } from '../../shared/co
 type Video = {
   id: string;
   title?: string | null;
+  channelId?: string | null;        // ← add this
   channelName?: string | null;
   durationSec?: number | null;
   lastSeenAt?: number;
@@ -13,6 +14,12 @@ type Video = {
 };
 type VideoRow = Video & { deletedAt?: number };
 type TagRec = { name: string; color?: string; createdAt?: number };
+type DurationUI = { minH: number; minM: number; minS: number; maxH: number; maxM: number; maxS: number };
+type FilterNode =
+  | { kind: 'duration'; ui: DurationUI }
+  | { kind: 'channel'; ids: string[]; q: string }
+  | { kind: 'title'; pattern: string; flags: string }
+  | { kind: 'group'; ids: string[] };
 
 async function send<T = any>(type: string, payload: any): Promise<T | void> {
   return new Promise((resolve) => {
@@ -118,7 +125,13 @@ export default function App() {
   const [newSidebarTag, setNewSidebarTag] = useState('');
 
   const [groups, setGroups] = useState<GroupRec[]>([]);
-  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupName, setGroupName] = useState('');
+  const [groupJson, setGroupJson] = useState('{\n  "all": []\n}');
+  const [groupErr, setGroupErr] = useState<string | null>(null);
+
+  const [filters, setFilters] = useState<FilterNode[]>([]);
 
   async function loadGroups() {
     const resp: any = await send('groups/list', {});
@@ -130,22 +143,47 @@ export default function App() {
     loadGroups();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => {
-    function onMsg(msg: any) {
-      if (msg?.type === 'db/change') {
-        if (msg.payload?.entity === 'videos') refresh();
-        if (msg.payload?.entity === 'tags' || msg.payload?.entity === 'groups') loadGroups();
-      }
-    }
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
-  }, []);
 
-  function deleteGroup(id: string) {
-    send('groups/delete', { id }).then(() => {
-      if (activeGroupId === id) setActiveGroupId(null);
-      loadGroups();
-    });
+  function startEditGroup(g: GroupRec) {
+    setEditingGroupId(g.id);
+    setGroupName(g.name);
+    setGroupJson(JSON.stringify(g.condition, null, 2));
+    setGroupErr(null);
+  }
+
+  function resetGroupForm() {
+    setEditingGroupId(null);
+    setGroupName('');
+    setGroupJson('{\n  "all": []\n}');
+    setGroupErr(null);
+  }
+
+  async function saveGroup() {
+    setGroupErr(null);
+    let condition: Condition;
+    try {
+      condition = JSON.parse(groupJson);
+    } catch {
+      setGroupErr('Invalid JSON: fix the condition before saving.');
+      return;
+    }
+
+    if (editingGroupId) {
+      // update existing
+      await send('groups/update', { id: editingGroupId, patch: { name: groupName.trim() || '(untitled)', condition } });
+    } else {
+      // create new
+      await send('groups/create', { name: groupName.trim() || '(untitled)', condition });
+    }
+    await loadGroups();
+    resetGroupForm();
+  }
+
+  async function removeGroup(id: string) {
+    await send('groups/delete', { id });
+    // if we were editing this one, reset the form
+    if (editingGroupId === id) resetGroupForm();
+    await loadGroups();
   }
 
   function addTag() {
@@ -260,20 +298,95 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
-  useEffect(() => {
-    function onMsg(msg: any) {
-      if (msg?.type === 'db/change') {
-        dlog('UI got db/change:', msg.payload);
-        refresh();
-      }
-      if (msg.payload?.entity === 'tags') loadTags();
+useEffect(() => {
+  function onMsg(msg: any) {
+    if (msg?.type === 'db/change') {
+      const ent = msg.payload?.entity;
+      if (ent === 'videos' || ent == null) refresh();
+      if (ent === 'tags')   loadTags();
+      if (ent === 'groups') loadGroups();
     }
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
-  }, []);
+  }
+  chrome.runtime.onMessage.addListener(onMsg);
+  return () => chrome.runtime.onMessage.removeListener(onMsg);
+}, []);
 
 
+const channelOptions = useMemo(() => {
+  const map = new Map<string, string>();
+  for (const v of videos) {
+    if (v.channelId) {
+      if (!map.has(v.channelId)) map.set(v.channelId, v.channelName || v.channelId);
+    }
+  }
+  return Array.from(map, ([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}, [videos]);
 
+function addFilter(kind: FilterNode['kind']) {
+  setFilters(f => {
+    if (kind === 'duration') {
+      return [...f, { kind: 'duration', ui: { minH:0, minM:0, minS:0, maxH:0, maxM:0, maxS:0 } }];
+    }
+    if (kind === 'channel') {
+      return [...f, { kind: 'channel', ids: [], q: '' }];
+    }
+    if (kind === 'title') {
+      return [...f, { kind: 'title', pattern: '', flags: 'i' }];
+    }
+    if (kind === 'group') {
+      return [...f, { kind: 'group', ids: [] }];
+    }
+    return f;
+  });
+}
+function removeFilter(idx: number) {
+  setFilters(f => f.filter((_, i) => i !== idx));
+}
+
+function hmsToSec(h: number, m: number, s: number) {
+  const clamp = (n: number) => Math.max(0, Number.isFinite(n) ? Math.floor(n) : 0);
+  return clamp(h) * 3600 + clamp(m) * 60 + clamp(s);
+}
+
+function filtersToCondition(): Condition | null {
+  const preds: any[] = [];
+
+  for (const f of filters) {
+    if (f.kind === 'duration') {
+      const min = hmsToSec(f.ui.minH, f.ui.minM, f.ui.minS);
+      const max = hmsToSec(f.ui.maxH, f.ui.maxM, f.ui.maxS);
+      const useMin = min > 0;
+      const useMax = max > 0;
+      if (useMin || useMax) {
+        preds.push({
+          kind: 'durationRange',
+          ...(useMin ? { minSec: min } : {}),
+          ...(useMax ? { maxSec: max } : {}),
+        });
+      }
+    } else if (f.kind === 'channel') {
+      if (f.ids.length > 0) {
+        preds.push({ kind: 'channelIdIn', ids: f.ids.slice() });
+      }
+    } else if (f.kind === 'title') {
+      const pattern = (f.pattern || '').trim();
+      const flags = (f.flags || '').trim();
+      if (pattern) preds.push({ kind: 'titleRegex', pattern, flags });
+    } else if (f.kind === 'group') {
+      if (f.ids.length > 0) preds.push({ kind: 'groupRef', ids: f.ids.slice() });
+    }
+  }
+
+  if (preds.length === 0) return null;
+  return { all: preds };
+}
+
+const groupsById = useMemo(() => {
+  const m = new Map<string, GroupRec>();
+  for (const g of groups) m.set(g.id, g);
+  return m;
+}, [groups]);
   // For selected items, how many have each tag?
   const selectedVideos = useMemo(() => videos.filter(v => selected.has(v.id)), [videos, selected]);
   const tagCounts = useMemo(() => {
@@ -295,24 +408,24 @@ export default function App() {
     }).then(() => refresh());
   }
 
+const filtered = useMemo(() => {
+  // Step 1: apply structured filters (if any)
+  const cond = filtersToCondition();
+  let base = videos;
+  if (cond) {
+    base = base.filter(v => matches(v as any, cond, {
+      resolveGroup: (id) => groupsById.get(id)
+    }));
+  }
 
-  const resolveGroup = (id: string) => groups.find(g => g.id === id);
-  const activeCondition: Condition | null = activeGroupId ? ({ kind: 'groupRef', ids: [activeGroupId] } as any) : null;
-
-  const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-
-    let base = videos;
-    if (activeCondition) {
-      base = base.filter(v => matches(v as any, activeCondition!, { resolveGroup }));
-    }
-
-    if (!needle) return base;
-    return base.filter(v =>
-      (v.title || '').toLowerCase().includes(needle) ||
-      (v.channelName || '').toLowerCase().includes(needle)
-    );
-  }, [videos, q, activeCondition, groups]);
+  // Step 2: apply simple text search
+  const needle = q.trim().toLowerCase();
+  if (!needle) return base;
+  return base.filter(v =>
+    (v.title || '').toLowerCase().includes(needle) ||
+    (v.channelName || '').toLowerCase().includes(needle)
+  );
+}, [videos, filters, q, groupsById]);
 
 
 
@@ -384,31 +497,58 @@ export default function App() {
             ))}
           </div>
         </div>
-        <div className="side-title">Groups</div>
+        <div className="side-section">
+          <div className="side-title">Groups</div>
 
-        {/* Create new group */}
-        <GroupCreator onCreated={() => loadGroups()} />
+          {/* Group form (create or edit) */}
+          <div className="group-form">
+            <input
+              className="side-input"
+              type="text"
+              placeholder="Group name…"
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+            />
+            <textarea
+              className="side-textarea"
+              value={groupJson}
+              onChange={(e) => setGroupJson(e.target.value)}
+              spellCheck={false}
+              rows={6}
+              placeholder='Condition JSON, e.g. { "all": [ { "kind":"tagsAny","tags":["work"] } ] }'
+            />
+            {groupErr && <div className="err">{groupErr}</div>}
 
-        {/* List groups */}
-        <div className="group-list">
-          {groups.length === 0 && <div className="muted">No groups yet.</div>}
-          {groups.map(g => (
-            <div className="group-row" key={g.id}>
-              <button
-                className="side-btn"
-                aria-pressed={activeGroupId === g.id}
-                onClick={() => {
-                  const next = activeGroupId === g.id ? null : g.id;
-                  setActiveGroupId(next);
-                  setPage(1);
-                  clearSelection();
-                }}
-              >
-                {g.name}
+            <div className="group-form-actions">
+              <button className="btn-ghost" onClick={saveGroup}>
+                {editingGroupId ? 'Save' : 'Add Group'}
               </button>
-              <button className="btn-ghost" onClick={() => deleteGroup(g.id)}>Delete</button>
+              {editingGroupId && (
+                <button className="btn-ghost" onClick={resetGroupForm}>
+                  Cancel
+                </button>
+              )}
             </div>
-          ))}
+          </div>
+
+          {/* Group list (click to load into form) */}
+          <div className="group-list">
+            {groups.length === 0 && <div className="muted">No groups yet.</div>}
+            {groups.map((g) => (
+              <div className="group-row" key={g.id}>
+                <button
+                  className="side-btn"
+                  onClick={() => startEditGroup(g)}
+                  title="Edit group"
+                >
+                  {g.name}
+                </button>
+                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete group">
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div className="side-section">
@@ -423,14 +563,7 @@ export default function App() {
 
       <div className="content">
         <header>
-          <h1>
-            {inTrash ? 'Trash' : 'All collected videos'}
-            {activeGroupId && (
-              <span style={{ marginLeft: 8, color: 'var(--muted)', fontSize: 14 }}>
-                • Group: {groups.find(g => g.id === activeGroupId)?.name || 'unknown'}
-              </span>
-            )}
-          </h1>
+          <h1>{inTrash ? 'Trash' : 'All collected videos'}</h1>
 
           <div className="controls">
             {/* View toggle */}
@@ -537,6 +670,186 @@ export default function App() {
             </button>
           </div>
         </header>
+            {/* Filters panel (top bar) */}
+<div className="filters">
+  {filters.map((f, idx) => {
+    if (f.kind === 'duration') {
+      const ui = f.ui;
+      const set = (k: keyof DurationUI, val: number) =>
+        setFilters(arr =>
+          arr.map((x, i) =>
+            (i === idx && x.kind === 'duration')
+              ? { ...x, ui: { ...x.ui, [k]: Math.max(0, Number(val) || 0) } }
+              : x
+          )
+        );
+      return (
+        <div className="filter-chip" key={idx}>
+          <div className="chip-head">Duration</div>
+          <div className="duration-rows">
+            <div className="duration-row">
+              <span>Min</span>
+              <input type="number" min={0} value={ui.minH} onChange={e => set('minH', +e.target.value)} aria-label="Min hours"/>
+              <span>h</span>
+              <input type="number" min={0} value={ui.minM} onChange={e => set('minM', +e.target.value)} aria-label="Min minutes"/>
+              <span>m</span>
+              <input type="number" min={0} value={ui.minS} onChange={e => set('minS', +e.target.value)} aria-label="Min seconds"/>
+              <span>s</span>
+            </div>
+            <div className="duration-row">
+              <span>Max</span>
+              <input type="number" min={0} value={ui.maxH} onChange={e => set('maxH', +e.target.value)} aria-label="Max hours"/>
+              <span>h</span>
+              <input type="number" min={0} value={ui.maxM} onChange={e => set('maxM', +e.target.value)} aria-label="Max minutes"/>
+              <span>m</span>
+              <input type="number" min={0} value={ui.maxS} onChange={e => set('maxS', +e.target.value)} aria-label="Max seconds"/>
+              <span>s</span>
+            </div>
+          </div>
+          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
+        </div>
+      );
+    }
+
+    if (f.kind === 'channel') {
+      const options = channelOptions.filter(c =>
+        !f.q ? true : c.name.toLowerCase().includes(f.q.toLowerCase()));
+      const toggle = (id: string) =>
+        setFilters(arr =>
+          arr.map((x, i) => {
+            if (i !== idx || x.kind !== 'channel') return x;
+            const ids = x.ids.includes(id) ? x.ids.filter(y => y !== id) : [...x.ids, id];
+            return { ...x, ids };
+          })
+        );
+      return (
+        <div className="filter-chip" key={idx}>
+          <div className="chip-head">Channel</div>
+          <input
+            className="chip-input"
+            type="search"
+            placeholder="Search channels…"
+            value={f.q}
+            onChange={e =>
+              setFilters(arr =>
+                arr.map((x,i) =>
+                  i === idx && x.kind === 'channel' ? { ...x, q: e.target.value } : x
+                )
+              )
+            }
+          />
+          <div className="chip-list">
+            {options.slice(0, 30).map(opt => (
+              <label key={opt.id} className="chip-check">
+                <input
+                  type="checkbox"
+                  checked={f.ids.includes(opt.id)}
+                  onChange={() => toggle(opt.id)}
+                />
+                <span>{opt.name}</span>
+              </label>
+            ))}
+            {options.length > 30 && <div className="muted">…{options.length - 30} more, refine search</div>}
+          </div>
+          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
+        </div>
+      );
+    }
+
+    if (f.kind === 'title') {
+      return (
+        <div className="filter-chip" key={idx}>
+          <div className="chip-head">Title (regex)</div>
+          <div className="row">
+            <input
+              className="chip-input"
+              type="text"
+              placeholder="pattern e.g. (quick|tip)"
+              value={f.pattern}
+              onChange={e =>
+                setFilters(arr =>
+                  arr.map((x,i) =>
+                    i === idx && x.kind === 'title' ? { ...x, pattern: e.target.value } : x
+                  )
+                )
+              }
+            />
+            <input
+              className="chip-input flags"
+              type="text"
+              placeholder="flags (e.g. i)"
+              value={f.flags}
+              onChange={e =>
+                setFilters(arr =>
+                  arr.map((x,i) =>
+                    i === idx && x.kind === 'title' ? { ...x, flags: e.target.value } : x
+                  )
+                )
+              }
+              maxLength={6}
+            />
+          </div>
+          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
+        </div>
+      );
+    }
+
+    if (f.kind === 'group') {
+      const toggle = (id: string) =>
+        setFilters(arr =>
+          arr.map((x, i) => {
+            if (i !== idx || x.kind !== 'group') return x;     // ✅ correct kind
+            const ids = x.ids.includes(id) ? x.ids.filter(y => y !== id) : [...x.ids, id];
+            return { ...x, ids };
+          })
+        );
+      return (
+        <div className="filter-chip" key={idx}>
+          <div className="chip-head">Group</div>
+          <div className="chip-list">
+            {groups.map(g => (
+              <label key={g.id} className="chip-check">
+                <input
+                  type="checkbox"
+                  checked={f.ids.includes(g.id)}
+                  onChange={() => toggle(g.id)}
+                />
+                <span>{g.name}</span>
+              </label>
+            ))}
+            {groups.length === 0 && <div className="muted">No groups yet</div>}
+          </div>
+          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
+        </div>
+      );
+    }
+
+    return null;
+  })}
+
+  {/* Add filter selector */}
+  <select
+    className="add-filter"
+    value=""
+    onChange={(e) => {
+      const k = e.target.value as FilterNode['kind'] | '';
+      if (k) addFilter(k);
+      (e.target as HTMLSelectElement).value = '';
+    }}
+  >
+    <option value="">+ Add filter…</option>
+    <option value="duration">Duration range</option>
+    <option value="channel">Channel</option>
+    <option value="title">Title (regex)</option>
+    <option value="group">Group</option>
+  </select>
+
+  {/* Optional: clear all */}
+  {filters.length > 0 && (
+    <button className="btn-ghost" onClick={() => setFilters([])} title="Clear all filters">Clear</button>
+  )}
+</div>
+
         {showTagger && (
           <div className="popover" role="dialog" aria-label="Tag items">
             <div className="popover-row">
