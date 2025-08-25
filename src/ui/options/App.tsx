@@ -108,6 +108,9 @@ export default function App() {
   const [page, setPage] = useState<number>(1);
   const [lastDeleted, setLastDeleted] = useState<string[] | null>(null);
   const [showUndo, setShowUndo] = useState(false);
+  
+  const [showTagger, setShowTagger] = useState(false);
+  const [newTag, setNewTag] = useState('');
 
   async function deleteSelected() {
     const ids = Array.from(selected);
@@ -188,6 +191,42 @@ useEffect(() => {
     return () => chrome.runtime.onMessage.removeListener(onMsg);
   }, []);
 
+
+  // All tags present in the current view (videos or trash)
+const allTags = useMemo(() => {
+  const set = new Set<string>();
+  for (const v of videos) for (const t of v.tags || []) set.add(t);
+  return Array.from(set).sort((a,b) => a.localeCompare(b));
+}, [videos]);
+
+// For selected items, how many have each tag?
+const selectedVideos = useMemo(() => videos.filter(v => selected.has(v.id)), [videos, selected]);
+const tagCounts = useMemo(() => {
+  const m = new Map<string, number>();
+  for (const v of selectedVideos) for (const t of v.tags || []) m.set(t, (m.get(t) || 0) + 1);
+  return m;
+}, [selectedVideos]);
+
+function toggleTag(tag: string) {
+  const count = tagCounts.get(tag) || 0;
+  const allHave = count === selectedCount && selectedCount > 0;
+  // If all have it → remove from all; otherwise add to all
+  send('videos/applyTags', {
+    ids: Array.from(selected),
+    addIds: allHave ? [] : [tag],
+    removeIds: allHave ? [tag] : []
+  }).then(() => refresh());
+}
+
+function createTag() {
+  const tag = (newTag || '').trim();
+  if (!tag || selectedCount === 0) return;
+  send('videos/applyTags', { ids: Array.from(selected), addIds: [tag] }).then(() => {
+    setNewTag('');
+    setShowTagger(true); // keep it open
+    refresh();
+  });
+}
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     if (!needle) return videos;
@@ -320,7 +359,15 @@ return (
           >
             Delete
           </button>
-
+          <button
+            type="button"
+            className="btn-ghost"
+            title="Tag selected…"
+            onClick={() => setShowTagger(v => !v)}
+            disabled={selectedCount === 0}
+          >
+            Tags…
+          </button>
           {/* Search & refresh */}
           <input
             id="q"
@@ -334,7 +381,47 @@ return (
           </button>
         </div>
       </header>
+{showTagger && (
+  <div className="popover" role="dialog" aria-label="Tag items">
+    <div className="popover-row">
+      <input
+        type="text"
+        className="tag-input"
+        value={newTag}
+        onChange={(e) => setNewTag(e.target.value)}
+        placeholder="New tag name…"
+        onKeyDown={(e) => { if (e.key === 'Enter') createTag(); }}
+      />
+      <button className="btn-ghost" onClick={createTag} disabled={!newTag.trim() || selectedCount === 0}>Add tag</button>
+      <div style={{ marginLeft: 'auto', color: 'var(--muted)', fontSize: 12 }}>
+        {selectedCount} selected
+      </div>
+      <button className="btn-ghost" onClick={() => setShowTagger(false)}>Close</button>
+    </div>
 
+    <div className="tag-grid">
+      {allTags.length === 0 && <div className="muted">No tags yet.</div>}
+      {allTags.map(tag => {
+        const count = tagCounts.get(tag) || 0;
+        const allHave = count === selectedCount && selectedCount > 0;
+        const someHave = count > 0 && count < selectedCount;
+
+        return (
+          <label key={tag} className={`tag-toggle${allHave ? ' on' : ''}${someHave ? ' mixed' : ''}`}>
+            <input
+              type="checkbox"
+              checked={allHave}
+              ref={(el) => { if (el) el.indeterminate = someHave; }}
+              onChange={() => toggleTag(tag)}
+            />
+            <span className="name">{tag}</span>
+            {selectedCount > 0 && <span className="count">{count}/{selectedCount}</span>}
+          </label>
+        );
+      })}
+    </div>
+  </div>
+)}
       {/* Pagination toolbar */}
       <div className="toolbar-2">
         <div className="page-size">

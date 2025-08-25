@@ -378,3 +378,62 @@ footer {
   font-size: 13px;
 }
 .side-list li { margin: 4px 0; }
+
+/* Tag popover */
+.popover {
+  margin: 8px 16px 0 16px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(20, 24, 29, 0.9);
+  backdrop-filter: blur(6px);
+}
+.popover-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.tag-input {
+  min-width: 180px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.tag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+.tag-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #17202b;
+}
+.tag-toggle.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(106,167,255,0.18) inset;
+}
+.tag-toggle.mixed {
+  border-style: dashed;
+}
+.tag-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.tag-toggle .name {
+  flex: 1;
+}
+.tag-toggle .count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.muted { color: var(--muted); }

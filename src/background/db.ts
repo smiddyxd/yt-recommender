@@ -119,3 +119,63 @@ export async function restoreFromTrash(ids: string[]) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+export async function applyTags(ids: string[], addIds: string[] = [], removeIds: string[] = []) {
+  if (!ids?.length || (!addIds?.length && !removeIds?.length)) return;
+  const add = [...new Set(addIds.map(s => (s ?? '').trim()).filter(Boolean))];
+  const rem = new Set(removeIds.map(s => (s ?? '').trim()).filter(Boolean));
+  if (add.length === 0 && rem.size === 0) return;
+
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['videos', 'trash'], 'readwrite');
+    const vs = tx.objectStore('videos');
+    const ts = tx.objectStore('trash');
+
+    (async () => {
+      for (const id of ids) {
+        // Try in 'videos' first
+        await new Promise<void>((res, rej) => {
+          const g = vs.get(id);
+          g.onsuccess = () => {
+            const row = g.result;
+            if (row) {
+              const tags: string[] = Array.isArray(row.tags) ? row.tags.slice() : [];
+              for (const t of add) if (!tags.includes(t)) tags.push(t);
+              if (rem.size) {
+                for (let i = tags.length - 1; i >= 0; i--) {
+                  if (rem.has(tags[i])) tags.splice(i, 1);
+                }
+              }
+              row.tags = tags;
+              vs.put(row);
+              return res();
+            }
+            // Not in 'videos' → try 'trash'
+            const g2 = ts.get(id);
+            g2.onsuccess = () => {
+              const trow = g2.result;
+              if (trow) {
+                const tags: string[] = Array.isArray(trow.tags) ? trow.tags.slice() : [];
+                for (const t of add) if (!tags.includes(t)) tags.push(t);
+                if (rem.size) {
+                  for (let i = tags.length - 1; i >= 0; i--) {
+                    if (rem.has(tags[i])) tags.splice(i, 1);
+                  }
+                }
+                trow.tags = tags;
+                ts.put(trow);
+              }
+              res();
+            };
+            g2.onerror = () => rej(g2.error);
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => tx.commit?.());
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}

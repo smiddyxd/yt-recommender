@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 
@@ -16,6 +16,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           progress: { sec: current, duration },
           flags: { started: !!started, completed: !!completed }
         });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/applyTags') {
+        const { ids, addIds = [], removeIds = [] } = raw.payload || {};
+        dlog('videos/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
+        await applyTags(ids || [], addIds, removeIds);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];
