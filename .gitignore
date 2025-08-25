@@ -1,0 +1,17 @@
+# build output
+dist/
+# deps
+node_modules/
+# editor noise
+.vscode/
+.DS_Store
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# lock Chrome extension temp junk if any
+*.crx
+*.zip
+# environment overrides (if you add any)
+.env*
