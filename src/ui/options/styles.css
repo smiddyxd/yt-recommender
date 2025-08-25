@@ -471,3 +471,27 @@ footer {
 
 /* Popover: remove create-row spacing dependency */
 .popover-row { margin-bottom: 8px; }
+
+/* Groups in sidebar */
+.group-creator { display: grid; gap: 8px; margin-bottom: 10px; }
+.side-textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  resize: vertical;
+}
+.err { color: #ff8080; font-size: 12px; }
+
+.group-list { display: grid; gap: 6px; }
+.group-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}

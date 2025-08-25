@@ -2,6 +2,8 @@ import { upsertVideo, moveToTrash, restoreFromTrash, applyTags } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
+import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
+import { matches, type Group as GroupRec } from '../shared/conditions';
 
 chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
   (async () => {
@@ -17,6 +19,24 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           progress: { sec: current, duration },
           flags: { started: !!started, completed: !!completed }
         });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'groups/list') {
+        const items = await listGroups();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'groups/create') {
+        const { name, condition } = raw.payload || {};
+        await createGroup(name, condition);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'groups/update') {
+        const { id, patch } = raw.payload || {};
+        await updateGroup(id, patch);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'groups/delete') {
+        const { id } = raw.payload || {};
+        await deleteGroup(id);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};

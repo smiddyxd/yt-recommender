@@ -1,6 +1,7 @@
 import { dlog, derr } from '../types/debug';
+import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -21,6 +22,16 @@ export async function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('tags')) {
         const t = db.createObjectStore('tags', { keyPath: 'name' });
         t.createIndex('byCreatedAt', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('groups')) {
+        const g = db.createObjectStore('groups', { keyPath: 'id' });
+        g.createIndex('byName', 'name', { unique: false });
+        g.createIndex('byUpdatedAt', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('rules')) {
+        const r = db.createObjectStore('rules', { keyPath: 'id' });
+        r.createIndex('byEnabled', 'enabled', { unique: false });
+        r.createIndex('byUpdatedAt', 'updatedAt', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -307,5 +318,61 @@ export async function deleteTag(name: string, cascade: boolean = true) {
 
     tx.oncomplete = () => resolve();
     tx.onerror    = () => reject(tx.error);
+  });
+}
+
+export async function listGroups(): Promise<Group[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('groups', 'readonly');
+    const os = tx.objectStore('groups');
+    const req = os.getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as Group[];
+      rows.sort((a,b) => a.name.localeCompare(b.name));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function createGroup(name: string, condition: Condition): Promise<string> {
+  const db = await openDB();
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const rec: Group = { id, name, condition, createdAt: now, updatedAt: now };
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('groups', 'readwrite');
+    tx.objectStore('groups').put(rec);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return id;
+}
+
+export async function updateGroup(id: string, patch: Partial<Group>) {
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('groups', 'readwrite');
+    const os = tx.objectStore('groups');
+    const g = os.get(id);
+    g.onsuccess = () => {
+      if (!g.result) return resolve();
+      const next = { ...g.result, ...patch, id, updatedAt: Date.now() };
+      os.put(next);
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteGroup(id: string) {
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('groups', 'readwrite');
+    tx.objectStore('groups').delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
