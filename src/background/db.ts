@@ -376,3 +376,41 @@ export async function deleteGroup(id: string) {
     tx.onerror = () => reject(tx.error);
   });
 }
+export async function listChannels(): Promise<Array<{ id: string; name: string; count: number }>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const idx = os.index('byChannel');
+
+    const map = new Map<string, { id: string; name: string; count: number }>();
+
+    const req = idx.openCursor(); // iterates by channelId
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        // done: return sorted by count desc, then name asc
+        const out = Array.from(map.values()).sort((a, b) =>
+          b.count - a.count || a.name.localeCompare(b.name)
+        );
+        resolve(out);
+        return;
+      }
+      const row: any = cursor.value;
+      const chId: string | null = row.channelId || null;
+      if (chId) {
+        const prev = map.get(chId);
+        const name = (row.channelName && String(row.channelName)) || '(unknown)';
+        if (!prev) {
+          map.set(chId, { id: chId, name, count: 1 });
+        } else {
+          prev.count += 1;
+          // upgrade name if we previously had "(unknown)"
+          if (prev.name === '(unknown)' && name !== '(unknown)') prev.name = name;
+        }
+      }
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
