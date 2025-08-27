@@ -1,26 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { dlog, derr } from '../../types/debug';
 import { matches, type Condition, type Group as GroupRec } from '../../shared/conditions';
+import FiltersBar, { type FilterEntry } from './components/FiltersBar';
+import Sidebar from './components/Sidebar';
+import VideoList from './components/VideoList';
+
 // ---- Types ----
 type Video = {
   id: string;
   title?: string | null;
-  channelId?: string | null;        // ← add this
+  channelId?: string | null;
   channelName?: string | null;
   durationSec?: number | null;
   lastSeenAt?: number;
+  deletedAt?: number; // ← add this, undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
 };
-type VideoRow = Video & { deletedAt?: number };
-type TagRec = { name: string; color?: string; createdAt?: number };
-type DurationUI = { minH: number; minM: number; minS: number; maxH: number; maxM: number; maxS: number };
-type FilterNode =
-  | { kind: 'duration'; ui: DurationUI }
-  | { kind: 'channel'; ids: string[]; q: string }
-  | { kind: 'title'; pattern: string; flags: string }
-  | { kind: 'group'; ids: string[] };
 
+type TagRec = { name: string; color?: string; createdAt?: number };
 async function send<T = any>(type: string, payload: any): Promise<T | void> {
   return new Promise((resolve) => {
     dlog('UI send →', type, payload && Object.keys(payload));
@@ -53,15 +51,14 @@ function openDB(): Promise<IDBDatabase> {
     };
   });
 }
-
-async function getAll(store: 'videos' | 'trash'): Promise<VideoRow[]> {
+async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readonly');
     const os = tx.objectStore(store);
     const req = os.getAll();
     req.onsuccess = () => {
-      const rows: VideoRow[] = (req.result || []) as any[];
+const rows: Video[] = (req.result || []) as any[];
       dlog(`UI getAll(${store}) count=`, rows.length);
       // Sort newest first by appropriate timestamp
       rows.sort((a, b) => {
@@ -73,28 +70,6 @@ async function getAll(store: 'videos' | 'trash'): Promise<VideoRow[]> {
     };
     req.onerror = () => { derr(`UI getAll(${store}) error:`, req.error); reject(req.error); };
   });
-}
-
-// ---- UI helpers ----
-function secToClock(n?: number | null): string {
-  if (!n || !Number.isFinite(n)) return '–:–';
-  const h = Math.floor(n / 3600);
-  const m = Math.floor((n % 3600) / 60);
-  const s = Math.floor(n % 60);
-  return h > 0
-    ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-    : `${m}:${String(s).padStart(2, '0')}`;
-}
-function fmtDate(ts?: number) {
-  if (!ts) return '';
-  const d = new Date(ts);
-  return d.toLocaleString();
-}
-function thumbUrl(id: string) {
-  return `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
-}
-function watchUrl(id: string) {
-  return `https://www.youtube.com/watch?v=${id}`;
 }
 
 // ---- React component ----
@@ -128,10 +103,95 @@ export default function App() {
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
-  const [groupJson, setGroupJson] = useState('{\n  "all": []\n}');
-  const [groupErr, setGroupErr] = useState<string | null>(null);
 
-  const [filters, setFilters] = useState<FilterNode[]>([]);
+const [chain, setChain] = useState<FilterEntry[]>([]);
+
+
+  function resetGroupEditUI() {
+  setEditingGroupId(null);
+  setGroupName('');
+}
+
+function saveAsGroup() {
+  const cond = chainToCondition();
+  if (!cond) return;
+  send('groups/create', { name: groupName.trim(), condition: cond }).then(() => {
+    loadGroups();
+    resetGroupEditUI();
+  });
+}
+
+function saveChangesToGroup() {
+  const cond = chainToCondition();
+  if (!cond || !editingGroupId) return;
+  send('groups/update', { id: editingGroupId, patch: { name: groupName.trim(), condition: cond } }).then(() => {
+    loadGroups();
+    resetGroupEditUI();
+  });
+}
+
+function cancelEditing() {
+  resetGroupEditUI();
+}
+
+
+function hmsToSec(h: number, m: number, s: number) {
+  const clamp = (n: number) => Math.max(0, Number.isFinite(n) ? Math.floor(n) : 0);
+  return clamp(h) * 3600 + clamp(m) * 60 + clamp(s);
+}
+
+function entryToPred(e: FilterEntry): Condition | null {
+  const f = e.pred;
+  if (f.kind === 'duration') {
+    const min = hmsToSec(f.ui.minH, f.ui.minM, f.ui.minS);
+    const max = hmsToSec(f.ui.maxH, f.ui.maxM, f.ui.maxS);
+    if (min === 0 && max === 0) return null;
+    const node: Condition = { kind: 'durationRange', ...(min?{minSec:min}:{}) , ...(max?{maxSec:max}:{}) } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'channel') {
+    if (f.ids.length === 0) return null;
+    const node: Condition = { kind: 'channelIdIn', ids: f.ids.slice() } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'title') {
+    const pattern = (f.pattern || '').trim();
+    if (!pattern) return null;
+    const node: Condition = { kind: 'titleRegex', pattern, flags: (f.flags||'').trim() } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'group') {
+    if (f.ids.length === 0) return null;
+    const node: Condition = { kind: 'groupRef', ids: f.ids.slice() } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  return null;
+}
+
+function chainToCondition(): Condition | null {
+const items: Array<{ op?: FilterEntry['op']; node: Condition }> = [];
+  for (let i = 0; i < chain.length; i++) {
+    const node = entryToPred(chain[i]);
+    if (node) items.push({ op: chain[i].op, node });
+  }
+  if (items.length === 0) return null;
+
+  // Split by OR (AND has higher precedence)
+  const segments: Condition[][] = [];
+  let cur: Condition[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const { op, node } = items[i];
+    if (i > 0 && op === 'OR') {
+      segments.push(cur);
+      cur = [];
+    }
+    cur.push(node);
+  }
+  segments.push(cur);
+
+  const collapsed = segments.map(seg => seg.length === 1 ? seg[0] : ({ all: seg } as Condition));
+  return collapsed.length === 1 ? collapsed[0] : ({ any: collapsed } as Condition);
+}
 
   async function loadGroups() {
     const resp: any = await send('groups/list', {});
@@ -144,47 +204,85 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function startEditGroup(g: GroupRec) {
-    setEditingGroupId(g.id);
-    setGroupName(g.name);
-    setGroupJson(JSON.stringify(g.condition, null, 2));
-    setGroupErr(null);
-  }
 
-  function resetGroupForm() {
-    setEditingGroupId(null);
-    setGroupName('');
-    setGroupJson('{\n  "all": []\n}');
-    setGroupErr(null);
-  }
 
-  async function saveGroup() {
-    setGroupErr(null);
-    let condition: Condition;
-    try {
-      condition = JSON.parse(groupJson);
-    } catch {
-      setGroupErr('Invalid JSON: fix the condition before saving.');
-      return;
+async function removeGroup(id: string) {
+  await send('groups/delete', { id });
+  if (editingGroupId === id) resetGroupEditUI();
+  await loadGroups();
+}
+
+function startEditFromGroup(g: GroupRec) {
+  const parsed = conditionToChainSimple(g.condition);
+  if (!parsed) {
+    alert('This group is too complex for the linear editor (nested parentheses support coming next).');
+    return;
+  }
+  setChain(parsed);
+  setGroupName(g.name);
+  setEditingGroupId(g.id);
+}
+
+// Simple: supports single-level all/any or a single predicate; NOT on a leaf.
+// (We’ll extend this when we add explicit parentheses in the editor.)
+function conditionToChainSimple(cond: any): FilterEntry[] | null {
+  const toEntry = (c: any): FilterEntry | null => {
+    let not = false;
+    let leaf = c;
+    if (leaf && 'not' in leaf) {
+      not = true;
+      leaf = leaf.not;
     }
+    if (!leaf || typeof leaf !== 'object') return null;
 
-    if (editingGroupId) {
-      // update existing
-      await send('groups/update', { id: editingGroupId, patch: { name: groupName.trim() || '(untitled)', condition } });
-    } else {
-      // create new
-      await send('groups/create', { name: groupName.trim() || '(untitled)', condition });
+    if (leaf.kind === 'durationRange') {
+      const min = leaf.minSec|0, max = leaf.maxSec|0;
+      return {
+        op: undefined,
+        not,
+        pred: {
+          kind:'duration',
+          ui: {
+            minH: Math.floor((min||0)/3600), minM: Math.floor(((min||0)%3600)/60), minS: (min||0)%60,
+            maxH: Math.floor((max||0)/3600), maxM: Math.floor(((max||0)%3600)/60), maxS: (max||0)%60,
+          }
+        }
+      };
     }
-    await loadGroups();
-    resetGroupForm();
+    if (leaf.kind === 'channelIdIn') {
+      return { op: undefined, not, pred: { kind:'channel', ids: leaf.ids||[], q: '' } };
+    }
+    if (leaf.kind === 'titleRegex') {
+      return { op: undefined, not, pred: { kind:'title', pattern: leaf.pattern||'', flags: leaf.flags||'' } };
+    }
+    if (leaf.kind === 'groupRef') {
+      return { op: undefined, not, pred: { kind:'group', ids: leaf.ids||[] } };
+    }
+    return null; // other predicates not yet mapped back
+  };
+
+  if (cond.kind) {
+    const e = toEntry(cond);
+    return e ? [e] : null;
   }
 
-  async function removeGroup(id: string) {
-    await send('groups/delete', { id });
-    // if we were editing this one, reset the form
-    if (editingGroupId === id) resetGroupForm();
-    await loadGroups();
+  if ('all' in cond || 'any' in cond) {
+    const list: any[] = cond.all || cond.any || [];
+    const isAny = 'any' in cond;
+    const out: FilterEntry[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const e = toEntry(list[i]);
+      if (!e) return null;
+      out.push({ ...e, op: i === 0 ? undefined : (isAny ? 'OR' : 'AND') });
+    }
+    return out;
   }
+
+  // NOT on a group is not supported in the linear editor yet
+  if ('not' in cond) return null;
+
+  return null;
+}
 
   function addTag() {
     const name = newSidebarTag.trim();
@@ -323,64 +421,6 @@ const channelOptions = useMemo(() => {
     .sort((a, b) => a.name.localeCompare(b.name));
 }, [videos]);
 
-function addFilter(kind: FilterNode['kind']) {
-  setFilters(f => {
-    if (kind === 'duration') {
-      return [...f, { kind: 'duration', ui: { minH:0, minM:0, minS:0, maxH:0, maxM:0, maxS:0 } }];
-    }
-    if (kind === 'channel') {
-      return [...f, { kind: 'channel', ids: [], q: '' }];
-    }
-    if (kind === 'title') {
-      return [...f, { kind: 'title', pattern: '', flags: 'i' }];
-    }
-    if (kind === 'group') {
-      return [...f, { kind: 'group', ids: [] }];
-    }
-    return f;
-  });
-}
-function removeFilter(idx: number) {
-  setFilters(f => f.filter((_, i) => i !== idx));
-}
-
-function hmsToSec(h: number, m: number, s: number) {
-  const clamp = (n: number) => Math.max(0, Number.isFinite(n) ? Math.floor(n) : 0);
-  return clamp(h) * 3600 + clamp(m) * 60 + clamp(s);
-}
-
-function filtersToCondition(): Condition | null {
-  const preds: any[] = [];
-
-  for (const f of filters) {
-    if (f.kind === 'duration') {
-      const min = hmsToSec(f.ui.minH, f.ui.minM, f.ui.minS);
-      const max = hmsToSec(f.ui.maxH, f.ui.maxM, f.ui.maxS);
-      const useMin = min > 0;
-      const useMax = max > 0;
-      if (useMin || useMax) {
-        preds.push({
-          kind: 'durationRange',
-          ...(useMin ? { minSec: min } : {}),
-          ...(useMax ? { maxSec: max } : {}),
-        });
-      }
-    } else if (f.kind === 'channel') {
-      if (f.ids.length > 0) {
-        preds.push({ kind: 'channelIdIn', ids: f.ids.slice() });
-      }
-    } else if (f.kind === 'title') {
-      const pattern = (f.pattern || '').trim();
-      const flags = (f.flags || '').trim();
-      if (pattern) preds.push({ kind: 'titleRegex', pattern, flags });
-    } else if (f.kind === 'group') {
-      if (f.ids.length > 0) preds.push({ kind: 'groupRef', ids: f.ids.slice() });
-    }
-  }
-
-  if (preds.length === 0) return null;
-  return { all: preds };
-}
 
 const groupsById = useMemo(() => {
   const m = new Map<string, GroupRec>();
@@ -409,23 +449,22 @@ const groupsById = useMemo(() => {
   }
 
 const filtered = useMemo(() => {
-  // Step 1: apply structured filters (if any)
-  const cond = filtersToCondition();
   let base = videos;
+
+  const cond = chainToCondition();
   if (cond) {
     base = base.filter(v => matches(v as any, cond, {
-      resolveGroup: (id) => groupsById.get(id)
+      resolveGroup: (id) => groups.find(g => g.id === id)
     }));
   }
 
-  // Step 2: apply simple text search
   const needle = q.trim().toLowerCase();
   if (!needle) return base;
   return base.filter(v =>
     (v.title || '').toLowerCase().includes(needle) ||
     (v.channelName || '').toLowerCase().includes(needle)
   );
-}, [videos, filters, q, groupsById]);
+}, [videos, chain, q, groups]);
 
 
 
@@ -446,121 +485,22 @@ const filtered = useMemo(() => {
 
   return (
     <div className="page">
-      <aside className="sidebar">
-        <div className="side-section">
-          <div className="side-title">Tags</div>
-
-          {/* Create new tag */}
-          <div className="side-row">
-            <input
-              className="side-input"
-              type="text"
-              placeholder="New tag…"
-              value={newSidebarTag}
-              onChange={(e) => setNewSidebarTag(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addTag(); }}
-            />
-            <button className="btn-ghost" onClick={addTag} disabled={!newSidebarTag.trim()}>
-              Add
-            </button>
-          </div>
-
-          {/* List of tags with rename/delete */}
-          <div className="tag-list">
-            {tags.length === 0 && <div className="muted">No tags yet.</div>}
-            {tags.map(t => (
-              <div className="tag-row" key={t.name}>
-                {tagEditing === t.name ? (
-                  <>
-                    <input
-                      className="side-input"
-                      type="text"
-                      value={tagEditValue}
-                      onChange={(e) => setTagEditValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitRename();
-                        if (e.key === 'Escape') cancelRename();
-                      }}
-                      autoFocus
-                    />
-                    <button className="btn-ghost" onClick={commitRename} disabled={!tagEditValue.trim()}>Save</button>
-                    <button className="btn-ghost" onClick={cancelRename}>Cancel</button>
-                  </>
-                ) : (
-                  <>
-                    <span className="tag-name">{t.name}</span>
-                    <button className="btn-ghost" onClick={() => startRename(t.name)}>Rename</button>
-                    <button className="btn-ghost" onClick={() => removeTag(t.name)}>Delete</button>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="side-section">
-          <div className="side-title">Groups</div>
-
-          {/* Group form (create or edit) */}
-          <div className="group-form">
-            <input
-              className="side-input"
-              type="text"
-              placeholder="Group name…"
-              value={groupName}
-              onChange={(e) => setGroupName(e.target.value)}
-            />
-            <textarea
-              className="side-textarea"
-              value={groupJson}
-              onChange={(e) => setGroupJson(e.target.value)}
-              spellCheck={false}
-              rows={6}
-              placeholder='Condition JSON, e.g. { "all": [ { "kind":"tagsAny","tags":["work"] } ] }'
-            />
-            {groupErr && <div className="err">{groupErr}</div>}
-
-            <div className="group-form-actions">
-              <button className="btn-ghost" onClick={saveGroup}>
-                {editingGroupId ? 'Save' : 'Add Group'}
-              </button>
-              {editingGroupId && (
-                <button className="btn-ghost" onClick={resetGroupForm}>
-                  Cancel
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Group list (click to load into form) */}
-          <div className="group-list">
-            {groups.length === 0 && <div className="muted">No groups yet.</div>}
-            {groups.map((g) => (
-              <div className="group-row" key={g.id}>
-                <button
-                  className="side-btn"
-                  onClick={() => startEditGroup(g)}
-                  title="Edit group"
-                >
-                  {g.name}
-                </button>
-                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete group">
-                  Delete
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="side-section">
-          <div className="side-title">Coming up</div>
-          <ul className="side-list">
-            <li>Tags</li>
-            <li>Rules</li>
-            <li>Groups</li>
-          </ul>
-        </div>
-      </aside>
-
+<Sidebar
+  tags={tags}
+  newTag={newSidebarTag}
+  setNewTag={setNewSidebarTag}
+  tagEditing={tagEditing}
+  tagEditValue={tagEditValue}
+  setTagEditValue={setTagEditValue}
+  startRename={startRename}
+  cancelRename={cancelRename}
+  commitRename={commitRename}
+  addTag={addTag}
+  removeTag={removeTag}
+  groups={groups}
+  startEditFromGroup={startEditFromGroup}
+  removeGroup={removeGroup}
+/>
       <div className="content">
         <header>
           <h1>{inTrash ? 'Trash' : 'All collected videos'}</h1>
@@ -670,401 +610,76 @@ const filtered = useMemo(() => {
             </button>
           </div>
         </header>
-            {/* Filters panel (top bar) */}
-<div className="filters">
-  {filters.map((f, idx) => {
-    if (f.kind === 'duration') {
-      const ui = f.ui;
-      const set = (k: keyof DurationUI, val: number) =>
-        setFilters(arr =>
-          arr.map((x, i) =>
-            (i === idx && x.kind === 'duration')
-              ? { ...x, ui: { ...x.ui, [k]: Math.max(0, Number(val) || 0) } }
-              : x
-          )
-        );
-      return (
-        <div className="filter-chip" key={idx}>
-          <div className="chip-head">Duration</div>
-          <div className="duration-rows">
-            <div className="duration-row">
-              <span>Min</span>
-              <input type="number" min={0} value={ui.minH} onChange={e => set('minH', +e.target.value)} aria-label="Min hours"/>
-              <span>h</span>
-              <input type="number" min={0} value={ui.minM} onChange={e => set('minM', +e.target.value)} aria-label="Min minutes"/>
-              <span>m</span>
-              <input type="number" min={0} value={ui.minS} onChange={e => set('minS', +e.target.value)} aria-label="Min seconds"/>
-              <span>s</span>
-            </div>
-            <div className="duration-row">
-              <span>Max</span>
-              <input type="number" min={0} value={ui.maxH} onChange={e => set('maxH', +e.target.value)} aria-label="Max hours"/>
-              <span>h</span>
-              <input type="number" min={0} value={ui.maxM} onChange={e => set('maxM', +e.target.value)} aria-label="Max minutes"/>
-              <span>m</span>
-              <input type="number" min={0} value={ui.maxS} onChange={e => set('maxS', +e.target.value)} aria-label="Max seconds"/>
-              <span>s</span>
-            </div>
-          </div>
-          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
-        </div>
-      );
-    }
+           <FiltersBar
+  chain={chain}
+  setChain={setChain}
+  channelOptions={channelOptions}
+  groups={groups}
+  groupName={groupName}
+  setGroupName={setGroupName}
+  editingGroupId={editingGroupId}
+  onSaveAsGroup={saveAsGroup}
+  onSaveChanges={saveChangesToGroup}
+  onCancelEdit={cancelEditing}
+/> 
+{/* Pagination / page size toolbar */}
+<div className="toolbar-2">
+  <div className="page-size">
+    <label htmlFor="pageSize">Per page:</label>
+    <select
+      id="pageSize"
+      value={pageSize}
+      onChange={(e) => setPageSize(Number(e.target.value))}
+    >
+      <option value={50}>50</option>
+      <option value={100}>100</option>
+      <option value={250}>250</option>
+      <option value={500}>500</option>
+    </select>
+  </div>
 
-    if (f.kind === 'channel') {
-      const options = channelOptions.filter(c =>
-        !f.q ? true : c.name.toLowerCase().includes(f.q.toLowerCase()));
-      const toggle = (id: string) =>
-        setFilters(arr =>
-          arr.map((x, i) => {
-            if (i !== idx || x.kind !== 'channel') return x;
-            const ids = x.ids.includes(id) ? x.ids.filter(y => y !== id) : [...x.ids, id];
-            return { ...x, ids };
-          })
-        );
-      return (
-        <div className="filter-chip" key={idx}>
-          <div className="chip-head">Channel</div>
-          <input
-            className="chip-input"
-            type="search"
-            placeholder="Search channels…"
-            value={f.q}
-            onChange={e =>
-              setFilters(arr =>
-                arr.map((x,i) =>
-                  i === idx && x.kind === 'channel' ? { ...x, q: e.target.value } : x
-                )
-              )
-            }
-          />
-          <div className="chip-list">
-            {options.slice(0, 30).map(opt => (
-              <label key={opt.id} className="chip-check">
-                <input
-                  type="checkbox"
-                  checked={f.ids.includes(opt.id)}
-                  onChange={() => toggle(opt.id)}
-                />
-                <span>{opt.name}</span>
-              </label>
-            ))}
-            {options.length > 30 && <div className="muted">…{options.length - 30} more, refine search</div>}
-          </div>
-          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
-        </div>
-      );
-    }
+  <div className="pager">
+    <button
+      type="button"
+      className="btn-ghost"
+      onClick={() => setPage(p => Math.max(1, p - 1))}
+      disabled={page <= 1}
+      title="Previous page"
+    >
+      ← Prev
+    </button>
+    <span className="page-info">Page {page} / {totalPages}</span>
+    <button
+      type="button"
+      className="btn-ghost"
+      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+      disabled={page >= totalPages}
+      title="Next page"
+    >
+      Next →
+    </button>
+  </div>
 
-    if (f.kind === 'title') {
-      return (
-        <div className="filter-chip" key={idx}>
-          <div className="chip-head">Title (regex)</div>
-          <div className="row">
-            <input
-              className="chip-input"
-              type="text"
-              placeholder="pattern e.g. (quick|tip)"
-              value={f.pattern}
-              onChange={e =>
-                setFilters(arr =>
-                  arr.map((x,i) =>
-                    i === idx && x.kind === 'title' ? { ...x, pattern: e.target.value } : x
-                  )
-                )
-              }
-            />
-            <input
-              className="chip-input flags"
-              type="text"
-              placeholder="flags (e.g. i)"
-              value={f.flags}
-              onChange={e =>
-                setFilters(arr =>
-                  arr.map((x,i) =>
-                    i === idx && x.kind === 'title' ? { ...x, flags: e.target.value } : x
-                  )
-                )
-              }
-              maxLength={6}
-            />
-          </div>
-          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
-        </div>
-      );
-    }
-
-    if (f.kind === 'group') {
-      const toggle = (id: string) =>
-        setFilters(arr =>
-          arr.map((x, i) => {
-            if (i !== idx || x.kind !== 'group') return x;     // ✅ correct kind
-            const ids = x.ids.includes(id) ? x.ids.filter(y => y !== id) : [...x.ids, id];
-            return { ...x, ids };
-          })
-        );
-      return (
-        <div className="filter-chip" key={idx}>
-          <div className="chip-head">Group</div>
-          <div className="chip-list">
-            {groups.map(g => (
-              <label key={g.id} className="chip-check">
-                <input
-                  type="checkbox"
-                  checked={f.ids.includes(g.id)}
-                  onChange={() => toggle(g.id)}
-                />
-                <span>{g.name}</span>
-              </label>
-            ))}
-            {groups.length === 0 && <div className="muted">No groups yet</div>}
-          </div>
-          <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
-        </div>
-      );
-    }
-
-    return null;
-  })}
-
-  {/* Add filter selector */}
-  <select
-    className="add-filter"
-    value=""
-    onChange={(e) => {
-      const k = e.target.value as FilterNode['kind'] | '';
-      if (k) addFilter(k);
-      (e.target as HTMLSelectElement).value = '';
-    }}
-  >
-    <option value="">+ Add filter…</option>
-    <option value="duration">Duration range</option>
-    <option value="channel">Channel</option>
-    <option value="title">Title (regex)</option>
-    <option value="group">Group</option>
-  </select>
-
-  {/* Optional: clear all */}
-  {filters.length > 0 && (
-    <button className="btn-ghost" onClick={() => setFilters([])} title="Clear all filters">Clear</button>
-  )}
+  <div className="total-info">{total} total</div>
 </div>
 
-        {showTagger && (
-          <div className="popover" role="dialog" aria-label="Tag items">
-            <div className="popover-row">
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>
-                {selectedCount} selected
-              </div>
-              <button className="btn-ghost" onClick={() => setShowTagger(false)} style={{ marginLeft: 'auto' }}>
-                Close
-              </button>
-            </div>
+{/* The list itself */}
+<VideoList
+  items={pageItems}
+  layout={layout}
+  loading={loading}
+  selected={selected}
+  onToggle={toggleSelect}
+/>
 
-            <div className="tag-grid">
-              {availableTags.length === 0 && <div className="muted">No tags yet. Create tags in the sidebar.</div>}
-              {availableTags.map(tag => {
-                const count = tagCounts.get(tag) || 0;
-                const allHave = count === selectedCount && selectedCount > 0;
-                const someHave = count > 0 && count < selectedCount;
-
-                return (
-                  <label key={tag} className={`tag-toggle${allHave ? ' on' : ''}${someHave ? ' mixed' : ''}`}>
-                    <input
-                      type="checkbox"
-                      checked={allHave}
-                      ref={(el) => { if (el) el.indeterminate = someHave; }}
-                      onChange={() => {
-                        const all = allHave;
-                        send('videos/applyTags', {
-                          ids: Array.from(selected),
-                          addIds: all ? [] : [tag],
-                          removeIds: all ? [tag] : []
-                        }).then(() => refresh());
-                      }}
-                    />
-                    <span className="name">{tag}</span>
-                    {selectedCount > 0 && <span className="count">{count}/{selectedCount}</span>}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        {/* Pagination toolbar */}
-        <div className="toolbar-2">
-          <div className="page-size">
-            <label htmlFor="pageSize">Per page:</label>
-            <select
-              id="pageSize"
-              value={pageSize}
-              onChange={(e) => setPageSize(Number(e.target.value))}
-            >
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={250}>250</option>
-              <option value={500}>500</option>
-            </select>
-          </div>
-
-          <div className="pager">
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              title="Previous page"
-            >
-              ← Prev
-            </button>
-            <span className="page-info">
-              Page {page} / {totalPages}
-            </span>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              title="Next page"
-            >
-              Next →
-            </button>
-          </div>
-
-          <div className="total-info">
-            {total} total
-          </div>
-        </div>
-
-        {/* Error + Undo toast */}
-        {error && (
-          <div style={{ color: '#ff8080', padding: 12 }}>
-            Error loading videos: {error}
-          </div>
-        )}
-        {showUndo && lastDeleted && (
-          <div className="toast">
-            Deleted {lastDeleted.length} {lastDeleted.length === 1 ? 'item' : 'items'}
-            <button className="btn-link" onClick={undoDelete}>Undo</button>
-          </div>
-        )}
-
-        {/* List/Grid */}
-        <main id="list" aria-live="polite" data-layout={layout}>
-          {pageItems.map(v => {
-            const isSelected = selected.has(v.id);
-            return (
-              <article className={`card${isSelected ? ' selected' : ''}`} key={v.id}>
-                <label className="select">
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleSelect(v.id)}
-                    aria-label="Select video"
-                  />
-                </label>
-
-                <img
-                  className="thumb toggle-select"
-                  loading="lazy"
-                  src={thumbUrl(v.id)}
-                  alt={v.title || 'thumbnail'}
-                  draggable={false}
-                  onClick={() => toggleSelect(v.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      toggleSelect(v.id);
-                    }
-                  }}
-                  tabIndex={0}
-                />
-
-                <div>
-                  <h3 className="title">
-                    <a href={watchUrl(v.id)} target="_blank" rel="noopener noreferrer">
-                      {v.title || '(no title)'}
-                    </a>
-                  </h3>
-
-                  <div className="meta">
-                    {[
-                      v.channelName || '(unknown channel)',
-                      secToClock(v.durationSec),
-                      fmtDate(inTrash ? (v as any).deletedAt : v.lastSeenAt),
-                    ]
-                      .filter(Boolean)
-                      .join(' • ')}
-                  </div>
-
-                  <div className="badges">
-                    {v.flags?.started && <span className="badge">started</span>}
-                    {v.flags?.completed && <span className="badge">completed</span>}
-                    {v.tags && v.tags.length > 0 && <span className="badge">{v.tags.join(', ')}</span>}
-                    {inTrash && <span className="badge">trash</span>}
-                  </div>
-                </div>
-              </article>
-            );
-          })}
-
-          {!loading && filtered.length === 0 && (
-            <div style={{ padding: 16, color: 'var(--muted)' }}>
-              No videos match your search.
-            </div>
-          )}
-        </main>
-
-        <footer>
-          <small id="count">
-            {loading ? 'Loading…' : `${filtered.length} ${filtered.length === 1 ? 'video' : 'videos'}`}
-          </small>
-        </footer>
+{/* Undo toast (if you still want it visible here) */}
+{showUndo && lastDeleted && (
+  <div className="toast">
+    Deleted {lastDeleted.length} {lastDeleted.length === 1 ? 'item' : 'items'}
+    <button className="btn-link" onClick={undoDelete}>Undo</button>
+  </div>
+)}
       </div>{/* .content */}
-    </div>  /* .page */
-  );
-}
-
-function GroupCreator({ onCreated }: { onCreated: () => void }) {
-  const [name, setName] = useState('');
-  const [json, setJson] = useState<string>('{\n  "all": []\n}');
-  const [err, setErr] = useState<string | null>(null);
-
-  async function save() {
-    setErr(null);
-    let condition: Condition;
-    try {
-      condition = JSON.parse(json);
-    } catch (e: any) {
-      setErr('Invalid JSON');
-      return;
-    }
-    await new Promise<void>(res => {
-      chrome.runtime.sendMessage({ type: 'groups/create', payload: { name: name.trim() || '(untitled)', condition } }, () => res());
-    });
-    setName('');
-    setJson('{\n  "all": []\n}');
-    onCreated();
-  }
-
-  return (
-    <div className="group-creator">
-      <input
-        className="side-input"
-        type="text"
-        placeholder="Group name…"
-        value={name}
-        onChange={e => setName(e.target.value)}
-      />
-      <textarea
-        className="side-textarea"
-        value={json}
-        onChange={e => setJson(e.target.value)}
-        spellCheck={false}
-        rows={6}
-      />
-      {err && <div className="err">{err}</div>}
-      <button className="btn-ghost" onClick={save}>Add Group</button>
     </div>
   );
 }

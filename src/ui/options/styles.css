@@ -596,3 +596,34 @@ footer {
   background: #16202a;
   color: var(--text);
 }
+.filter-chip-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.op-toggle {
+  align-self: stretch;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-weight: 600;
+  min-width: 48px;
+}
+
+.chip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.chip-not {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
