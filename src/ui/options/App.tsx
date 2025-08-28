@@ -17,6 +17,8 @@ type Video = {
   channelId?: string | null;
   channelName?: string | null;
   durationSec?: number | null;
+  uploadedAt?: number | null;
+  uploadedText?: string | null;
   lastSeenAt?: number;
   deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };

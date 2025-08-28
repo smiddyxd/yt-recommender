@@ -19,6 +19,14 @@ function tileToSeed(el: HTMLElement, listId: string | null): VideoSeed | null {
   const chanEl = el.querySelector(SELECTORS.channel);
   const durEl = el.querySelector(SELECTORS.duration);
   const idxEl = el.querySelector(SELECTORS.index);
+  // Attempt to read upload date text from common meta lines
+  const metaSpans = Array.from(el.querySelectorAll('ytd-video-meta-block #metadata-line span, #metadata-line span')) as HTMLElement[];
+  let uploadedText: string | null = null;
+  for (let i = metaSpans.length - 1; i >= 0; i--) {
+    const t = metaSpans[i]?.textContent?.trim();
+    if (t && /\d/.test(t)) { uploadedText = t; break; }
+  }
+  const uploadedAt = parsePublishedToMs(uploadedText);
 
   return {
     id,
@@ -26,6 +34,8 @@ function tileToSeed(el: HTMLElement, listId: string | null): VideoSeed | null {
     channelName: chanEl?.textContent?.trim() ?? null,
     channelId: null, // optional later
     durationSec: parseDurationToSec(durEl?.textContent || ''),
+    uploadedAt,
+    uploadedText,
     sources: [{
       type: 'playlist',
       id: listId,
@@ -66,10 +76,51 @@ export function scrapeNow(): number {
       channelName: chanEl?.textContent?.trim() ?? null,
       channelId: null,
       durationSec: video && Number.isFinite(video.duration) ? Math.floor(video.duration) : null,
+      uploadedAt: readWatchPageUploadDate(),
+      uploadedText: null,
       sources: [{ type: 'panel', id: null, index: null, seenAt: Date.now() }]
     };
     send('cache/VIDEO_SEEN', seed);
     sent++;
   }
   return sent;
+}
+
+// Try to parse published text like "2 years ago" or ISO-like dates
+function parsePublishedToMs(txt?: string | null): number | null {
+  if (!txt) return null;
+  const s = txt.trim().toLowerCase();
+  // Simple relative "N unit ago"
+  const m = s.match(/(\d+)\s+(year|month|week|day|hour|minute)s?\s+ago/);
+  if (m) {
+    const n = parseInt(m[1], 10);
+    const unit = m[2];
+    const now = Date.now();
+    const ms = unit === 'year' ? n * 365 * 86400000
+      : unit === 'month' ? n * 30 * 86400000
+      : unit === 'week' ? n * 7 * 86400000
+      : unit === 'day' ? n * 86400000
+      : unit === 'hour' ? n * 3600000
+      : /* minute */ n * 60000;
+    return now - ms;
+  }
+  // Absolute dates (very rough); try Date.parse
+  const t = Date.parse(txt);
+  return Number.isFinite(t) ? t : null;
+}
+
+// On watch pages, use structured data if possible
+function readWatchPageUploadDate(): number | null {
+  const meta = document.querySelector('meta[itemprop="datePublished"]') as HTMLMetaElement | null;
+  if (meta?.content) {
+    const t = Date.parse(meta.content);
+    if (Number.isFinite(t)) return t;
+  }
+  // Fallback: try info strings
+  const info = document.querySelector('#info-strings yt-formatted-string') as HTMLElement | null;
+  if (info?.textContent) {
+    const t = Date.parse(info.textContent);
+    if (Number.isFinite(t)) return t;
+  }
+  return null;
 }

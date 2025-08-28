@@ -33,6 +33,8 @@ export interface VideoSeed {
   channelName?: string | null;
   channelId?: string | null;
   durationSec?: number | null;
+  uploadedAt?: number | null;
+  uploadedText?: string | null;
   sources: Array<{ type: 'playlist' | 'panel'; id?: string | null; index?: number | null; seenAt: number }>;
 }
 

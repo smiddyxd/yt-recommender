@@ -7,6 +7,8 @@ type Video = {
   title?: string | null;
   channelName?: string | null;
   durationSec?: number | null;
+  uploadedAt?: number | null;
+  uploadedText?: string | null;
   lastSeenAt?: number;
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
@@ -47,8 +49,11 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                 </a>
               </h3>
               <div className="meta">
-                {[v.channelName || '(unknown channel)', secToClock(v.durationSec), fmtDate(v.lastSeenAt)]
-                  .filter(Boolean).join(' • ')}
+                {[
+                  v.channelName || '(unknown channel)',
+                  secToClock(v.durationSec),
+                  v.uploadedAt ? fmtDate(v.uploadedAt) : (v.uploadedText || '')
+                ].filter(Boolean).join(' • ')}
               </div>
               <div className="badges">
                 {v.flags?.started && <span className="badge">started</span>}

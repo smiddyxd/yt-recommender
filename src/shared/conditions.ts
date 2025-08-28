@@ -20,6 +20,7 @@ export type VideoRow = {
   channelId?: string | null;
   channelName?: string | null;
   durationSec?: number | null;
+  uploadedAt?: number | null;
   lastSeenAt?: number | null;
   tags?: string[] | null;
   flags?: { started?: boolean; completed?: boolean } | null;
