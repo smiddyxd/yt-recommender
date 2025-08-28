@@ -1,16 +1,7 @@
 // src/ui/options/components/FiltersBar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
-
-type DurationUI = { minH: number; minM: number; minS: number; maxH: number; maxM: number; maxS: number };
-type FilterNode =
-    | { kind: 'duration'; ui: DurationUI }
-    | { kind: 'channel'; ids: string[]; q: string }
-    | { kind: 'title'; pattern: string; flags: string }
-    | { kind: 'group'; ids: string[] };
-
-type FilterOp = 'AND' | 'OR';
-export type FilterEntry = { pred: FilterNode; not?: boolean; op?: FilterOp };
+import type { FilterEntry, FilterNode } from '../lib/filters';
 export type ChannelOption = { id: string; name: string };
 
 type Props = {
@@ -87,7 +78,7 @@ export default function FiltersBar({
                 className="chip-input"
                 style={{ minWidth: 220 }}
                 type="text"
-                placeholder="Group name…"
+                placeholder="Group name..."
                 value={groupName}
                 onChange={(e) => setGroupName(e.target.value)}
             />
@@ -225,7 +216,7 @@ export default function FiltersBar({
                                 <input
                                     className="chip-input"
                                     type="search"
-                                    placeholder="Search channels…"
+                                    placeholder="Search channels..."
                                     value={f.q}
                                     onChange={(ev) =>
                                         setChain((arr) =>
@@ -378,7 +369,7 @@ export default function FiltersBar({
                     (e.target as HTMLSelectElement).value = '';
                 }}
             >
-                <option value="">+ Add filter…</option>
+                <option value="">+ Add filter...</option>
                 <option value="duration">Duration range</option>
                 <option value="channel">Channel</option>
                 <option value="title">Title (regex)</option>

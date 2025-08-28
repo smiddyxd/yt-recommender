@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { dlog, derr } from '../../types/debug';
 import { matches, type Condition, type Group as GroupRec } from '../../shared/conditions';
-import FiltersBar, { type FilterEntry } from './components/FiltersBar';
+import FiltersBar from './components/FiltersBar';
+import type { FilterEntry } from './lib/filters';
+import { chainToCondition, conditionToChainSimple } from './lib/filters';
+import { getAll as idbGetAll } from '../lib/idb';
+import { send as sendBg } from '../lib/messaging';
+import type { TagRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import VideoList from './components/VideoList';
 
@@ -13,63 +18,23 @@ type Video = {
   channelName?: string | null;
   durationSec?: number | null;
   lastSeenAt?: number;
-  deletedAt?: number; // ← add this, undefined for non-trash rows
+  deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
 };
 
-type TagRec = { name: string; color?: string; createdAt?: number };
-async function send<T = any>(type: string, payload: any): Promise<T | void> {
-  return new Promise((resolve) => {
-    dlog('UI send →', type, payload && Object.keys(payload));
-    chrome.runtime.sendMessage({ type, payload }, (resp) => {
-      const err = chrome.runtime.lastError;
-      if (err) {
-        derr('UI send error:', err.message);
-        return resolve();
-      }
-      dlog('UI recv ←', type, resp);
-      resolve(resp);
-    });
-  });
-}
 
 // ---- IndexedDB helpers (read-only here) ----
-const DB_NAME = 'yt-recommender';
-
-function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME); // no version arg
-    req.onsuccess = () => {
-      const db = req.result;
-      dlog('UI IDB open ok, version=', (db as any).version);
-      resolve(db);
-    };
-    req.onerror = () => {
-      derr('UI IDB open error:', req.error);
-      reject(req.error);
-    };
-  });
-}
 async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(store, 'readonly');
-    const os = tx.objectStore(store);
-    const req = os.getAll();
-    req.onsuccess = () => {
-const rows: Video[] = (req.result || []) as any[];
-      dlog(`UI getAll(${store}) count=`, rows.length);
-      // Sort newest first by appropriate timestamp
-      rows.sort((a, b) => {
-        const ka = store === 'trash' ? (a.deletedAt || 0) : (a.lastSeenAt || 0);
-        const kb = store === 'trash' ? (b.deletedAt || 0) : (b.lastSeenAt || 0);
-        return kb - ka;
-      });
-      resolve(rows);
-    };
-    req.onerror = () => { derr(`UI getAll(${store}) error:`, req.error); reject(req.error); };
+  const rows = await idbGetAll<Video>(store);
+  dlog(`UI getAll(${store}) count=`, rows.length);
+  // Sort newest first by appropriate timestamp
+  rows.sort((a, b) => {
+    const ka = store === 'trash' ? (a.deletedAt || 0) : (a.lastSeenAt || 0);
+    const kb = store === 'trash' ? (b.deletedAt || 0) : (b.lastSeenAt || 0);
+    return kb - ka;
   });
+  return rows;
 }
 
 // ---- React component ----
@@ -113,18 +78,18 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
 }
 
 function saveAsGroup() {
-  const cond = chainToCondition();
+  const cond = chainToCondition(chain);
   if (!cond) return;
-  send('groups/create', { name: groupName.trim(), condition: cond }).then(() => {
+  sendBg('groups/create', { name: groupName.trim(), condition: cond }).then(() => {
     loadGroups();
     resetGroupEditUI();
   });
 }
 
 function saveChangesToGroup() {
-  const cond = chainToCondition();
+  const cond = chainToCondition(chain);
   if (!cond || !editingGroupId) return;
-  send('groups/update', { id: editingGroupId, patch: { name: groupName.trim(), condition: cond } }).then(() => {
+  sendBg('groups/update', { id: editingGroupId, patch: { name: groupName.trim(), condition: cond } }).then(() => {
     loadGroups();
     resetGroupEditUI();
   });
@@ -135,66 +100,10 @@ function cancelEditing() {
 }
 
 
-function hmsToSec(h: number, m: number, s: number) {
-  const clamp = (n: number) => Math.max(0, Number.isFinite(n) ? Math.floor(n) : 0);
-  return clamp(h) * 3600 + clamp(m) * 60 + clamp(s);
-}
-
-function entryToPred(e: FilterEntry): Condition | null {
-  const f = e.pred;
-  if (f.kind === 'duration') {
-    const min = hmsToSec(f.ui.minH, f.ui.minM, f.ui.minS);
-    const max = hmsToSec(f.ui.maxH, f.ui.maxM, f.ui.maxS);
-    if (min === 0 && max === 0) return null;
-    const node: Condition = { kind: 'durationRange', ...(min?{minSec:min}:{}) , ...(max?{maxSec:max}:{}) } as any;
-    return e.not ? ({ not: node } as any) : node;
-  }
-  if (f.kind === 'channel') {
-    if (f.ids.length === 0) return null;
-    const node: Condition = { kind: 'channelIdIn', ids: f.ids.slice() } as any;
-    return e.not ? ({ not: node } as any) : node;
-  }
-  if (f.kind === 'title') {
-    const pattern = (f.pattern || '').trim();
-    if (!pattern) return null;
-    const node: Condition = { kind: 'titleRegex', pattern, flags: (f.flags||'').trim() } as any;
-    return e.not ? ({ not: node } as any) : node;
-  }
-  if (f.kind === 'group') {
-    if (f.ids.length === 0) return null;
-    const node: Condition = { kind: 'groupRef', ids: f.ids.slice() } as any;
-    return e.not ? ({ not: node } as any) : node;
-  }
-  return null;
-}
-
-function chainToCondition(): Condition | null {
-const items: Array<{ op?: FilterEntry['op']; node: Condition }> = [];
-  for (let i = 0; i < chain.length; i++) {
-    const node = entryToPred(chain[i]);
-    if (node) items.push({ op: chain[i].op, node });
-  }
-  if (items.length === 0) return null;
-
-  // Split by OR (AND has higher precedence)
-  const segments: Condition[][] = [];
-  let cur: Condition[] = [];
-  for (let i = 0; i < items.length; i++) {
-    const { op, node } = items[i];
-    if (i > 0 && op === 'OR') {
-      segments.push(cur);
-      cur = [];
-    }
-    cur.push(node);
-  }
-  segments.push(cur);
-
-  const collapsed = segments.map(seg => seg.length === 1 ? seg[0] : ({ all: seg } as Condition));
-  return collapsed.length === 1 ? collapsed[0] : ({ any: collapsed } as Condition);
-}
+// filter chain helpers moved to ./lib/filters
 
   async function loadGroups() {
-    const resp: any = await send('groups/list', {});
+    const resp: any = await sendBg('groups/list', {});
     setGroups(resp?.items || []);
   }
   useEffect(() => {
@@ -207,7 +116,7 @@ const items: Array<{ op?: FilterEntry['op']; node: Condition }> = [];
 
 
 async function removeGroup(id: string) {
-  await send('groups/delete', { id });
+  await sendBg('groups/delete', { id });
   if (editingGroupId === id) resetGroupEditUI();
   await loadGroups();
 }
@@ -225,69 +134,11 @@ function startEditFromGroup(g: GroupRec) {
 
 // Simple: supports single-level all/any or a single predicate; NOT on a leaf.
 // (We’ll extend this when we add explicit parentheses in the editor.)
-function conditionToChainSimple(cond: any): FilterEntry[] | null {
-  const toEntry = (c: any): FilterEntry | null => {
-    let not = false;
-    let leaf = c;
-    if (leaf && 'not' in leaf) {
-      not = true;
-      leaf = leaf.not;
-    }
-    if (!leaf || typeof leaf !== 'object') return null;
-
-    if (leaf.kind === 'durationRange') {
-      const min = leaf.minSec|0, max = leaf.maxSec|0;
-      return {
-        op: undefined,
-        not,
-        pred: {
-          kind:'duration',
-          ui: {
-            minH: Math.floor((min||0)/3600), minM: Math.floor(((min||0)%3600)/60), minS: (min||0)%60,
-            maxH: Math.floor((max||0)/3600), maxM: Math.floor(((max||0)%3600)/60), maxS: (max||0)%60,
-          }
-        }
-      };
-    }
-    if (leaf.kind === 'channelIdIn') {
-      return { op: undefined, not, pred: { kind:'channel', ids: leaf.ids||[], q: '' } };
-    }
-    if (leaf.kind === 'titleRegex') {
-      return { op: undefined, not, pred: { kind:'title', pattern: leaf.pattern||'', flags: leaf.flags||'' } };
-    }
-    if (leaf.kind === 'groupRef') {
-      return { op: undefined, not, pred: { kind:'group', ids: leaf.ids||[] } };
-    }
-    return null; // other predicates not yet mapped back
-  };
-
-  if (cond.kind) {
-    const e = toEntry(cond);
-    return e ? [e] : null;
-  }
-
-  if ('all' in cond || 'any' in cond) {
-    const list: any[] = cond.all || cond.any || [];
-    const isAny = 'any' in cond;
-    const out: FilterEntry[] = [];
-    for (let i = 0; i < list.length; i++) {
-      const e = toEntry(list[i]);
-      if (!e) return null;
-      out.push({ ...e, op: i === 0 ? undefined : (isAny ? 'OR' : 'AND') });
-    }
-    return out;
-  }
-
-  // NOT on a group is not supported in the linear editor yet
-  if ('not' in cond) return null;
-
-  return null;
-}
 
   function addTag() {
     const name = newSidebarTag.trim();
     if (!name) return;
-    send('tags/create', { name }).then(() => {
+    sendBg('tags/create', { name }).then(() => {
       setNewSidebarTag('');
       loadTags();
     });
@@ -307,7 +158,7 @@ function conditionToChainSimple(cond: any): FilterEntry[] | null {
     const from = tagEditing;
     const to = tagEditValue.trim();
     if (!from || !to || from === to) { cancelRename(); return; }
-    send('tags/rename', { oldName: from, newName: to }).then(() => {
+    sendBg('tags/rename', { oldName: from, newName: to }).then(() => {
       cancelRename();
       loadTags();
       refresh(); // videos/trash updated
@@ -315,14 +166,14 @@ function conditionToChainSimple(cond: any): FilterEntry[] | null {
   }
 
   function removeTag(name: string) {
-    send('tags/delete', { name, cascade: true }).then(() => {
+    sendBg('tags/delete', { name, cascade: true }).then(() => {
       loadTags();
       refresh(); // remove tag from videos/trash too
     });
   }
 
   async function loadTags() {
-    const resp: any = await send('tags/list', {});
+    const resp: any = await sendBg('tags/list', {});
     if (resp && resp.items) setTags(resp.items as TagRec[]);
     else setTags([]);
   }
@@ -330,7 +181,7 @@ function conditionToChainSimple(cond: any): FilterEntry[] | null {
   async function deleteSelected() {
     const ids = Array.from(selected);
     if (!ids.length) return;
-    await send('videos/delete', { ids });
+    await sendBg('videos/delete', { ids });
 
     setLastDeleted(ids);
     setShowUndo(true);
@@ -344,7 +195,7 @@ function conditionToChainSimple(cond: any): FilterEntry[] | null {
 
   async function undoDelete() {
     if (!lastDeleted?.length) return;
-    await send('videos/restore', { ids: lastDeleted });
+    await sendBg('videos/restore', { ids: lastDeleted });
 
     setShowUndo(false);
     setLastDeleted(null);
@@ -441,7 +292,7 @@ const groupsById = useMemo(() => {
     const count = tagCounts.get(tag) || 0;
     const allHave = count === selectedCount && selectedCount > 0;
     // If all have it → remove from all; otherwise add to all
-    send('videos/applyTags', {
+    sendBg('videos/applyTags', {
       ids: Array.from(selected),
       addIds: allHave ? [] : [tag],
       removeIds: allHave ? [tag] : []
@@ -451,7 +302,7 @@ const groupsById = useMemo(() => {
 const filtered = useMemo(() => {
   let base = videos;
 
-  const cond = chainToCondition();
+  const cond = chainToCondition(chain);
   if (cond) {
     base = base.filter(v => matches(v as any, cond, {
       resolveGroup: (id) => groups.find(g => g.id === id)
