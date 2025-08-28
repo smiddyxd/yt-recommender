@@ -4,6 +4,7 @@ import type { Condition } from '../../../shared/conditions';
 export type DurationUI = { minH: number; minM: number; minS: number; maxH: number; maxM: number; maxS: number };
 export type FilterNode =
   | { kind: 'duration'; ui: DurationUI }
+  | { kind: 'age'; min?: number; max?: number }
   | { kind: 'channel'; ids: string[]; q: string }
   | { kind: 'title'; pattern: string; flags: string }
   | { kind: 'group'; ids: string[] };
@@ -26,6 +27,13 @@ export function entryToCondition(e: FilterEntry): Condition | null {
   if (f.kind === 'channel') {
     if (f.ids.length === 0) return null;
     const node: Condition = { kind: 'channelIdIn', ids: f.ids.slice() } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'age') {
+    const min = Number.isFinite(f.min!) ? Math.max(0, Math.floor(f.min!)) : undefined;
+    const max = Number.isFinite(f.max!) ? Math.max(0, Math.floor(f.max!)) : undefined;
+    if (min == null && max == null) return null;
+    const node: Condition = { kind: 'ageDays', ...(min != null ? { min } : {}), ...(max != null ? { max } : {}) } as any;
     return e.not ? ({ not: node } as any) : node;
   }
   if (f.kind === 'title') {
@@ -101,6 +109,9 @@ export function conditionToChainSimple(cond: any): FilterEntry[] | null {
     if (leaf.kind === 'groupRef') {
       return { op: undefined, not, pred: { kind: 'group', ids: leaf.ids || [] } };
     }
+    if (leaf.kind === 'ageDays') {
+      return { op: undefined, not, pred: { kind: 'age', min: leaf.min, max: leaf.max } } as any;
+    }
     return null; // other predicates not yet mapped back
   };
 
@@ -127,4 +138,3 @@ export function conditionToChainSimple(cond: any): FilterEntry[] | null {
 
   return null;
 }
-

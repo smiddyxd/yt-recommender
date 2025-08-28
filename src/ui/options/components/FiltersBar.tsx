@@ -39,6 +39,7 @@ export default function FiltersBar({
     function addFilter(kind: FilterNode['kind']) {
         const defaultPred: FilterNode =
             kind === 'duration' ? { kind: 'duration', ui: { minH: 0, minM: 0, minS: 0, maxH: 0, maxM: 0, maxS: 0 } } :
+                kind === 'age' ? { kind: 'age', min: undefined, max: undefined } as any :
                 kind === 'channel' ? { kind: 'channel', ids: [], q: '' } :
                     kind === 'title' ? { kind: 'title', pattern: '', flags: 'i' } :
                         { kind: 'group', ids: [] };
@@ -246,6 +247,61 @@ export default function FiltersBar({
                     );
                 }
 
+                // ---- AGE (DAYS) CHIP ----
+                if (f.kind === 'age') {
+                    const set = (k: 'min' | 'max', val: number | undefined) =>
+                        setChain(arr =>
+                            arr.map((e, i) =>
+                                i === idx && e.pred.kind === 'age'
+                                    ? { ...e, pred: { ...e.pred, [k]: val == null ? undefined : Math.max(0, Math.floor(Number(val) || 0)) } }
+                                    : e
+                            )
+                        );
+
+                    return (
+                        <div className="filter-chip-row" key={idx}>
+                            {OpToggle}
+                            <div className="filter-chip">
+                                <div className="chip-head">
+                                    <span>Age (days)</span>
+                                    <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                                        <label className="chip-not">
+                                            <input
+                                                type="checkbox"
+                                                checked={!!entry.not}
+                                                onChange={() => toggleNot(idx)}
+                                            />
+                                            NOT
+                                        </label>
+                                        <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">×</button>
+                                    </span>
+                                </div>
+
+                                <div className="row">
+                                    <label>Min</label>
+                                    <input
+                                        className="chip-input"
+                                        type="number"
+                                        min={0}
+                                        value={f.min ?? ''}
+                                        onChange={(e) => set('min', e.target.value === '' ? undefined : Number(e.target.value))}
+                                        aria-label="Min age days"
+                                    />
+                                    <label>Max</label>
+                                    <input
+                                        className="chip-input"
+                                        type="number"
+                                        min={0}
+                                        value={f.max ?? ''}
+                                        onChange={(e) => set('max', e.target.value === '' ? undefined : Number(e.target.value))}
+                                        aria-label="Max age days"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    );
+                }
+
                 // ---- TITLE (REGEX) CHIP ----
                 if (f.kind === 'title') {
                     return (
@@ -371,6 +427,7 @@ export default function FiltersBar({
             >
                 <option value="">+ Add filter...</option>
                 <option value="duration">Duration range</option>
+                <option value="age">Age (days)</option>
                 <option value="channel">Channel</option>
                 <option value="title">Title (regex)</option>
                 <option value="group">Group</option>
