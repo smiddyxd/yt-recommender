@@ -39,67 +39,37 @@ function send(type: 'cache/VIDEO_SEEN', payload: VideoSeed) {
   chrome.runtime.sendMessage({ type, payload });
 }
 
-let observer: MutationObserver | null = null;
-
-export function observePlaylistIfPresent() {
+// Click-to-scrape: single pass over playlist tiles, with watch/shorts fallback
+export function scrapeNow(): number {
+  let sent = 0;
   const listId = getPlaylistIdFromURL();
   const container = q1(SELECTORS.playlistContainer);
-  if (!container) return;
-
-  // Parse existing
-  container.querySelectorAll(SELECTORS.playlistTiles).forEach(el => {
-    const node = el as HTMLElement;
-    if (node.dataset._cached) return;
-    const seed = tileToSeed(node, listId);
-    if (seed) send('cache/VIDEO_SEEN', seed);
-    node.dataset._cached = '1';
-  });
-
-  // Observe future
-  observer?.disconnect();
-  observer = new MutationObserver(muts => {
-    for (const m of muts) {
-      m.addedNodes.forEach(n => {
-        if (!(n instanceof HTMLElement)) return;
-        const tiles = n.matches?.(SELECTORS.playlistTiles)
-          ? [n]
-          : Array.from(n.querySelectorAll?.(SELECTORS.playlistTiles) || []);
-        tiles.forEach(el => {
-          const node = el as HTMLElement;
-          if (node.dataset._cached) return;
-          const seed = tileToSeed(node, listId);
-          if (seed) send('cache/VIDEO_SEEN', seed);
-          node.dataset._cached = '1';
-        });
-      });
-    }
-  });
-  observer.observe(container, { childList: true, subtree: true });
-}
-
-export function maybeWatchProgress() {
-  const video = document.querySelector('video') as HTMLVideoElement | null;
-  if (!video) return;
-  const isWatch = location.pathname.startsWith('/watch') || location.pathname.startsWith('/shorts/');
-  if (!isWatch) return;
-
-  let startedSent = false;
-  setInterval(() => {
-    if (!video.duration || !Number.isFinite(video.duration)) return;
-
-    const url = new URL(location.href);
-    const id = url.searchParams.get('v') || (location.pathname.startsWith('/shorts/') ? location.pathname.split('/')[2] : null);
-    if (!id) return;
-
-    const current = video.currentTime || 0;
-    const duration = video.duration || 0;
-    const started = !startedSent && current >= Math.max(15, duration * 0.03);
-    const completed = duration > 0 && current / duration >= 0.9;
-    if (started) startedSent = true;
-
-    chrome.runtime.sendMessage({
-      type: 'cache/VIDEO_PROGRESS',
-      payload: { id, current, duration, started, completed }
+  if (container) {
+    container.querySelectorAll(SELECTORS.playlistTiles).forEach(el => {
+      const node = el as HTMLElement;
+      const seed = tileToSeed(node, listId);
+      if (seed) { send('cache/VIDEO_SEEN', seed); sent++; }
     });
-  }, 3000);
+    return sent;
+  }
+
+  // Fallback to current video on watch/shorts
+  const url = new URL(location.href);
+  const id = url.searchParams.get('v') || (location.pathname.startsWith('/shorts/') ? location.pathname.split('/')[2] : null);
+  if (id) {
+    const titleEl = document.querySelector('#title h1, h1.title, h1') as HTMLElement | null;
+    const chanEl = document.querySelector('ytd-channel-name a, #channel-name a') as HTMLElement | null;
+    const video = document.querySelector('video') as HTMLVideoElement | null;
+    const seed: VideoSeed = {
+      id,
+      title: titleEl?.textContent?.trim() ?? null,
+      channelName: chanEl?.textContent?.trim() ?? null,
+      channelId: null,
+      durationSec: video && Number.isFinite(video.duration) ? Math.floor(video.duration) : null,
+      sources: [{ type: 'panel', id: null, index: null, seenAt: Date.now() }]
+    };
+    send('cache/VIDEO_SEEN', seed);
+    sent++;
+  }
+  return sent;
 }

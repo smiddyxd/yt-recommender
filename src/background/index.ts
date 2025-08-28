@@ -5,6 +5,16 @@ import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
 import { matches, type Group as GroupRec } from '../shared/conditions';
 
+// Click the extension icon to trigger scrape in active tab
+chrome.action?.onClicked.addListener((tab) => {
+  try {
+    if (!tab?.id) return;
+    chrome.tabs.sendMessage(tab.id, { type: 'scrape/NOW', payload: {} }, () => void 0);
+  } catch (e) {
+    // ignore
+  }
+});
+
 chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
   (async () => {
     dlog('onMessage:', raw?.type, raw?.payload ? Object.keys(raw.payload) : null);
