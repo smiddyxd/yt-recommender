@@ -456,6 +456,10 @@ footer {
 .tag-list {
   display: grid;
   gap: 6px;
+  /* Make tags area roughly half the screen high and scrollable */
+  max-height: 50vh;
+  overflow: auto;
+  padding-right: 4px; /* keep scrollbar from overlapping content */
 }
 .tag-row {
   display: grid;
