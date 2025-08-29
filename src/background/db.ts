@@ -435,6 +435,26 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
   });
 }
 
+// List channel ids that are present in the store but have never been fetched from the API
+// (fetchedAt is missing/null). Useful to populate stub channels created by local operations.
+export async function listChannelIdsNeedingFetch(): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('channels', 'readonly');
+    const os = tx.objectStore('channels');
+    const cur = os.openCursor();
+    const ids: string[] = [];
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) { resolve(ids); return; }
+      const row: any = c.value;
+      if (!row?.fetchedAt) ids.push(row?.id);
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
 // Maintenance: remove duplicate/legacy entries in sources and strip deprecated fields from all rows
 export async function wipeSourcesDuplicates(): Promise<void> {
   const db = await openDB();

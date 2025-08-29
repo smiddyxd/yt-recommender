@@ -4,6 +4,7 @@ import type { Group as GroupRec } from '../../../shared/conditions';
 import type { FilterEntry, FilterNode, DurationUI } from '../lib/filters';
 import { VIDEO_CATEGORIES } from '../lib/videoCategories';
 export type ChannelOption = { id: string; name: string };
+type TagOption = { name: string; count: number };
 
 type Props = {
   // chain editor state
@@ -14,6 +15,8 @@ type Props = {
   channelOptions: ChannelOption[];
   countryOptions?: string[];
   topicOptions?: string[];
+  videoTagOptions?: TagOption[];
+  channelTagOptions?: TagOption[];
   groups: GroupRec[];
 
   // group save/edit UI
@@ -31,6 +34,8 @@ export default function FiltersBar({
   channelOptions,
   countryOptions,
   topicOptions,
+  videoTagOptions,
+  channelTagOptions,
   groups,
   groupName,
   setGroupName,
@@ -62,6 +67,9 @@ export default function FiltersBar({
       kind === 'c_videos'      ? { kind: 'c_videos' } as any :
       kind === 'c_createdAge'  ? { kind: 'c_createdAge', ui: { min: undefined, max: undefined, unit: 'd' } } as any :
       kind === 'c_subsHidden'  ? { kind: 'c_subsHidden', value: true } as any :
+      kind === 'c_tags_any'    ? { kind: 'c_tags_any', tagsCsv: '' } as any :
+      kind === 'c_tags_all'    ? { kind: 'c_tags_all', tagsCsv: '' } as any :
+      kind === 'c_tags_none'   ? { kind: 'c_tags_none', tagsCsv: '' } as any :
                                   { kind: 'group', ids: [] };
     setChain(prev => ([...prev, { pred: defaultPred, not: false, op: prev.length === 0 ? undefined : 'AND' }]));
   }
@@ -629,6 +637,54 @@ export default function FiltersBar({
           );
         }
 
+        // ---- CHANNEL: TAGS ANY/ALL/NONE CHIPS ----
+        if (f.kind === 'c_tags_any' || f.kind === 'c_tags_all' || f.kind === 'c_tags_none') {
+          const label = f.kind === 'c_tags_any' ? 'Channel tags (any of)' : f.kind === 'c_tags_all' ? 'Channel tags (all of)' : 'Channel tags (none of)';
+          const raw = ((f as any).tagsCsv || '') as string;
+          const normalize = (s: string) => (s || '').trim();
+          const selected = new Set<string>(raw.split(',').map(normalize).filter(Boolean));
+          const toggle = (name: string) => setChain(arr => arr.map((e,i)=> {
+            if (i !== idx || (e.pred.kind !== 'c_tags_any' && e.pred.kind !== 'c_tags_all' && e.pred.kind !== 'c_tags_none')) return e;
+            const val = (e.pred as any).tagsCsv || '';
+            const parts = Array.from(new Set<string>(val.split(',').map((s: string)=> (s||'').trim()).filter(Boolean)));
+            const has = parts.includes(name);
+            const next = has ? parts.filter(x=>x!==name) : [...parts, name];
+            return { ...e, pred: { ...e.pred, tagsCsv: next.join(', ') } };
+          }));
+          const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='c_tags_any' || e.pred.kind==='c_tags_all' || e.pred.kind==='c_tags_none') ? { ...e, pred: { ...e.pred, tagsCsv: '' } } : e));
+          const all = Array.isArray(channelTagOptions) ? channelTagOptions : [];
+          return (
+            <div className="filter-chip-row" key={idx}>
+              {OpToggle}
+              <div className="filter-chip">
+                <div className="chip-head">
+                  <span>{label}</span>
+                  <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                    <label className="chip-not">
+                      <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
+                      NOT
+                    </label>
+                    <button className="btn-ghost" onClick={clearAll} title="Clear all">None</button>
+                    <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
+                  </span>
+                </div>
+                {all.length > 0 ? (
+                  <div className="chip-list">
+                    {all.map(opt => (
+                      <label key={opt.name} className="chip-check">
+                        <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
+                        <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">No tags yet. Add tags in the sidebar.</div>
+                )}
+              </div>
+            </div>
+          );
+        }
+
         // ---- CHANNEL: VIDEO COUNT RANGE CHIP ----
         if (f.kind === 'c_videos') {
           const set = (k: 'min'|'max', val: any) => setChain(arr => arr.map((e,i)=> i===idx && e.pred.kind==='c_videos' ? { ...e, pred: { ...e.pred, [k]: (val === '' ? undefined : Math.max(0, Math.floor(Number(val) || 0))) } } : e));
@@ -688,7 +744,19 @@ export default function FiltersBar({
         // ---- VIDEO: TAGS ANY/ALL/NONE CHIPS ----
         if (f.kind === 'v_tags_any' || f.kind === 'v_tags_all' || f.kind === 'v_tags_none') {
           const label = f.kind === 'v_tags_any' ? 'Tags (any of)' : f.kind === 'v_tags_all' ? 'Tags (all of)' : 'Tags (none of)';
-          const key = f.kind === 'v_tags_any' ? 'v_tags_any' : f.kind === 'v_tags_all' ? 'v_tags_all' : 'v_tags_none';
+          const raw = ((f as any).tagsCsv || '') as string;
+          const normalize = (s: string) => (s || '').trim();
+          const selected = new Set<string>(raw.split(',').map(normalize).filter(Boolean));
+          const toggle = (name: string) => setChain(arr => arr.map((e,i)=> {
+            if (i !== idx || (e.pred.kind !== 'v_tags_any' && e.pred.kind !== 'v_tags_all' && e.pred.kind !== 'v_tags_none')) return e;
+            const val = (e.pred as any).tagsCsv || '';
+            const parts = Array.from(new Set<string>(val.split(',').map((s: string)=> (s||'').trim()).filter(Boolean)));
+            const has = parts.includes(name);
+            const next = has ? parts.filter(x=>x!==name) : [...parts, name];
+            return { ...e, pred: { ...e.pred, tagsCsv: next.join(', ') } };
+          }));
+          const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='v_tags_any' || e.pred.kind==='v_tags_all' || e.pred.kind==='v_tags_none') ? { ...e, pred: { ...e.pred, tagsCsv: '' } } : e));
+          const all = Array.isArray(videoTagOptions) ? videoTagOptions : [];
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -700,16 +768,22 @@ export default function FiltersBar({
                       <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
                       NOT
                     </label>
+                    <button className="btn-ghost" onClick={clearAll} title="Clear all">None</button>
                     <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
                   </span>
                 </div>
-                <input
-                  className="chip-input"
-                  type="text"
-                  placeholder="comma,separated,tags"
-                  value={(f as any).tagsCsv || ''}
-                  onChange={(ev) => setChain(arr => arr.map((row, i) => i === idx && row.pred.kind === key ? { ...row, pred: { ...row.pred, tagsCsv: ev.target.value } } : row))}
-                />
+                {all.length > 0 ? (
+                  <div className="chip-list">
+                    {all.map(opt => (
+                      <label key={opt.name} className="chip-check">
+                        <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
+                        <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">No tags yet. Add tags in the sidebar.</div>
+                )}
               </div>
             </div>
           );
@@ -873,6 +947,9 @@ export default function FiltersBar({
           <option value="c_videos">Video count (min/max)</option>
           <option value="c_createdAge">Creation age</option>
           <option value="c_subsHidden">Subscribers hidden</option>
+          <option value="c_tags_any">Tags (any)</option>
+          <option value="c_tags_all">Tags (all)</option>
+          <option value="c_tags_none">Tags (none)</option>
         </optgroup>
         <optgroup label="Other">
           <option value="group">Group</option>

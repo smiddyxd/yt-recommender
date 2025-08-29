@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -86,12 +86,62 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
         try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{}
         sendResponse?.({ ok: true });
-      } else if (raw.type === 'tags/delete') {
+  } else if (raw.type === 'tags/delete') {
         const cascade = raw.payload?.cascade ?? true;
         await deleteTag(raw.payload?.name, cascade);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
-        if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
-        sendResponse?.({ ok: true });
+      if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
+      sendResponse?.({ ok: true });
+    } else if (raw.type === 'channels/refreshUnfetched') {
+      const apiKey = await getApiKey();
+      if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
+      try {
+        const ids = await listChannelIdsNeedingFetch();
+        const parts = ['snippet','statistics','brandingSettings'].join(',');
+        const chunkSize = 50;
+        let applied = 0;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const batch = ids.slice(i, i + chunkSize);
+          if (batch.length === 0) continue;
+          try {
+            const items = await fetchChannelsListWithRetry(parts, batch, apiKey);
+            for (const ch of items) { try { await applyYouTubeChannel(ch); applied += 1; } catch {} }
+          } catch (e: any) {
+            const msg = e?.message || String(e);
+            chrome.runtime.sendMessage({ type: 'refresh/error', payload: { scope: 'channels', batchStart: i, batchSize: batch.length, message: msg } });
+          }
+          await sleep(300);
+        }
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true, count: applied });
+      } catch (e: any) {
+        sendResponse?.({ ok: false, error: e?.message || String(e) });
+      }
+    } else if (raw.type === 'channels/refreshByIds') {
+      const ids: string[] = Array.isArray(raw.payload?.ids) ? raw.payload.ids.filter(Boolean) : [];
+      const apiKey = await getApiKey();
+      if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
+      if (ids.length === 0) { sendResponse?.({ ok: true, count: 0 }); return; }
+      try {
+        const parts = ['snippet','statistics','brandingSettings'].join(',');
+        const chunkSize = 50;
+        let applied = 0;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const batch = ids.slice(i, i + chunkSize);
+          try {
+            const items = await fetchChannelsListWithRetry(parts, batch, apiKey);
+            for (const ch of items) { try { await applyYouTubeChannel(ch); applied += 1; } catch {} }
+          } catch (e: any) {
+            const msg = e?.message || String(e);
+            chrome.runtime.sendMessage({ type: 'refresh/error', payload: { scope: 'channels', batchStart: i, batchSize: batch.length, message: msg } });
+          }
+          await sleep(300);
+        }
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true, count: applied });
+      } catch (e: any) {
+        sendResponse?.({ ok: false, error: e?.message || String(e) });
+      }
       } else if (raw.type === 'channels/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         dlog('channels/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
@@ -154,13 +204,17 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'refresh/progress', payload: { processed, total, applied, failedBatches } });
           await sleep(300); // longer pause to reduce memory/CPU pressure
         }
-        // After video refresh, build channel directory by scanning all videos
+        // After video refresh, build/refresh channel directory:
+        // 1) fetch missing channels for any channel ids seen in videos
+        // 2) also fetch any existing channel rows that have never been fetched (stubs)
         try {
           const chanIds = await listDistinctChannelIds();
           const missing = await missingChannelIds(chanIds);
+          const stale = await listChannelIdsNeedingFetch();
+          const toFetch = Array.from(new Set<string>([...missing, ...stale]));
           const chanChunk = 50;
-          for (let j = 0; j < missing.length; j += chanChunk) {
-            const batch = missing.slice(j, j + chanChunk);
+          for (let j = 0; j < toFetch.length; j += chanChunk) {
+            const batch = toFetch.slice(j, j + chanChunk);
             try {
               const items = await fetchChannelsListWithRetry(['snippet','statistics','brandingSettings'].join(','), batch, apiKey);
               for (const ch of items) { try { await applyYouTubeChannel(ch); } catch { /* ignore */ } }

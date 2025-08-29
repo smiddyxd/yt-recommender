@@ -28,7 +28,10 @@ export type FilterNode =
   | { kind: 'c_videos'; min?: number; max?: number }
   | { kind: 'c_country'; codesCsv: string }
   | { kind: 'c_createdAge'; ui: AgeUI }
-  | { kind: 'c_subsHidden'; value: boolean };
+  | { kind: 'c_subsHidden'; value: boolean }
+  | { kind: 'c_tags_any'; tagsCsv: string }
+  | { kind: 'c_tags_all'; tagsCsv: string }
+  | { kind: 'c_tags_none'; tagsCsv: string };
 
 export type FilterOp = 'AND' | 'OR';
 export type FilterEntry = { pred: FilterNode; not?: boolean; op?: FilterOp };
@@ -91,6 +94,25 @@ export function entryToCondition(e: FilterEntry): Condition | null {
     const tags = csv(f.tagsCsv);
     if (!tags.length) return null;
     const node: Condition = { kind: 'tagsNone', tags } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  // Channel tags
+  if (f.kind === 'c_tags_any') {
+    const tags = csv(f.tagsCsv);
+    if (!tags.length) return null;
+    const node: Condition = { kind: 'channelTagsAny', tags } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'c_tags_all') {
+    const tags = csv(f.tagsCsv);
+    if (!tags.length) return null;
+    const node: Condition = { kind: 'channelTagsAll', tags } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'c_tags_none') {
+    const tags = csv(f.tagsCsv);
+    if (!tags.length) return null;
+    const node: Condition = { kind: 'channelTagsNone', tags } as any;
     return e.not ? ({ not: node } as any) : node;
   }
   if (f.kind === 'v_desc') {

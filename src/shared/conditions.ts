@@ -26,7 +26,10 @@ export type Pred =
   | { kind: 'channelVideosRange'; min?: number; max?: number }
   | { kind: 'channelCountryIn'; codes: string[] }
   | { kind: 'channelCreatedAgeDays'; min?: number; max?: number }
-  | { kind: 'channelSubsHidden'; value: boolean };
+  | { kind: 'channelSubsHidden'; value: boolean }
+  | { kind: 'channelTagsAny';  tags: string[] }
+  | { kind: 'channelTagsAll';  tags: string[] }
+  | { kind: 'channelTagsNone'; tags: string[] };
 
 export type VideoRow = {
   id: string;
@@ -163,7 +166,10 @@ export function matches(
     case 'channelVideosRange':
     case 'channelCountryIn':
     case 'channelCreatedAgeDays':
-    case 'channelSubsHidden': {
+    case 'channelSubsHidden':
+    case 'channelTagsAny':
+    case 'channelTagsAll':
+    case 'channelTagsNone': {
       const chId = (v.channelId || '').trim();
       const ch = chId && ctx.resolveChannel ? ctx.resolveChannel(chId) : undefined;
       if (!ch) return false;
@@ -191,6 +197,21 @@ export function matches(
         }
         case 'channelSubsHidden': {
           const val = !!ch.subsHidden; return p.value ? val : !val;
+        }
+        case 'channelTagsAny': {
+          const have: string[] = Array.isArray(ch.tags) ? ch.tags : [];
+          if (!have.length) return false;
+          const want = new Set(normList(p.tags));
+          return have.some(t => want.has(norm(t)));
+        }
+        case 'channelTagsAll': {
+          const have = new Set(normList(Array.isArray(ch.tags) ? ch.tags : []));
+          return normList(p.tags).every(t => have.has(t));
+        }
+        case 'channelTagsNone': {
+          const have = new Set(normList(Array.isArray(ch.tags) ? ch.tags : []));
+          if (have.size === 0) return true;
+          return !normList(p.tags).some(t => have.has(t));
         }
       }
     }
@@ -267,6 +288,21 @@ export function matchesChannel(
     }
     case 'channelSubsHidden': {
       const val = !!ch.subsHidden; return p.value ? val : !val;
+    }
+    case 'channelTagsAny': {
+      const have: string[] = Array.isArray(ch.tags) ? ch.tags : [];
+      if (!have.length) return false;
+      const want = new Set(normList(p.tags));
+      return have.some(t => want.has(norm(t)));
+    }
+    case 'channelTagsAll': {
+      const have = new Set(normList(Array.isArray(ch.tags) ? ch.tags : []));
+      return normList(p.tags).every(t => have.has(t));
+    }
+    case 'channelTagsNone': {
+      const have = new Set(normList(Array.isArray(ch.tags) ? ch.tags : []));
+      if (have.size === 0) return true;
+      return !normList(p.tags).some(t => have.has(t));
     }
     default:
       return false;

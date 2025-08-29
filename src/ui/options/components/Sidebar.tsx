@@ -16,6 +16,10 @@ type Props = {
   commitRename: ()=>void;
   addTag: ()=>void;
   removeTag: (name:string)=>void;
+  // One-time import: channel tags JSON
+  importing?: boolean;
+  importMessage?: string | null;
+  onImportFile?: (file: File) => void;
 
   groups: GroupRec[];
   startEditFromGroup: (g: GroupRec)=>void;
@@ -35,12 +39,16 @@ export default function Sidebar(props: Props) {
   commitRename,
   addTag,
   removeTag,
+  importing,
+  importMessage,
+  onImportFile,
 
   groups,
   startEditFromGroup,
   removeGroup,
 } = props;
 
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
 
   return (
     <aside className="sidebar">
@@ -60,6 +68,33 @@ onChange={(e) => setNewTag(e.target.value)}
             <button className="btn-ghost" onClick={addTag} disabled={!newTag.trim()}>
               Add
             </button>
+          </div>
+
+          {/* One-time import of channel tags from JSON */}
+          <div className="side-row">
+            <input
+              ref={fileRef}
+              type="file"
+              accept="application/json,.json"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const f = e.target.files && e.target.files[0];
+                if (f && onImportFile) onImportFile(f);
+                // reset value so selecting the same file again triggers change
+                (e.target as HTMLInputElement).value = '';
+              }}
+            />
+            <button
+              className="btn-ghost"
+              onClick={() => fileRef.current?.click()}
+              disabled={!!importing}
+              title="Import a JSON mapping: { tagName: [channelId,…] }"
+            >
+              Import JSON
+            </button>
+            {importing && (
+              <span className="muted" style={{ marginLeft: 8 }}>{importMessage || 'Importing…'}</span>
+            )}
           </div>
 
           {/* List of tags with rename/delete */}

@@ -127,6 +127,9 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
+  // One-time import state
+  const [importing, setImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState<string | null>(null);
 
 
   function resetGroupEditUI() {
@@ -399,6 +402,7 @@ const groupsById = useMemo(() => {
     return m;
   }, [selectedVideos]);
   // AFTER: derive names from the registry we loaded via tags/list
+  // All registry tags (for the tag apply UI)
   const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
 
   const countryOptions = useMemo(() => {
@@ -470,6 +474,72 @@ const channelsFiltered = useMemo(() => {
     (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
   );
 }, [channels, q, chain, videos, groups]);
+
+  // Tag options derived from current results, ignoring the tag predicates themselves
+  const videoTagOptions = useMemo((): Array<{ name: string; count: number }> => {
+    // Build condition without video tag predicates, so the list reflects current results except for the tag chip
+    const pruned = chain.filter(e => !(e.pred.kind === 'v_tags_any' || e.pred.kind === 'v_tags_all' || e.pred.kind === 'v_tags_none'));
+    const cond = chainToCondition(pruned);
+    let base = videos;
+    if (cond) {
+      base = base.filter(v => matches(v as any, cond, {
+        resolveGroup: (id) => groups.find(g => g.id === id),
+        resolveChannel: (id) => channels.find(c => c.id === id) as any
+      }));
+    }
+    const needle = q.trim().toLowerCase();
+    if (needle) {
+      base = base.filter(v => (v.title || '').toLowerCase().includes(needle) || (v.channelName || v.channelId || '').toLowerCase().includes(needle));
+    }
+    const counts = new Map<string, number>();
+    for (const v of base) {
+      const list = Array.isArray(v.tags) ? v.tags : [];
+      for (const t of list) {
+        if (!t) continue;
+        const k = String(t);
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+    }
+    return Array.from(counts, ([name, count]) => ({ name, count }))
+      .sort((a,b)=> a.name.localeCompare(b.name));
+  }, [videos, chain, q, groups, channels]);
+
+  const channelTagOptions = useMemo((): Array<{ name: string; count: number }> => {
+    // Build condition without channel tag predicates and without video tag predicates
+    const pruned = chain.filter(e => !(
+      e.pred.kind === 'c_tags_any' || e.pred.kind === 'c_tags_all' || e.pred.kind === 'c_tags_none' ||
+      e.pred.kind === 'v_tags_any' || e.pred.kind === 'v_tags_all' || e.pred.kind === 'v_tags_none'
+    ));
+    const cond = chainToCondition(pruned);
+    let base = channels;
+    if (cond) {
+      base = channels.filter(ch => matchesChannel(
+        ch as any,
+        cond as any,
+        { videos, resolveGroup: (id) => groups.find(g => g.id === id) }
+      ));
+    }
+    const needle = q.trim().toLowerCase();
+    if (needle) {
+      base = base.filter(ch =>
+        (ch.name || '').toLowerCase().includes(needle) ||
+        ((ch.keywords || '') as string).toLowerCase().includes(needle) ||
+        (Array.isArray(ch.tags) && ch.tags.some(t => (t || '').toLowerCase().includes(needle))) ||
+        (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
+      );
+    }
+    const counts = new Map<string, number>();
+    for (const ch of base) {
+      const list: string[] = Array.isArray((ch as any).tags) ? (ch as any).tags as string[] : [];
+      for (const t of list) {
+        if (!t) continue;
+        const k = String(t);
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+    }
+    return Array.from(counts, ([name, count]) => ({ name, count }))
+      .sort((a,b)=> a.name.localeCompare(b.name));
+  }, [channels, chain, q, videos, groups]);
 
   // Apply sorting before pagination
   function applySort<A extends any>(arr: A[], fields: Array<{ field: string; dir: 'asc'|'desc' }>, kind: 'videos'|'channels'): A[] {
@@ -556,7 +626,7 @@ const channelsFiltered = useMemo(() => {
     try {
       const apiKey = await ensureApiKey();
       if (!apiKey) return;
-      const SKIP_FETCHED = false; // flip to false to refetch everything
+      const SKIP_FETCHED = true; // flip to false to refetch everything
       await sendBg('videos/refreshAll', { skipFetched: SKIP_FETCHED });
 
       const now = Date.now();
@@ -568,6 +638,87 @@ const channelsFiltered = useMemo(() => {
       alert(`Refresh failed: ${e?.message || e}`);
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  // ---- One-time import: tags => channelIds[] ----
+  function normTag(s: string): string {
+    return (s || '').toString().trim();
+  }
+  function normId(s: string): string {
+    return (s || '').toString().trim();
+  }
+
+  async function importChannelTagsFromText(text: string) {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e: any) {
+      throw new Error(`Invalid JSON: ${e?.message || e}`);
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      throw new Error('Expected an object: { "tag name": ["UC…", …], … }');
+    }
+
+    // Build map tag -> unique channel ids
+    const entries = Object.entries(parsed) as Array<[string, any]>;
+    const tagToIds = new Map<string, string[]>();
+    for (const [rawTag, ids] of entries) {
+      const tag = normTag(rawTag);
+      if (!tag) continue;
+      const list: string[] = Array.isArray(ids) ? ids.map(normId).filter(Boolean) : [];
+      if (list.length === 0) continue;
+      const uniq = Array.from(new Set(list));
+      tagToIds.set(tag, uniq);
+    }
+    if (tagToIds.size === 0) throw new Error('No valid {tag: [channelIds]} entries found.');
+
+    // Create tags first
+    const allTags = Array.from(tagToIds.keys());
+    setImportMessage(`Creating ${allTags.length} tag${allTags.length === 1 ? '' : 's'}…`);
+    for (const t of allTags) {
+      try { await sendBg('tags/create', { name: t }); } catch {/* ignore individual failures */}
+    }
+
+    // Apply channel tags in chunks per tag
+    const allImportedIds = new Set<string>();
+    for (const [tag, ids] of tagToIds.entries()) {
+      setImportMessage(`Applying tag "${tag}" to ${ids.length} channel${ids.length === 1 ? '' : 's'}…`);
+      const groups = chunk(ids, 200); // avoid large messages
+      for (const g of groups) {
+        await sendBg('channels/applyTags', { ids: g, addIds: [tag] });
+      }
+      ids.forEach(id => allImportedIds.add(id));
+    }
+
+    // Try to fetch metadata for imported channels now
+    try {
+      const ids = Array.from(allImportedIds.values());
+      const chunks = chunk(ids, 400); // message-size safety; BG chunks to 50 for API
+      for (const c of chunks) {
+        await sendBg('channels/refreshByIds', { ids: c });
+      }
+    } catch { /* non-fatal */ }
+
+    // Refresh UI lists
+    await Promise.all([loadTags(), loadChannelsDir()]);
+  }
+
+  async function handleImportFile(file: File) {
+    if (!file) return;
+    try {
+      setImporting(true);
+      setImportMessage('Reading file…');
+      const text = await file.text();
+      await importChannelTagsFromText(text);
+      setImportMessage('Done');
+      setTimeout(() => setImportMessage(null), 1500);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setImportMessage(null);
+      alert(`Import failed: ${msg}`);
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -612,6 +763,9 @@ const channelsFiltered = useMemo(() => {
   commitRename={commitRename}
   addTag={addTag}
   removeTag={removeTag}
+  importing={importing}
+  importMessage={importMessage}
+  onImportFile={handleImportFile}
   groups={groups}
   startEditFromGroup={startEditFromGroup}
   removeGroup={removeGroup}
@@ -741,6 +895,14 @@ const channelsFiltered = useMemo(() => {
             >
               {refreshing ? 'Refreshing…' : 'Refresh data'}
             </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              title="Fetch metadata for channels that were never fetched (stubs)"
+              onClick={() => sendBg('channels/refreshUnfetched', {}).then(() => loadChannelsDir())}
+            >
+              Fetch channels (unfetched)
+            </button>
             {refreshing && (
               <span className="muted" aria-live="polite" title={`Applied ${refreshApplied} items`}>
                 {refreshProcessed}/{refreshTotal}{refreshFailed ? ` (${refreshFailed} failed)` : ''}
@@ -766,7 +928,7 @@ const channelsFiltered = useMemo(() => {
         {showTagger && selectedCount > 0 && (
           <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ marginRight: 8 }}>Apply tag:</span>
-            {availableTags.map(tag => {
+            {availableTags.map((tag: string) => {
               const haveAll = inChannels
                 ? (channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
                 : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
@@ -788,10 +950,12 @@ const channelsFiltered = useMemo(() => {
             )}
           </div>
            )}
-          <FiltersBar
+  <FiltersBar
   chain={chain}
   setChain={setChain}
   channelOptions={channelOptions}
+  videoTagOptions={videoTagOptions}
+  channelTagOptions={channelTagOptions}
   topicOptions={topicOptions}
   countryOptions={countryOptions}
   groups={groups}

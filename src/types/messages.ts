@@ -13,6 +13,8 @@ export type Msg =
   | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
   | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
   | { type: 'channels/list'; payload: {} }
+  | { type: 'channels/refreshUnfetched'; payload: {} }
+  | { type: 'channels/refreshByIds'; payload: { ids: string[] } }
   | { type: 'channels/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
