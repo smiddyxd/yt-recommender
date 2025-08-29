@@ -11,6 +11,7 @@ export type Msg =
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   | { type: 'videos/wipeSources'; payload: {} }
   | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
+  | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
   | { type: 'tags/create';  payload: { name: string; color?: string } }

@@ -27,13 +27,27 @@ type Video = {
 
 
 // ---- IndexedDB helpers (read-only here) ----
+// Project rows to a slim shape (drop heavy fields like raw `yt` payload)
 async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
-  const rows = await idbGetAll<Video>(store);
+  const rows = await idbGetAll<any>(store);
   dlog(`UI getAll(${store}) count=`, rows.length);
-  // Sort: trash by deletedAt desc; videos by uploadedAt desc
-  if (store === 'trash') rows.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
-  else rows.sort((a, b) => ((b.uploadedAt || b.fetchedAt || 0) - (a.uploadedAt || a.fetchedAt || 0)));
-  return rows;
+  const slim = rows.map((r: any): Video => ({
+    id: r.id,
+    title: r.title ?? null,
+    channelId: r.channelId ?? null,
+    channelName: r.channelName ?? null,
+    durationSec: Number.isFinite(r.durationSec) ? r.durationSec : null,
+    uploadedAt: Number.isFinite(r.uploadedAt) ? r.uploadedAt : null,
+    fetchedAt: Number.isFinite(r.fetchedAt) ? r.fetchedAt : null,
+    ytTags: Array.isArray(r.ytTags) ? r.ytTags : null,
+    deletedAt: r.deletedAt,
+    flags: r.flags,
+    tags: Array.isArray(r.tags) ? r.tags : []
+  }));
+  // Sort: trash by deletedAt desc; videos by uploadedAt (or fetchedAt) desc
+  if (store === 'trash') slim.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  else slim.sort((a, b) => ((b.uploadedAt || b.fetchedAt || 0) - (a.uploadedAt || a.fetchedAt || 0)));
+  return slim;
 }
 
 // ---- React component ----
@@ -73,6 +87,11 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   // Refresh data (YouTube API) state
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
+  const [refreshTotal, setRefreshTotal] = useState<number>(0);
+  const [refreshProcessed, setRefreshProcessed] = useState<number>(0);
+  const [refreshApplied, setRefreshApplied] = useState<number>(0);
+  const [refreshFailed, setRefreshFailed] = useState<number>(0);
+  const [refreshLastError, setRefreshLastError] = useState<string | null>(null);
 
 
   function resetGroupEditUI() {
@@ -264,6 +283,24 @@ useEffect(() => {
       if (ent === 'videos' || ent == null) refresh();
       if (ent === 'tags')   loadTags();
       if (ent === 'groups') loadGroups();
+    } else if (msg?.type === 'refresh/progress') {
+      const p = msg.payload || {};
+      setRefreshing(true);
+      setRefreshTotal(p.total | 0);
+      setRefreshProcessed(p.processed | 0);
+      setRefreshApplied(p.applied | 0);
+      setRefreshFailed(p.failedBatches | 0);
+    } else if (msg?.type === 'refresh/error') {
+      const e = msg.payload?.message || '';
+      if (e) setRefreshLastError(String(e));
+    } else if (msg?.type === 'refresh/done') {
+      setRefreshing(false);
+      const p = msg.payload || {};
+      setRefreshTotal(p.total | 0);
+      setRefreshProcessed(p.processed | 0);
+      setRefreshApplied(p.applied | 0);
+      setRefreshFailed(p.failedBatches | 0);
+      if (p.at) setLastRefreshAt(p.at);
     }
   }
   chrome.runtime.onMessage.addListener(onMsg);
@@ -374,28 +411,8 @@ const filtered = useMemo(() => {
     try {
       const apiKey = await ensureApiKey();
       if (!apiKey) return;
-      // Collect all video ids
-      const rows = await idbGetAll<Video>('videos');
-      const ids = Array.from(new Set(rows.map(r => r.id).filter(Boolean)));
-      if (ids.length === 0) return;
-
-      const parts = [
-        'snippet', 'contentDetails', 'status', 'statistics',
-        'player', 'topicDetails', 'recordingDetails', 'liveStreamingDetails', 'localizations'
-      ].join(',');
-
-      for (const batch of chunk(ids, 50)) {
-        const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-        url.searchParams.set('part', parts);
-        url.searchParams.set('id', batch.join(','));
-        url.searchParams.set('key', apiKey);
-
-        const resp = await fetch(String(url));
-        if (!resp.ok) throw new Error(`videos.list failed ${resp.status}`);
-        const data = await resp.json();
-        const items = Array.isArray(data?.items) ? data.items : [];
-        if (items.length > 0) await sendBg('videos/applyYTBatch', { items });
-      }
+      const SKIP_FETCHED = true; // flip to false to refetch everything
+      await sendBg('videos/refreshAll', { skipFetched: SKIP_FETCHED });
 
       const now = Date.now();
       setLastRefreshAt(now);
@@ -551,7 +568,17 @@ const filtered = useMemo(() => {
             >
               {refreshing ? 'Refreshing…' : 'Refresh data'}
             </button>
-            <span className="muted" aria-live="polite" title="Last refresh time">{fmtTime(lastRefreshAt)}</span>
+            {refreshing && (
+              <span className="muted" aria-live="polite" title={`Applied ${refreshApplied} items`}>
+                {refreshProcessed}/{refreshTotal}{refreshFailed ? ` (${refreshFailed} failed)` : ''}
+              </span>
+            )}
+            {!refreshing && (
+              <span className="muted" aria-live="polite" title="Last refresh time">{fmtTime(lastRefreshAt)}</span>
+            )}
+            {refreshLastError && (
+              <span className="muted" style={{ color: 'salmon' }} title="Last error">{String(refreshLastError).slice(0, 140)}</span>
+            )}
             <button
               type="button"
               className="btn-ghost"

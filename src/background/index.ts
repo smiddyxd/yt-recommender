@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -96,6 +96,42 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true, count: items.length });
+      } else if (raw.type === 'videos/refreshAll') {
+        const skipFetched = !!raw.payload?.skipFetched;
+        const apiKey = await getApiKey();
+        if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
+        const ids = await listVideoIds({ skipFetched });
+        const parts = [
+          'snippet', 'contentDetails', 'status', 'statistics',
+          'player', 'topicDetails', 'recordingDetails', 'liveStreamingDetails', 'localizations'
+        ].join(',');
+        const chunkSize = 50;
+        const total = ids.length;
+        let processed = 0; // ids attempted
+        let applied = 0;   // items returned
+        let failedBatches = 0;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const batch = ids.slice(i, i + chunkSize);
+          if (batch.length === 0) continue;
+          processed += batch.length;
+          try {
+            const items = await fetchVideosListWithRetry(parts, batch, apiKey);
+            applied += items.length;
+            for (const it of items) {
+              try { await applyYouTubeVideo(it); } catch { /* ignore */ }
+            }
+          } catch (e: any) {
+            failedBatches += 1;
+            const msg = e?.message || String(e);
+            chrome.runtime.sendMessage({ type: 'refresh/error', payload: { batchStart: i, batchSize: batch.length, message: msg } });
+          }
+          chrome.runtime.sendMessage({ type: 'refresh/progress', payload: { processed, total, applied, failedBatches } });
+          await sleep(300); // longer pause to reduce memory/CPU pressure
+        }
+        try { chrome.storage?.local?.set({ lastRefreshAt: Date.now() }); } catch {}
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        chrome.runtime.sendMessage({ type: 'refresh/done', payload: { processed, total, applied, failedBatches, at: Date.now() } });
+        sendResponse?.({ ok: true, processed, total, applied, failedBatches });
       }
     } catch (e: any) {
       derr('bg handler error:', e?.message || e);
@@ -108,3 +144,59 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
 });
 self.addEventListener('unhandledrejection', (ev: any) => derr('unhandledrejection', ev?.reason));
 self.addEventListener('error', (ev: any) => derr('error', ev?.message || ev));
+
+async function getApiKey(): Promise<string | null> {
+  return new Promise((resolve) => {
+    try { chrome.storage?.local?.get('ytApiKey', (o) => resolve((o?.ytApiKey as string) || null)); }
+    catch { resolve(null); }
+  });
+}
+
+async function listVideoIds(opts: { skipFetched: boolean }): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const cur = os.openCursor();
+    const ids: string[] = [];
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) { resolve(ids); return; }
+      const row: any = c.value;
+      if (!opts.skipFetched || !row?.fetchedAt) ids.push(row?.id);
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
+function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+
+async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
+  const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+  url.searchParams.set('part', parts);
+  url.searchParams.set('id', ids.join(','));
+  url.searchParams.set('key', apiKey);
+  const maxAttempts = 3;
+  let attempt = 0;
+  let lastErr: any = null;
+  while (attempt < maxAttempts) {
+    try {
+      const resp = await fetch(String(url));
+      if (!resp.ok) {
+        let detail = '';
+        try { detail = await resp.text(); } catch { /* ignore */ }
+        throw new Error(`videos.list ${resp.status} ${resp.statusText}${detail ? ' - ' + detail.slice(0, 240) : ''}`);
+      }
+      const data = await resp.json();
+      const items = Array.isArray((data as any)?.items) ? (data as any).items : [];
+      return items;
+    } catch (e) {
+      lastErr = e;
+      attempt += 1;
+      if (attempt >= maxAttempts) break;
+      await sleep(500 * attempt * attempt); // 0.5s, 2s
+    }
+  }
+  throw (lastErr || new Error('videos.list failed after retries'));
+}

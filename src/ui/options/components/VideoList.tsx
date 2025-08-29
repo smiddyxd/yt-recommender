@@ -1,6 +1,7 @@
 // src/ui/options/components/VideoList.tsx
 import React, { useState } from 'react';
 import { fmtDate, secToClock, thumbUrl, watchUrl } from '../../lib/format';
+import { getOne as idbGetOne } from '../../lib/idb';
 
 type Video = {
   id: string;
@@ -23,10 +24,18 @@ type Props = {
 
 export default function VideoList({ items, layout, loading, selected, onToggle }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
+  const [fullData, setFullData] = useState<Record<string, any>>({});
   const toggleDebug = (id: string) => {
     setOpenDebug(prev => {
       const next = new Set(prev);
+      const willOpen = !next.has(id);
       if (next.has(id)) next.delete(id); else next.add(id);
+      // lazy-load full row for debug view
+      if (willOpen && !fullData[id]) {
+        idbGetOne('videos', id).then((row) => {
+          if (row) setFullData(fd => ({ ...fd, [id]: row }));
+        }).catch(() => void 0);
+      }
       return next;
     });
   };
@@ -84,7 +93,7 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                     <span>Stored data</span>
                     <button className="debug-close" onClick={() => toggleDebug(v.id)} title="Close">A-</button>
                   </div>
-                  <pre className="debug-pre">{JSON.stringify(v as any, null, 2)}</pre>
+                  <pre className="debug-pre">{JSON.stringify((fullData[v.id] ?? v) as any, null, 2)}</pre>
                 </div>
               )}
             </div>
