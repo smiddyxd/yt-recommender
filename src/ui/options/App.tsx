@@ -304,6 +304,8 @@ function startEditFromGroup(g: GroupRec) {
   useEffect(() => {
     clearSelection();
     setPage(1);
+    setQ('');
+    setChain([]);
     refresh(); // reload from the correct store
     loadTags();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -370,6 +372,16 @@ const groupsById = useMemo(() => {
   const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
 
   function toggleTag(tag: string) {
+    if (inChannels) {
+      const countCh = channels.filter(c => selected.has(c.id)).reduce((n, c) => (Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0);
+      const allHaveCh = countCh === selectedCount && selectedCount > 0;
+      sendBg('channels/applyTags', {
+        ids: Array.from(selected),
+        addIds: allHaveCh ? [] : [tag],
+        removeIds: allHaveCh ? [tag] : []
+      }).then(() => loadChannelsDir());
+      return;
+    }
     const count = tagCounts.get(tag) || 0;
     const allHave = count === selectedCount && selectedCount > 0;
     // If all have it → remove from all; otherwise add to all
@@ -398,9 +410,18 @@ const filtered = useMemo(() => {
   );
 }, [videos, chain, q, groups]);
 
+const channelsFiltered = useMemo(() => {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return channels;
+  return channels.filter(ch =>
+    (ch.name || '').toLowerCase().includes(needle) ||
+    ((ch.keywords || '') as string).toLowerCase().includes(needle) ||
+    (Array.isArray(ch.tags) && ch.tags.some(t => (t || '').toLowerCase().includes(needle))) ||
+    (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
+  );
+}, [channels, q]);
 
-
-  const total = filtered.length;
+  const total = inChannels ? channelsFiltered.length : filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   // keep page in range when filter or page size changes
@@ -408,12 +429,15 @@ const filtered = useMemo(() => {
     setPage(1);
   }, [q, pageSize]);
 
+  
+
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
 
   const start = (page - 1) * pageSize;
   const pageItems = filtered.slice(start, start + pageSize);
+  const channelsPageItems = channelsFiltered.slice(start, start + pageSize);
 
   async function ensureApiKey(): Promise<string | null> {
     return new Promise((resolve) => {
@@ -466,6 +490,25 @@ const filtered = useMemo(() => {
       const d = new Date(ts);
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch { return ''; }
+  }
+
+  function applyTagToSelection(tag: string) {
+    if (inChannels) {
+      const selectedIds = Array.from(selected);
+      const haveAll = selectedIds.length > 0 && channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
+      sendBg('channels/applyTags', {
+        ids: selectedIds,
+        addIds: haveAll ? [] : [tag],
+        removeIds: haveAll ? [tag] : []
+      }).then(() => loadChannelsDir());
+      return;
+    }
+    const haveAllVideos = selectedCount > 0 && (tagCounts.get(tag) || 0) === selectedCount;
+    sendBg('videos/applyTags', {
+      ids: Array.from(selected),
+      addIds: haveAllVideos ? [] : [tag],
+      removeIds: haveAllVideos ? [tag] : []
+    }).then(() => refresh());
   }
 
   return (
@@ -536,7 +579,7 @@ const filtered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Select page (visible)"
-                onClick={() => selectAllVisible(pageItems.map(v => v.id))}
+                onClick={() => selectAllVisible(inChannels ? channelsPageItems.map(ch => ch.id) : pageItems.map(v => v.id))}
               >
                 Select page
               </button>
@@ -545,7 +588,7 @@ const filtered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Select all (matching filter)"
-                onClick={() => selectAllMatching(filtered.map(v => v.id))}
+                onClick={() => selectAllMatching(inChannels ? channelsFiltered.map(ch => ch.id) : filtered.map(v => v.id))}
               >
                 Select all (matching)
               </button>
@@ -633,6 +676,31 @@ const filtered = useMemo(() => {
             </button>
           </div>
         </header>
+        {showTagger && selectedCount > 0 && (
+          <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ marginRight: 8 }}>Apply tag:</span>
+            {availableTags.map(tag => {
+              const haveAll = inChannels
+                ? (channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
+                : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => applyTagToSelection(tag)}
+                  style={{ background: haveAll ? '#203040' : undefined }}
+                  title={haveAll ? 'Remove from all selected' : 'Add to all selected'}
+                >
+                  {tag}
+                </button>
+              );
+            })}
+            {availableTags.length === 0 && (
+              <span className="muted">No tags yet. Add tags in the sidebar.</span>
+            )}
+          </div>
+        )}
            <FiltersBar
   chain={chain}
   setChain={setChain}
@@ -689,9 +757,12 @@ const filtered = useMemo(() => {
 {/* The list itself */}
 {inChannels ? (
   <div style={{ padding: 16 }}>
-    {channels.slice(start, start + pageSize).map(ch => (
+    {channelsFiltered.slice(start, start + pageSize).map(ch => (
       <>
       <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
+        <label className="select">
+          <input type="checkbox" checked={selected.has(ch.id)} onChange={() => toggleSelect(ch.id)} aria-label="Select channel" />
+        </label>
         <img src={ch.thumbUrl || ''} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222' }} />
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <strong>{ch.name || ch.id}</strong>
