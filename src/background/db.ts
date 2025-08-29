@@ -454,6 +454,9 @@ function applyYouTubeFields(row: any, yt: any) {
     row.yt = yt;
     const sn = yt?.snippet || {};
     const cd = yt?.contentDetails || {};
+    const st = yt?.status || {};
+    const td = yt?.topicDetails || {};
+    const lsd = yt?.liveStreamingDetails || null;
     row.fetchedAt = Date.now();
     row.title = sn.title ?? row.title ?? null;
     row.channelId = sn.channelId ?? row.channelId ?? null;
@@ -461,6 +464,19 @@ function applyYouTubeFields(row: any, yt: any) {
     row.uploadedAt = parseIsoDate(sn.publishedAt) ?? row.uploadedAt ?? null;
     row.durationSec = parseIsoDurationToSec(cd.duration) ?? row.durationSec ?? null;
     row.ytTags = Array.isArray(sn.tags) ? sn.tags.slice() : row.ytTags;
+    row.description = typeof sn.description === 'string' ? sn.description : (row.description ?? null);
+    row.categoryId = sn.categoryId != null ? Number(sn.categoryId) : (row.categoryId ?? null);
+    row.visibility = st.privacyStatus || row.visibility || null;
+    row.isLive = !!lsd;
+    // language code: defaultLanguage or defaultAudioLanguage, take first segment (before '-')
+    const lang = (sn.defaultLanguage || sn.defaultAudioLanguage || '').toString().toLowerCase();
+    const lc = lang ? lang.split('-')[0] : '';
+    row.languageCode = lc === 'en' || lc === 'de' ? lc : (lc ? 'other' : (row.languageCode ?? null));
+    // topics: take last path segment of each URL
+    const cats = Array.isArray(td.topicCategories) ? td.topicCategories : [];
+    row.videoTopics = cats.map((u: string) => {
+      try { const s = u.split('/'); return decodeURIComponent(s[s.length - 1] || ''); } catch { return ''; }
+    }).filter(Boolean);
   } catch { /* ignore malformed payloads */ }
 }
 
@@ -543,6 +559,7 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
     views: Number(statistics?.viewCount) || null,
     keywords: (branding?.channel?.keywords as string) || null,
     topics: topics as string[],
+    subsHidden: statistics?.hiddenSubscriberCount === true,
     fetchedAt: Date.now(),
     yt: ch,
     tags: [],

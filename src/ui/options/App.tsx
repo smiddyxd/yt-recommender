@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { dlog, derr } from '../../types/debug';
-import { matches, type Condition, type Group as GroupRec } from '../../shared/conditions';
+import { matches, matchesChannel, type Condition, type Group as GroupRec } from '../../shared/conditions';
 import FiltersBar from './components/FiltersBar';
 import type { FilterEntry } from './lib/filters';
 import { chainToCondition, conditionToChainSimple } from './lib/filters';
@@ -106,6 +106,8 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [refreshLastError, setRefreshLastError] = useState<string | null>(null);
   const [openChannelDebug, setOpenChannelDebug] = useState<Set<string>>(new Set());
   const [channelFull, setChannelFull] = useState<Record<string, any>>({});
+  const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
+  const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
 
 
   function resetGroupEditUI() {
@@ -398,7 +400,8 @@ const filtered = useMemo(() => {
   const cond = chainToCondition(chain);
   if (cond) {
     base = base.filter(v => matches(v as any, cond, {
-      resolveGroup: (id) => groups.find(g => g.id === id)
+      resolveGroup: (id) => groups.find(g => g.id === id),
+      resolveChannel: (id) => channels.find(c => c.id === id) as any
     }));
   }
 
@@ -411,17 +414,64 @@ const filtered = useMemo(() => {
 }, [videos, chain, q, groups]);
 
 const channelsFiltered = useMemo(() => {
+  // Apply boolean filter condition first (channel + video cross-scope), then search filter by text
+  const cond = chainToCondition(chain);
+  let base = channels;
+  if (cond) {
+    base = channels.filter(ch => matchesChannel(
+      ch as any,
+      cond as any,
+      { videos, resolveGroup: (id) => groups.find(g => g.id === id) }
+    ));
+  }
   const needle = q.trim().toLowerCase();
-  if (!needle) return channels;
-  return channels.filter(ch =>
+  if (!needle) return base;
+  return base.filter(ch =>
     (ch.name || '').toLowerCase().includes(needle) ||
     ((ch.keywords || '') as string).toLowerCase().includes(needle) ||
     (Array.isArray(ch.tags) && ch.tags.some(t => (t || '').toLowerCase().includes(needle))) ||
     (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
   );
-}, [channels, q]);
+}, [channels, q, chain, videos, groups]);
 
-  const total = inChannels ? channelsFiltered.length : filtered.length;
+  // Apply sorting before pagination
+  function applySort<A extends any>(arr: A[], fields: Array<{ field: string; dir: 'asc'|'desc' }>, kind: 'videos'|'channels'): A[] {
+    if (!fields.length) return arr;
+    const mul = (d: 'asc'|'desc') => (d === 'asc' ? 1 : -1);
+    const get = (o: any, f: string) => (o && f in o ? o[f] : undefined);
+    const collator = new Intl.Collator(undefined, { sensitivity: 'base' });
+    const arrCopy = arr.slice();
+    arrCopy.sort((a: any, b: any) => {
+      for (const s of fields) {
+        const av = get(a, s.field); const bv = get(b, s.field);
+        if (av == null && bv == null) continue;
+        if (av == null) return 1; if (bv == null) return -1;
+        if (typeof av === 'string' || typeof bv === 'string') {
+          const r = collator.compare(String(av), String(bv)); if (r !== 0) return r * mul(s.dir);
+        } else {
+          const na = Number(av), nb = Number(bv);
+          if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return (na < nb ? -1 : 1) * mul(s.dir);
+        }
+      }
+      return 0;
+    });
+    return arrCopy;
+  }
+
+  const sortedVideos = useMemo(() => {
+    if (!videoSorts.length) {
+      // default for videos
+      return filtered.slice().sort((a,b) => (b.uploadedAt||0) - (a.uploadedAt||0));
+    }
+    return applySort(filtered, videoSorts, 'videos');
+  }, [filtered, videoSorts]);
+
+  const sortedChannels = useMemo(() => {
+    if (!channelSorts.length) return channelsFiltered;
+    return applySort(channelsFiltered, channelSorts, 'channels');
+  }, [channelsFiltered, channelSorts]);
+
+  const total = inChannels ? sortedChannels.length : sortedVideos.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   // keep page in range when filter or page size changes
@@ -436,8 +486,8 @@ const channelsFiltered = useMemo(() => {
   }, [page, totalPages]);
 
   const start = (page - 1) * pageSize;
-  const pageItems = filtered.slice(start, start + pageSize);
-  const channelsPageItems = channelsFiltered.slice(start, start + pageSize);
+  const pageItems = sortedVideos.slice(start, start + pageSize);
+  const channelsPageItems = sortedChannels.slice(start, start + pageSize);
 
   async function ensureApiKey(): Promise<string | null> {
     return new Promise((resolve) => {
@@ -713,8 +763,58 @@ const channelsFiltered = useMemo(() => {
   onSaveChanges={saveChangesToGroup}
   onCancelEdit={cancelEditing}
 /> 
-{/* Pagination / page size toolbar */}
+{/* Sorting + Pagination toolbar */}
 <div className="toolbar-2">
+  {/* Sorts row */}
+  <div className="sorts" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+    <label style={{ marginRight: 4 }}>Sort by:</label>
+    {(inChannels ? channelSorts : videoSorts).map((s, i) => (
+      <span key={i} className="badge" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+        <select className="chip-input" value={s.field} onChange={(e)=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, field: e.target.value } : x))}>
+          {inChannels ? (
+            <>
+              <option value="name">Name</option>
+              <option value="subs">Subscribers</option>
+              <option value="views">Views</option>
+              <option value="videos">Video count</option>
+              <option value="fetchedAt">Fetched time</option>
+            </>
+          ) : (
+            <>
+              <option value="uploadedAt">Uploaded time</option>
+              <option value="durationSec">Duration</option>
+              <option value="title">Title</option>
+              <option value="fetchedAt">Fetched time</option>
+            </>
+          )}
+        </select>
+        <select className="chip-input" value={s.dir} onChange={(e)=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, dir: e.target.value as 'asc'|'desc' } : x))}>
+          <option value="asc">asc</option>
+          <option value="desc">desc</option>
+        </select>
+        <button className="chip-remove" onClick={()=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.filter((_,idx)=> idx!==i))} title="Remove">A-</button>
+      </span>
+    ))}
+    <select className="add-filter" value="" onChange={(e)=>{ const v=e.target.value as string; if(!v) return; (inChannels ? setChannelSorts : setVideoSorts)(arr => [...arr, { field: v, dir: 'desc' }]); (e.target as HTMLSelectElement).value=''; }}>
+      <option value="">+ Add sort...</option>
+      {inChannels ? (
+        <>
+          <option value="name">Name</option>
+          <option value="subs">Subscribers</option>
+          <option value="views">Views</option>
+          <option value="videos">Video count</option>
+          <option value="fetchedAt">Fetched time</option>
+        </>
+      ) : (
+        <>
+          <option value="uploadedAt">Uploaded time</option>
+          <option value="durationSec">Duration</option>
+          <option value="title">Title</option>
+          <option value="fetchedAt">Fetched time</option>
+        </>
+      )}
+    </select>
+  </div>
   <div className="page-size">
     <label htmlFor="pageSize">Per page:</label>
     <select
