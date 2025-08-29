@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -32,6 +32,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         sendResponse?.({ ok: true });
       } else if (raw.type === 'groups/list') {
         const items = await listGroups();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'channels/list') {
+        const items = await listChannels();
         sendResponse?.({ ok: true, items });
       } else if (raw.type === 'groups/create') {
         const { name, condition } = raw.payload || {};
@@ -128,6 +131,24 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'refresh/progress', payload: { processed, total, applied, failedBatches } });
           await sleep(300); // longer pause to reduce memory/CPU pressure
         }
+        // After video refresh, build channel directory by scanning all videos
+        try {
+          const chanIds = await listDistinctChannelIds();
+          const missing = await missingChannelIds(chanIds);
+          const chanChunk = 50;
+          for (let j = 0; j < missing.length; j += chanChunk) {
+            const batch = missing.slice(j, j + chanChunk);
+            try {
+              const items = await fetchChannelsListWithRetry(['snippet','statistics','brandingSettings'].join(','), batch, apiKey);
+              for (const ch of items) { try { await applyYouTubeChannel(ch); } catch { /* ignore */ } }
+            } catch (e: any) {
+              const msg = e?.message || String(e);
+              chrome.runtime.sendMessage({ type: 'refresh/error', payload: { scope: 'channels', batchStart: j, batchSize: batch.length, message: msg } });
+            }
+            await sleep(300);
+          }
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        } catch { /* ignore */ }
         try { chrome.storage?.local?.set({ lastRefreshAt: Date.now() }); } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         chrome.runtime.sendMessage({ type: 'refresh/done', payload: { processed, total, applied, failedBatches, at: Date.now() } });
@@ -199,4 +220,53 @@ async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: st
     }
   }
   throw (lastErr || new Error('videos.list failed after retries'));
+}
+
+async function fetchChannelsListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
+  const url = new URL('https://www.googleapis.com/youtube/v3/channels');
+  url.searchParams.set('part', parts);
+  url.searchParams.set('id', ids.join(','));
+  url.searchParams.set('key', apiKey);
+  const maxAttempts = 3;
+  let attempt = 0;
+  let lastErr: any = null;
+  while (attempt < maxAttempts) {
+    try {
+      const resp = await fetch(String(url));
+      if (!resp.ok) {
+        let detail = '';
+        try { detail = await resp.text(); } catch { /* ignore */ }
+        throw new Error(`channels.list ${resp.status} ${resp.statusText}${detail ? ' - ' + detail.slice(0, 240) : ''}`);
+      }
+      const data = await resp.json();
+      const items = Array.isArray((data as any)?.items) ? (data as any).items : [];
+      return items;
+    } catch (e) {
+      lastErr = e;
+      attempt += 1;
+      if (attempt >= maxAttempts) break;
+      await sleep(500 * attempt * attempt);
+    }
+  }
+  throw (lastErr || new Error('channels.list failed after retries'));
+}
+
+async function listDistinctChannelIds(): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const idx = os.index('byChannel');
+    const set = new Set<string>();
+    const cur = idx.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) { resolve(Array.from(set)); return; }
+      const row: any = c.value;
+      const chId = row?.channelId;
+      if (chId) set.add(chId);
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
 }

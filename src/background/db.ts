@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -38,6 +38,11 @@ export async function openDB(): Promise<IDBDatabase> {
         const r = db.createObjectStore('rules', { keyPath: 'id' });
         r.createIndex('byEnabled', 'enabled', { unique: false });
         r.createIndex('byUpdatedAt', 'updatedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('channels')) {
+        const c = db.createObjectStore('channels', { keyPath: 'id' });
+        c.createIndex('byName', 'name', { unique: false });
+        c.createIndex('byFetchedAt', 'fetchedAt', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -391,38 +396,27 @@ export async function deleteGroup(id: string) {
     tx.onerror = () => reject(tx.error);
   });
 }
-export async function listChannels(): Promise<Array<{ id: string; name: string; count: number }>> {
+export async function listChannels(): Promise<Array<{ id: string; name: string; count: number; fetchedAt?: number | null; thumbUrl?: string | null }>> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('videos', 'readonly');
-    const os = tx.objectStore('videos');
-    const idx = os.index('byChannel');
-
-    const map = new Map<string, { id: string; name: string; count: number }>();
-
-    const req = idx.openCursor(); // iterates by channelId
+    const tx = db.transaction('channels', 'readonly');
+    const os = tx.objectStore('channels');
+    const req = os.getAll();
     req.onsuccess = () => {
-      const cursor = req.result;
-      if (!cursor) {
-        // done: return sorted by count desc, then name asc
-        const out = Array.from(map.values()).sort((a, b) =>
-          b.count - a.count || a.name.localeCompare(b.name)
-        );
-        resolve(out);
-        return;
-      }
-      const row: any = cursor.value;
-      const chId: string | null = row.channelId || null;
-      if (chId) {
-        const prev = map.get(chId);
-        const name = (row.channelName && String(row.channelName)) || String(chId);
-        if (!prev) {
-          map.set(chId, { id: chId, name, count: 1 });
-        } else {
-          prev.count += 1;
-        }
-      }
-      cursor.continue();
+      const rows = (req.result || []) as any[];
+      rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      const items = rows.map(r => {
+        const thumbs = r?.thumbnails || {};
+        const best = thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null;
+        return {
+          id: r.id,
+          name: r.name || r.id,
+          count: Number(r.videos) || 0,
+          fetchedAt: r.fetchedAt || null,
+          thumbUrl: best
+        };
+      });
+      resolve(items);
     };
     req.onerror = () => reject(req.error);
   });
@@ -497,6 +491,56 @@ export async function applyYouTubeVideo(yt: any) {
       os.put(prev);
     };
     g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Compute set of missing channel ids w.r.t. the channels store
+export async function missingChannelIds(ids: string[]): Promise<string[]> {
+  const db = await openDB();
+  const unique = Array.from(new Set((ids || []).filter(Boolean)));
+  const missing: string[] = [];
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readonly');
+    const os = tx.objectStore('channels');
+    let i = 0;
+    const step = () => {
+      if (i >= unique.length) return resolve();
+      const id = unique[i++];
+      const g = os.get(id);
+      g.onsuccess = () => { if (!g.result) missing.push(id); step(); };
+      g.onerror = () => reject(g.error);
+    };
+    step();
+  });
+  return missing;
+}
+
+// Upsert a channel record from channels.list
+export async function applyYouTubeChannel(ch: any): Promise<void> {
+  const id = ch?.id;
+  if (!id) return;
+  const db = await openDB();
+  const snippet = ch?.snippet || {};
+  const statistics = ch?.statistics || {};
+  const branding = ch?.brandingSettings || {};
+  const rec = {
+    id,
+    name: snippet.title || id,
+    customUrl: snippet.customUrl || null,
+    thumbnails: snippet.thumbnails || null,
+    country: snippet.country || branding?.channel?.country || null,
+    publishedAt: ((): number | null => { try { const t = Date.parse(snippet.publishedAt || ''); return Number.isFinite(t) ? t : null; } catch { return null; } })(),
+    subs: Number(statistics?.subscriberCount) || null,
+    videos: Number(statistics?.videoCount) || null,
+    views: Number(statistics?.viewCount) || null,
+    fetchedAt: Date.now(),
+    yt: ch
+  } as any;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    tx.objectStore('channels').put(rec);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

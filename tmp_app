@@ -59,9 +59,8 @@ export default function App() {
   const [layout, setLayout] = useState<'grid' | 'list'>('list'); // UI-only state
   const isGrid = layout === 'grid';
   const isList = layout === 'list';
-  const [view, setView] = useState<'videos' | 'trash' | 'channels'>('videos');
+  const [view, setView] = useState<'videos' | 'trash'>('videos');
   const inTrash = view === 'trash';
-  const inChannels = view === 'channels';
   // Selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const selectedCount = selected.size;
@@ -79,7 +78,6 @@ export default function App() {
   const [newSidebarTag, setNewSidebarTag] = useState('');
 
   const [groups, setGroups] = useState<GroupRec[]>([]);
-  const [channels, setChannels] = useState<Array<{ id: string; name: string; fetchedAt?: number|null; thumbUrl?: string | null }>>([]);
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
@@ -130,15 +128,10 @@ function cancelEditing() {
     const resp: any = await sendBg('groups/list', {});
     setGroups(resp?.items || []);
   }
-  async function loadChannelsDir() {
-    const resp: any = await sendBg('channels/list', {});
-    setChannels(resp?.items || []);
-  }
   useEffect(() => {
     // initial load also pulls groups
     refresh();
     loadGroups();
-    loadChannelsDir();
     // load last refresh time from storage
     try {
       chrome.storage?.local?.get('lastRefreshAt', (obj) => {
@@ -290,7 +283,6 @@ useEffect(() => {
       if (ent === 'videos' || ent == null) refresh();
       if (ent === 'tags')   loadTags();
       if (ent === 'groups') loadGroups();
-      if (ent === 'channels') loadChannelsDir();
     } else if (msg?.type === 'refresh/progress') {
       const p = msg.payload || {};
       setRefreshing(true);
@@ -570,15 +562,6 @@ const filtered = useMemo(() => {
             <button
               type="button"
               className="btn-ghost"
-              aria-pressed={inChannels}
-              title={inChannels ? 'Show videos' : 'Show channels directory'}
-              onClick={() => setView(inChannels ? 'videos' : 'channels')}
-            >
-              Channels
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
               title="Fetch metadata for all videos via YouTube API"
               onClick={refreshData}
               disabled={refreshing}
@@ -661,28 +644,13 @@ const filtered = useMemo(() => {
 </div>
 
 {/* The list itself */}
-{inChannels ? (
-  <div style={{ padding: 16 }}>
-    {channels.map(ch => (
-      <div key={ch.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
-        <img src={ch.thumbUrl || ''} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222' }} />
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <strong>{ch.name || ch.id}</strong>
-          <span className="muted" style={{ fontSize: 12 }}>{ch.id}</span>
-        </div>
-      </div>
-    ))}
-    {channels.length === 0 && <div className="muted">No channels yet.</div>}
-  </div>
-) : (
-  <VideoList
-    items={pageItems}
-    layout={layout}
-    loading={loading}
-    selected={selected}
-    onToggle={toggleSelect}
-  />
-)}
+<VideoList
+  items={pageItems}
+  layout={layout}
+  loading={loading}
+  selected={selected}
+  onToggle={toggleSelect}
+/>
 
 {/* Undo toast (if you still want it visible here) */}
 {showUndo && lastDeleted && (
@@ -695,3 +663,4 @@ const filtered = useMemo(() => {
     </div>
   );
 }
+
