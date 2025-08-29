@@ -89,6 +89,13 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         await wipeSourcesDuplicates();
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/applyYTBatch') {
+        const items: any[] = raw.payload?.items || [];
+        for (const it of items) {
+          try { await applyYouTubeVideo(it); } catch { /* ignore individual item errors */ }
+        }
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        sendResponse?.({ ok: true, count: items.length });
       }
     } catch (e: any) {
       derr('bg handler error:', e?.message || e);

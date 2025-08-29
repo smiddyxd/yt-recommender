@@ -70,6 +70,10 @@ export default function App() {
 
 const [chain, setChain] = useState<FilterEntry[]>([]);
 
+  // Refresh data (YouTube API) state
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
+
 
   function resetGroupEditUI() {
   setEditingGroupId(null);
@@ -109,6 +113,13 @@ function cancelEditing() {
     // initial load also pulls groups
     refresh();
     loadGroups();
+    // load last refresh time from storage
+    try {
+      chrome.storage?.local?.get('lastRefreshAt', (obj) => {
+        const t = obj?.lastRefreshAt as number | undefined;
+        if (t && Number.isFinite(t)) setLastRefreshAt(t);
+      });
+    } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -333,6 +344,79 @@ const filtered = useMemo(() => {
   const start = (page - 1) * pageSize;
   const pageItems = filtered.slice(start, start + pageSize);
 
+  async function ensureApiKey(): Promise<string | null> {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage?.local?.get('ytApiKey', (obj) => {
+          let key = (obj?.ytApiKey as string) || '';
+          if (!key) {
+            key = window.prompt('Enter YouTube API key (stored locally for future refresh)') || '';
+            if (key) chrome.storage?.local?.set({ ytApiKey: key });
+          }
+          resolve(key || null);
+        });
+      } catch {
+        const key = window.prompt('Enter YouTube API key');
+        resolve(key || null);
+      }
+    });
+  }
+
+  function chunk<T>(arr: T[], n: number): T[][] {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+    return out;
+  }
+
+  async function refreshData() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      const apiKey = await ensureApiKey();
+      if (!apiKey) return;
+      // Collect all video ids
+      const rows = await idbGetAll<Video>('videos');
+      const ids = Array.from(new Set(rows.map(r => r.id).filter(Boolean)));
+      if (ids.length === 0) return;
+
+      const parts = [
+        'snippet', 'contentDetails', 'status', 'statistics',
+        'player', 'topicDetails', 'recordingDetails', 'liveStreamingDetails', 'localizations'
+      ].join(',');
+
+      for (const batch of chunk(ids, 50)) {
+        const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+        url.searchParams.set('part', parts);
+        url.searchParams.set('id', batch.join(','));
+        url.searchParams.set('key', apiKey);
+
+        const resp = await fetch(String(url));
+        if (!resp.ok) throw new Error(`videos.list failed ${resp.status}`);
+        const data = await resp.json();
+        const items = Array.isArray(data?.items) ? data.items : [];
+        if (items.length > 0) await sendBg('videos/applyYTBatch', { items });
+      }
+
+      const now = Date.now();
+      setLastRefreshAt(now);
+      try { chrome.storage?.local?.set({ lastRefreshAt: now }); } catch {}
+      await refresh();
+    } catch (e: any) {
+      derr('refreshData error:', e?.message || e);
+      alert(`Refresh failed: ${e?.message || e}`);
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  function fmtTime(ts?: number | null): string {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch { return ''; }
+  }
+
   return (
     <div className="page">
 <Sidebar
@@ -458,6 +542,16 @@ const filtered = useMemo(() => {
             <button id="refresh" onClick={refresh} disabled={loading}>
               {loading ? 'Loading…' : 'Refresh'}
             </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              title="Fetch metadata for all videos via YouTube API"
+              onClick={refreshData}
+              disabled={refreshing}
+            >
+              {refreshing ? 'Refreshing…' : 'Refresh data'}
+            </button>
+            <span className="muted" aria-live="polite" title="Last refresh time">{fmtTime(lastRefreshAt)}</span>
             <button
               type="button"
               className="btn-ghost"

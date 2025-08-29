@@ -10,6 +10,7 @@ export type Msg =
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   | { type: 'videos/wipeSources'; payload: {} }
+  | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
   | { type: 'tags/create';  payload: { name: string; color?: string } }
