@@ -19,7 +19,7 @@ export async function getAll<T=any>(store: 'videos' | 'trash'): Promise<T[]> {
   });
 }
 
-export async function getOne<T=any>(store: 'videos' | 'trash', id: string): Promise<T | undefined> {
+export async function getOne<T=any>(store: 'videos' | 'trash' | 'channels', id: string): Promise<T | undefined> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readonly');

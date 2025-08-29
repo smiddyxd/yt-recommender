@@ -79,7 +79,17 @@ export default function App() {
   const [newSidebarTag, setNewSidebarTag] = useState('');
 
   const [groups, setGroups] = useState<GroupRec[]>([]);
-  const [channels, setChannels] = useState<Array<{ id: string; name: string; fetchedAt?: number|null; thumbUrl?: string | null }>>([]);
+  const [channels, setChannels] = useState<Array<{
+    id: string;
+    name: string;
+    fetchedAt?: number | null;
+    thumbUrl?: string | null;
+    subs?: number | null;
+    tags?: string[];
+    videoTags?: string[];
+    keywords?: string | null;
+    topics?: string[];
+  }>>([]);
 
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupName, setGroupName] = useState('');
@@ -94,6 +104,8 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [refreshApplied, setRefreshApplied] = useState<number>(0);
   const [refreshFailed, setRefreshFailed] = useState<number>(0);
   const [refreshLastError, setRefreshLastError] = useState<string | null>(null);
+  const [openChannelDebug, setOpenChannelDebug] = useState<Set<string>>(new Set());
+  const [channelFull, setChannelFull] = useState<Record<string, any>>({});
 
 
   function resetGroupEditUI() {
@@ -259,12 +271,26 @@ function startEditFromGroup(g: GroupRec) {
     setSelected(new Set());
   }
 
+  function toggleChannelDebug(id: string) {
+    setOpenChannelDebug(prev => {
+      const next = new Set(prev);
+      const willOpen = !next.has(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      if (willOpen && !channelFull[id]) {
+        import('../lib/idb').then(m => m.getOne('channels', id)).then((row) => {
+          if (row) setChannelFull(o => ({ ...o, [id]: row }));
+        }).catch(() => void 0);
+      }
+      return next;
+    });
+  }
+
   async function refresh() {
     try {
       dlog('UI refresh start');
       setLoading(true);
       setError(null);
-      const rows = await getAll(view);
+      const rows = await getAll(inTrash ? 'trash' as const : 'videos' as const);
       setVideos(rows);
       dlog('UI refresh done, rows=', rows.length);
     } catch (e: any) {
@@ -663,14 +689,38 @@ const filtered = useMemo(() => {
 {/* The list itself */}
 {inChannels ? (
   <div style={{ padding: 16 }}>
-    {channels.map(ch => (
-      <div key={ch.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
+    {channels.slice(start, start + pageSize).map(ch => (
+      <>
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
         <img src={ch.thumbUrl || ''} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222' }} />
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           <strong>{ch.name || ch.id}</strong>
-          <span className="muted" style={{ fontSize: 12 }}>{ch.id}</span>
+          <span className="muted" style={{ fontSize: 12 }}>{ch.subs ? `${ch.subs.toLocaleString()} subscribers` : ''}</span>
+          {Array.isArray((ch as any).tags) && (ch as any).tags.length > 0 && (
+            <span className="badge">{(ch as any).tags.join(', ')}</span>
+          )}
+          {Array.isArray((ch as any).videoTags) && (ch as any).videoTags.length > 0 && (
+            <span className="badge">Video tags: {(ch as any).videoTags.join(', ')}</span>
+          )}
+          {(ch as any).keywords && <span className="muted" style={{ fontSize: 12 }}>Keywords: {(ch as any).keywords}</span>}
+          {Array.isArray((ch as any).topics) && (ch as any).topics.length > 0 && (
+            <span className="muted" style={{ fontSize: 12 }}>Topics: {(ch as any).topics.join(', ')}</span>
+          )}
+        </div>
+        <div style={{ marginLeft: 'auto' }}>
+          <button type="button" className="btn-ghost" onClick={() => toggleChannelDebug(ch.id)}>Show info</button>
         </div>
       </div>
+      {openChannelDebug.has(ch.id) && (
+        <div className="debug-panel" role="region" aria-label="Channel data" style={{ marginTop: -8, marginBottom: 8 }}>
+          <div className="debug-panel-head">
+            <span>Stored data</span>
+            <button className="debug-close" onClick={() => toggleChannelDebug(ch.id)} title="Close">A-</button>
+          </div>
+          <pre className="debug-pre">{JSON.stringify((channelFull[ch.id] ?? ch) as any, null, 2)}</pre>
+        </div>
+      )}
+      </>
     ))}
     {channels.length === 0 && <div className="muted">No channels yet.</div>}
   </div>

@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -55,6 +55,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         dlog('videos/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
         await applyTags(ids || [], addIds, removeIds);
+        // Update channel videoTags for affected channels
+        try {
+          const chs = await channelIdsForVideos(ids || []);
+          if (chs.length) await recomputeVideoTagsForChannels(chs);
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/list') {
@@ -68,12 +74,19 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         await renameTag(raw.payload?.oldName, raw.payload?.newName);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
+        try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{}
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/delete') {
         const cascade = raw.payload?.cascade ?? true;
         await deleteTag(raw.payload?.name, cascade);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
-        if (cascade) chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'channels/applyTags') {
+        const { ids, addIds = [], removeIds = [] } = raw.payload || {};
+        dlog('channels/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
+        await applyChannelTags(ids || [], addIds, removeIds);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];
@@ -149,6 +162,11 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           }
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         } catch { /* ignore */ }
+        try {
+          // Compute videoTags for all channels now that videos' tags are current
+          await recomputeVideoTagsForAllChannels();
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        } catch {}
         try { chrome.storage?.local?.set({ lastRefreshAt: Date.now() }); } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         chrome.runtime.sendMessage({ type: 'refresh/done', payload: { processed, total, applied, failedBatches, at: Date.now() } });
@@ -269,4 +287,25 @@ async function listDistinctChannelIds(): Promise<string[]> {
     };
     cur.onerror = () => reject(cur.error);
   });
+}
+
+async function channelIdsForVideos(ids: string[]): Promise<string[]> {
+  const set = new Set<string>();
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    (async () => {
+      for (const id of ids) {
+        await new Promise<void>((res, rej) => {
+          const g = os.get(id);
+          g.onsuccess = () => { const row: any = g.result; if (row?.channelId) set.add(row.channelId); res(); };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return Array.from(set);
 }

@@ -413,7 +413,12 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
           name: r.name || r.id,
           count: Number(r.videos) || 0,
           fetchedAt: r.fetchedAt || null,
-          thumbUrl: best
+          thumbUrl: best,
+          tags: Array.isArray(r.tags) ? r.tags : [],
+          videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
+          subs: Number(r.subs) || null,
+          keywords: r.keywords || null,
+          topics: Array.isArray(r.topics) ? r.topics : []
         };
       });
       resolve(items);
@@ -525,6 +530,7 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
   const snippet = ch?.snippet || {};
   const statistics = ch?.statistics || {};
   const branding = ch?.brandingSettings || {};
+  const topics = Array.isArray((ch?.topicDetails || {}).topicCategories) ? (ch.topicDetails.topicCategories as any[]) : [];
   const rec = {
     id,
     name: snippet.title || id,
@@ -535,12 +541,135 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
     subs: Number(statistics?.subscriberCount) || null,
     videos: Number(statistics?.videoCount) || null,
     views: Number(statistics?.viewCount) || null,
+    keywords: (branding?.channel?.keywords as string) || null,
+    topics: topics as string[],
     fetchedAt: Date.now(),
-    yt: ch
+    yt: ch,
+    tags: [],
+    videoTags: []
   } as any;
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('channels', 'readwrite');
     tx.objectStore('channels').put(rec);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Apply local tags to channel records
+export async function applyChannelTags(ids: string[], addIds: string[] = [], removeIds: string[] = []) {
+  if (!ids?.length || (!addIds?.length && !removeIds?.length)) return;
+  const add = [...new Set(addIds.map(s => (s ?? '').trim()).filter(Boolean))];
+  const rem = new Set(removeIds.map(s => (s ?? '').trim()).filter(Boolean));
+  if (add.length === 0 && rem.size === 0) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    (async () => {
+      for (const id of ids) {
+        await new Promise<void>((res, rej) => {
+          const g = os.get(id);
+          g.onsuccess = () => {
+            const row = g.result || { id, tags: [] };
+            const tags: string[] = Array.isArray(row.tags) ? row.tags.slice() : [];
+            for (const t of add) if (!tags.includes(t)) tags.push(t);
+            if (rem.size) {
+              for (let i = tags.length - 1; i >= 0; i--) if (rem.has(tags[i])) tags.splice(i, 1);
+            }
+            row.tags = tags;
+            os.put(row);
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Recompute videoTags for channels by scanning videos' tags
+export async function recomputeVideoTagsForAllChannels() {
+  const db = await openDB();
+  const map = new Map<string, Set<string>>();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const v: any = c.value;
+      const chId: string | null = v?.channelId || null;
+      if (chId) {
+        const set = map.get(chId) || (map.set(chId, new Set<string>()), map.get(chId)!);
+        if (Array.isArray(v?.tags)) for (const t of v.tags) if (t) set.add(String(t));
+      }
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const row: any = c.value;
+      const set = map.get(row.id) || new Set<string>();
+      row.videoTags = Array.from(set.values()).sort((a,b)=>a.localeCompare(b));
+      c.update(row);
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
+export async function recomputeVideoTagsForChannels(chanIds: string[]) {
+  const target = new Set((chanIds || []).filter(Boolean));
+  if (target.size === 0) return;
+  const db = await openDB();
+  const map = new Map<string, Set<string>>();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const v: any = c.value;
+      const chId: string | null = v?.channelId || null;
+      if (chId && target.has(chId)) {
+        const set = map.get(chId) || (map.set(chId, new Set<string>()), map.get(chId)!);
+        if (Array.isArray(v?.tags)) for (const t of v.tags) if (t) set.add(String(t));
+      }
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    (async () => {
+      for (const id of Array.from(target)) {
+        await new Promise<void>((res, rej) => {
+          const g = os.get(id);
+          g.onsuccess = () => {
+            const row = g.result;
+            if (row) {
+              const set = map.get(id) || new Set<string>();
+              row.videoTags = Array.from(set.values()).sort((a,b)=>a.localeCompare(b));
+              os.put(row);
+            }
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
