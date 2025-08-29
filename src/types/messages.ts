@@ -24,6 +24,8 @@ export type Msg =
   | { type: 'groups/create'; payload: { name: string; condition: Condition } }
   | { type: 'groups/update'; payload: { id: string; patch: Partial<Group> } }
   | { type: 'groups/delete'; payload: { id: string } }
+  // META
+  | { type: 'topics/list'; payload: {} }
   // RULES (stubs for next step)
   | { type: 'rules/list';    payload: {} }
   | { type: 'rules/create';  payload: any }

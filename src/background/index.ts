@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -36,6 +36,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } else if (raw.type === 'channels/list') {
         const items = await listChannels();
         sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'topics/list') {
+        try {
+          let items = await readVideoTopicsMeta();
+          if (!items || items.length === 0) {
+            try { await recomputeVideoTopicsMeta(); items = await readVideoTopicsMeta(); } catch {}
+          }
+          sendResponse?.({ ok: true, items });
+        } catch (e) {
+          sendResponse?.({ ok: false, items: [] });
+        }
       } else if (raw.type === 'groups/create') {
         const { name, condition } = raw.payload || {};
         await createGroup(name, condition);
@@ -166,6 +176,10 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           // Compute videoTags for all channels now that videos' tags are current
           await recomputeVideoTagsForAllChannels();
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        } catch {}
+        try {
+          await recomputeVideoTopicsMeta();
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'topics' } });
         } catch {}
         try { chrome.storage?.local?.set({ lastRefreshAt: Date.now() }); } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });

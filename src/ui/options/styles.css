@@ -534,6 +534,12 @@ footer {
   color: var(--text);
 }
 
+.filter-chip .chip-input.small {
+  width: 36px; /* compact for 2 digits */
+  padding: 4px 6px;
+  text-align: right;
+}
+
 .filter-chip .chip-input.flags {
   max-width: 64px;
 }

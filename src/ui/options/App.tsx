@@ -126,6 +126,7 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [channelFull, setChannelFull] = useState<Record<string, any>>({});
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
+  const [topicOptions, setTopicOptions] = useState<string[]>([]);
 
 
   function resetGroupEditUI() {
@@ -162,6 +163,13 @@ function cancelEditing() {
     const resp: any = await sendBg('groups/list', {});
     setGroups(resp?.items || []);
   }
+  async function loadTopicOptions() {
+    try {
+      const resp: any = await sendBg('topics/list', {} as any);
+      const items: string[] = Array.isArray(resp?.items) ? resp.items : [];
+      setTopicOptions(items);
+    } catch { setTopicOptions([]); }
+  }
   async function loadChannelsDir() {
     const resp: any = await sendBg('channels/list', {});
     setChannels(resp?.items || []);
@@ -171,6 +179,7 @@ function cancelEditing() {
     refresh();
     loadGroups();
     loadChannelsDir();
+    loadTopicOptions();
     // load last refresh time from storage
     try {
       chrome.storage?.local?.get('lastRefreshAt', (obj) => {
@@ -335,10 +344,11 @@ useEffect(() => {
   function onMsg(msg: any) {
     if (msg?.type === 'db/change') {
       const ent = msg.payload?.entity;
-      if (ent === 'videos' || ent == null) refresh();
+      if (ent === 'videos' || ent == null) { refresh(); loadTopicOptions(); }
       if (ent === 'tags')   loadTags();
       if (ent === 'groups') loadGroups();
       if (ent === 'channels') loadChannelsDir();
+      if (ent === 'topics') loadTopicOptions();
     } else if (msg?.type === 'refresh/progress') {
       const p = msg.payload || {};
       setRefreshing(true);
@@ -782,6 +792,7 @@ const channelsFiltered = useMemo(() => {
   chain={chain}
   setChain={setChain}
   channelOptions={channelOptions}
+  topicOptions={topicOptions}
   countryOptions={countryOptions}
   groups={groups}
   groupName={groupName}

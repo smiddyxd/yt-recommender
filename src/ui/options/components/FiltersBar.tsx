@@ -13,6 +13,7 @@ type Props = {
   // data to power chips
   channelOptions: ChannelOption[];
   countryOptions?: string[];
+  topicOptions?: string[];
   groups: GroupRec[];
 
   // group save/edit UI
@@ -29,6 +30,7 @@ export default function FiltersBar({
   setChain,
   channelOptions,
   countryOptions,
+  topicOptions,
   groups,
   groupName,
   setGroupName,
@@ -202,11 +204,11 @@ export default function FiltersBar({
                 </div>
                 <div className="row">
                   <label className="chip-inline">min
-                    <input className="chip-input" style={{ width: 70 }} type="number" min={0} value={ui.min ?? ''}
+                    <input className="chip-input" style={{ width: 36 }} type="number" min={0} value={ui.min ?? ''}
                       onChange={(ev)=> set('min', ev.target.value)} />
                   </label>
                   <label className="chip-inline">max
-                    <input className="chip-input" style={{ width: 70 }} type="number" min={0} value={ui.max ?? ''}
+                    <input className="chip-input" style={{ width: 36 }} type="number" min={0} value={ui.max ?? ''}
                       onChange={(ev)=> set('max', ev.target.value)} />
                   </label>
                   <select className="chip-input" style={{ width: 80 }} value={ui.unit || 'd'} onChange={(ev)=> set('unit', ev.target.value)}>
@@ -751,7 +753,19 @@ export default function FiltersBar({
         // ---- VIDEO: TOPICS ANY/ALL CHIPS ----
         if (f.kind === 'v_topics_any' || f.kind === 'v_topics_all') {
           const label = f.kind === 'v_topics_any' ? 'Topics (any of)' : 'Topics (all of)';
-          const key = f.kind;
+          const raw = ((f as any).itemsCsv || '') as string;
+          const normalize = (s: string) => (s || '').trim();
+          const selected = new Set<string>(raw.split(',').map(normalize).filter(Boolean));
+          const toggle = (name: string) => setChain(arr => arr.map((e,i)=> {
+            if (i !== idx || (e.pred.kind !== 'v_topics_any' && e.pred.kind !== 'v_topics_all')) return e;
+            const val = (e.pred as any).itemsCsv || '';
+            const parts = Array.from(new Set<string>(val.split(',').map((s: string)=> (s||'').trim()).filter(Boolean)));
+            const has = parts.includes(name);
+            const next = has ? parts.filter(x=>x!==name) : [...parts, name];
+            return { ...e, pred: { ...e.pred, itemsCsv: next.join(', ') } };
+          }));
+          const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='v_topics_any' || e.pred.kind==='v_topics_all') ? { ...e, pred: { ...e.pred, itemsCsv: '' } } : e));
+          const all = Array.isArray(topicOptions) ? topicOptions : [];
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -763,16 +777,22 @@ export default function FiltersBar({
                       <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
                       NOT
                     </label>
+                    <button className="btn-ghost" onClick={clearAll} title="Clear all">None</button>
                     <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
                   </span>
                 </div>
-                <input
-                  className="chip-input"
-                  type="text"
-                  placeholder="comma,separated,topics"
-                  value={(f as any).itemsCsv || ''}
-                  onChange={(ev) => setChain(arr => arr.map((row, i) => i === idx && (row.pred.kind === 'v_topics_any' || row.pred.kind === 'v_topics_all') ? { ...row, pred: { ...row.pred, itemsCsv: ev.target.value } } : row))}
-                />
+                {all.length > 0 ? (
+                  <div className="chip-list">
+                    {all.map(name => (
+                      <label key={name} className="chip-check">
+                        <input type="checkbox" checked={selected.has(name)} onChange={() => toggle(name)} />
+                        <span>{name}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">No topics yet. Refresh to compute.</div>
+                )}
               </div>
             </div>
           );
@@ -798,10 +818,10 @@ export default function FiltersBar({
                 </div>
                 <div className="row">
                   <label className="chip-inline">min
-                    <input className="chip-input" style={{ width: 70 }} type="number" min={0} value={ui.min ?? ''} onChange={(ev)=> set('min', ev.target.value)} />
+                    <input className="chip-input" style={{ width: 36 }} type="number" min={0} value={ui.min ?? ''} onChange={(ev)=> set('min', ev.target.value)} />
                   </label>
                   <label className="chip-inline">max
-                    <input className="chip-input" style={{ width: 70 }} type="number" min={0} value={ui.max ?? ''} onChange={(ev)=> set('max', ev.target.value)} />
+                    <input className="chip-input" style={{ width: 36 }} type="number" min={0} value={ui.max ?? ''} onChange={(ev)=> set('max', ev.target.value)} />
                   </label>
                   <select className="chip-input" style={{ width: 80 }} value={ui.unit || 'd'} onChange={(ev)=> set('unit', ev.target.value)}>
                     <option value="d">days</option>

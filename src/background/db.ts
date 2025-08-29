@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -43,6 +43,9 @@ export async function openDB(): Promise<IDBDatabase> {
         const c = db.createObjectStore('channels', { keyPath: 'id' });
         c.createIndex('byName', 'name', { unique: false });
         c.createIndex('byFetchedAt', 'fetchedAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('meta')) {
+        db.createObjectStore('meta', { keyPath: 'key' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -647,6 +650,51 @@ export async function recomputeVideoTagsForAllChannels() {
       c.continue();
     };
     cur.onerror = () => reject(cur.error);
+  });
+}
+
+// Aggregate distinct normalized videoTopics across all videos and persist to meta store
+export async function recomputeVideoTopicsMeta() {
+  const db = await openDB();
+  const set = new Set<string>();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const v: any = c.value;
+      const list: string[] = Array.isArray(v?.videoTopics) ? v.videoTopics : [];
+      for (const t of list) {
+        const s = (t || '').toString().trim();
+        if (s) set.add(s);
+      }
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+  const list = Array.from(set.values()).sort((a,b)=> a.localeCompare(b));
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('meta', 'readwrite');
+    const os = tx.objectStore('meta');
+    os.put({ key: 'videoTopics', list, updatedAt: Date.now() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function readVideoTopicsMeta(): Promise<string[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readonly');
+    const os = tx.objectStore('meta');
+    const g = os.get('videoTopics');
+    g.onsuccess = () => {
+      const row = g.result as any;
+      resolve(Array.isArray(row?.list) ? row.list as string[] : []);
+    };
+    g.onerror = () => reject(g.error);
   });
 }
 
