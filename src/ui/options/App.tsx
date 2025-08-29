@@ -1060,7 +1060,7 @@ const channelsFiltered = useMemo(() => {
 {/* The list itself */}
 {inChannels ? (
   <div style={{ padding: 16 }}>
-    {channelsFiltered.slice(start, start + pageSize).map(ch => (
+    {channelsPageItems.map(ch => (
       <>
       <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>
         <label className="select">
