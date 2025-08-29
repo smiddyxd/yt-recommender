@@ -1,5 +1,5 @@
 // src/ui/options/components/VideoList.tsx
-import React from 'react';
+import React, { useState } from 'react';
 import { fmtDate, secToClock, thumbUrl, watchUrl } from '../../lib/format';
 
 type Video = {
@@ -23,6 +23,14 @@ type Props = {
 };
 
 export default function VideoList({ items, layout, loading, selected, onToggle }: Props) {
+  const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
+  const toggleDebug = (id: string) => {
+    setOpenDebug(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
   return (
     <main id="list" aria-live="polite" data-layout={layout}>
       {items.map(v => {
@@ -60,6 +68,26 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                 {v.flags?.completed && <span className="badge">completed</span>}
                 {v.tags && v.tags.length > 0 && <span className="badge">{v.tags.join(', ')}</span>}
               </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button
+                  type="button"
+                  className="btn-ghost debug-btn"
+                  onClick={() => toggleDebug(v.id)}
+                  aria-expanded={openDebug.has(v.id)}
+                  title={openDebug.has(v.id) ? 'Hide stored data' : 'Show stored data'}
+                >
+                  {openDebug.has(v.id) ? 'Hide info' : 'Show info'}
+                </button>
+              </div>
+              {openDebug.has(v.id) && (
+                <div className="debug-panel" role="region" aria-label="Stored data">
+                  <div className="debug-panel-head">
+                    <span>Stored data</span>
+                    <button className="debug-close" onClick={() => toggleDebug(v.id)} title="Close">×</button>
+                  </div>
+                  <pre className="debug-pre">{JSON.stringify(v as any, null, 2)}</pre>
+                </div>
+              )}
             </div>
           </article>
         );
