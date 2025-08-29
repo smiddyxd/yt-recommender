@@ -4,9 +4,8 @@ export type Condition = Pred | { all: Condition[] } | { any: Condition[] } | { n
 export type Pred =
   | { kind: 'titleRegex'; pattern: string; flags?: string }
   | { kind: 'channelIdIn'; ids: string[] }
-  | { kind: 'channelNameRegex'; pattern: string; flags?: string }
   | { kind: 'durationRange'; minSec?: number; maxSec?: number }
-  | { kind: 'ageDays'; min?: number; max?: number }            // based on lastSeenAt
+  | { kind: 'ageDays'; min?: number; max?: number }            // based on uploadedAt
   | { kind: 'tagsAny';  tags: string[] }
   | { kind: 'tagsAll';  tags: string[] }
   | { kind: 'tagsNone'; tags: string[] }                        // has none of
@@ -21,7 +20,9 @@ export type VideoRow = {
   channelName?: string | null;
   durationSec?: number | null;
   uploadedAt?: number | null;
-  lastSeenAt?: number | null;
+  fetchedAt?: number | null; // when YouTube data was last fetched/applied
+  ytTags?: string[] | null; // YouTube native tags (fetched later)
+  yt?: any;                 // Raw YouTube videos.list payload (parts)
   tags?: string[] | null;
   flags?: { started?: boolean; completed?: boolean } | null;
   sources?: Array<{ type: string; id?: string | null }> | null;
@@ -60,11 +61,6 @@ export function matches(
       const id = (v.channelId ?? '').trim();
       return !!id && p.ids.includes(id);
     }
-    case 'channelNameRegex': {
-      const s = v.channelName ?? '';
-      const re = safeRe(p.pattern, p.flags);
-      return re ? re.test(s) : false;
-    }
     case 'durationRange': {
       const sec = v.durationSec;
       if (sec == null || !Number.isFinite(sec)) return false;
@@ -73,7 +69,7 @@ export function matches(
       return true;
     }
     case 'ageDays': {
-      const ts = v.lastSeenAt;
+      const ts = v.uploadedAt;
       if (!ts || !Number.isFinite(ts)) return false;
       const age = (Date.now() - ts) / 86400000; // ms per day
       if (p.min != null && age < p.min) return false;

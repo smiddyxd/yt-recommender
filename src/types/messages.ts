@@ -9,6 +9,7 @@ export type Msg =
   | { type: 'videos/delete';  payload: { ids: string[] } }
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
+  | { type: 'videos/wipeSources'; payload: {} }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
   | { type: 'tags/create';  payload: { name: string; color?: string } }
@@ -29,13 +30,7 @@ export type Msg =
 
 export interface VideoSeed {
   id: string;
-  title?: string | null;
-  channelName?: string | null;
-  channelId?: string | null;
-  durationSec?: number | null;
-  uploadedAt?: number | null;
-  uploadedText?: string | null;
-  sources: Array<{ type: 'playlist' | 'panel'; id?: string | null; index?: number | null; seenAt: number }>;
+  sources: Array<{ type: 'playlist' | 'panel'; id?: string | null }>;
 }
 
 export interface TagRec { name: string; color?: string; createdAt?: number }

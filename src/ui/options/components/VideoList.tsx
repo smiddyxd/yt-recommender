@@ -8,8 +8,7 @@ type Video = {
   channelName?: string | null;
   durationSec?: number | null;
   uploadedAt?: number | null;
-  uploadedText?: string | null;
-  lastSeenAt?: number;
+  channelId?: string | null;
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
 };
@@ -60,8 +59,8 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                 {[
                   v.channelName || '(unknown channel)',
                   secToClock(v.durationSec),
-                  v.uploadedAt ? fmtDate(v.uploadedAt) : (v.uploadedText || '')
-                ].filter(Boolean).join(' • ')}
+                  v.uploadedAt ? fmtDate(v.uploadedAt) : ''
+                ].filter(Boolean).join(' · ')}
               </div>
               <div className="badges">
                 {v.flags?.started && <span className="badge">started</span>}
@@ -83,7 +82,7 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                 <div className="debug-panel" role="region" aria-label="Stored data">
                   <div className="debug-panel-head">
                     <span>Stored data</span>
-                    <button className="debug-close" onClick={() => toggleDebug(v.id)} title="Close">×</button>
+                    <button className="debug-close" onClick={() => toggleDebug(v.id)} title="Close">A-</button>
                   </div>
                   <pre className="debug-pre">{JSON.stringify(v as any, null, 2)}</pre>
                 </div>

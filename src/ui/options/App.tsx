@@ -18,8 +18,8 @@ type Video = {
   channelName?: string | null;
   durationSec?: number | null;
   uploadedAt?: number | null;
-  uploadedText?: string | null;
-  lastSeenAt?: number;
+  fetchedAt?: number | null;
+  ytTags?: string[] | null; // from API
   deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
@@ -30,12 +30,9 @@ type Video = {
 async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
   const rows = await idbGetAll<Video>(store);
   dlog(`UI getAll(${store}) count=`, rows.length);
-  // Sort newest first by appropriate timestamp
-  rows.sort((a, b) => {
-    const ka = store === 'trash' ? (a.deletedAt || 0) : (a.lastSeenAt || 0);
-    const kb = store === 'trash' ? (b.deletedAt || 0) : (b.lastSeenAt || 0);
-    return kb - ka;
-  });
+  // Sort: trash by deletedAt desc; videos by uploadedAt desc
+  if (store === 'trash') rows.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  else rows.sort((a, b) => ((b.uploadedAt || b.fetchedAt || 0) - (a.uploadedAt || a.fetchedAt || 0)));
   return rows;
 }
 
@@ -267,11 +264,11 @@ const channelOptions = useMemo(() => {
   const map = new Map<string, string>();
   for (const v of videos) {
     if (v.channelId) {
-      if (!map.has(v.channelId)) map.set(v.channelId, v.channelName || v.channelId);
+      const name = (v.channelName && String(v.channelName)) || v.channelId;
+      if (!map.has(v.channelId)) map.set(v.channelId, name);
     }
   }
-  return Array.from(map, ([id, name]) => ({ id, name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
 }, [videos]);
 
 
@@ -315,7 +312,7 @@ const filtered = useMemo(() => {
   if (!needle) return base;
   return base.filter(v =>
     (v.title || '').toLowerCase().includes(needle) ||
-    (v.channelName || '').toLowerCase().includes(needle)
+    (v.channelName || v.channelId || '').toLowerCase().includes(needle)
   );
 }, [videos, chain, q, groups]);
 
@@ -460,6 +457,15 @@ const filtered = useMemo(() => {
             />
             <button id="refresh" onClick={refresh} disabled={loading}>
               {loading ? 'Loading…' : 'Refresh'}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              title="Remove duplicate source entries across all videos"
+              onClick={() => sendBg('videos/wipeSources', {}).then(() => refresh())}
+              disabled={loading}
+            >
+              Wipe sources
             </button>
           </div>
         </header>

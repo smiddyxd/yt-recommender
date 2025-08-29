@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -83,6 +83,10 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         const ids = raw.payload.ids || [];
         console.log('[bg] videos/restore', ids.length);
         await restoreFromTrash(ids);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/wipeSources') {
+        await wipeSourcesDuplicates();
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         sendResponse?.({ ok: true });
       }
