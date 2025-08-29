@@ -23,6 +23,13 @@ type Video = {
   deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
+  // Extended fields for filters
+  description?: string | null;
+  categoryId?: number | null;
+  languageCode?: 'en' | 'de' | 'other' | null;
+  visibility?: 'public' | 'unlisted' | 'private' | null;
+  isLive?: boolean | null;
+  videoTopics?: string[] | null;
 };
 
 
@@ -42,7 +49,13 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
     ytTags: Array.isArray(r.ytTags) ? r.ytTags : null,
     deletedAt: r.deletedAt,
     flags: r.flags,
-    tags: Array.isArray(r.tags) ? r.tags : []
+    tags: Array.isArray(r.tags) ? r.tags : [],
+    description: typeof r.description === 'string' ? r.description : null,
+    categoryId: Number.isFinite(r.categoryId) ? Number(r.categoryId) : null,
+    languageCode: (r.languageCode === 'en' || r.languageCode === 'de' || r.languageCode === 'other') ? r.languageCode : null,
+    visibility: (r.visibility === 'public' || r.visibility === 'unlisted' || r.visibility === 'private') ? r.visibility : null,
+    isLive: typeof r.isLive === 'boolean' ? r.isLive : null,
+    videoTopics: Array.isArray(r.videoTopics) ? r.videoTopics : null,
   }));
   // Sort: trash by deletedAt desc; videos by uploadedAt (or fetchedAt) desc
   if (store === 'trash') slim.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
@@ -85,6 +98,11 @@ export default function App() {
     fetchedAt?: number | null;
     thumbUrl?: string | null;
     subs?: number | null;
+    views?: number | null;
+    videos?: number | null;
+    country?: string | null;
+    publishedAt?: number | null;
+    subsHidden?: boolean | null;
     tags?: string[];
     videoTags?: string[];
     keywords?: string | null;
@@ -373,6 +391,15 @@ const groupsById = useMemo(() => {
   // AFTER: derive names from the registry we loaded via tags/list
   const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
 
+  const countryOptions = useMemo(() => {
+    const codes = new Set<string>();
+    for (const ch of channels) {
+      const c = (ch.country || '').toString().trim().toLowerCase();
+      if (c) codes.add(c);
+    }
+    return Array.from(codes.values()).sort((a,b)=> a.localeCompare(b));
+  }, [channels]);
+
   function toggleTag(tag: string) {
     if (inChannels) {
       const countCh = channels.filter(c => selected.has(c.id)).reduce((n, c) => (Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0);
@@ -519,7 +546,7 @@ const channelsFiltered = useMemo(() => {
     try {
       const apiKey = await ensureApiKey();
       if (!apiKey) return;
-      const SKIP_FETCHED = true; // flip to false to refetch everything
+      const SKIP_FETCHED = false; // flip to false to refetch everything
       await sendBg('videos/refreshAll', { skipFetched: SKIP_FETCHED });
 
       const now = Date.now();
@@ -750,11 +777,12 @@ const channelsFiltered = useMemo(() => {
               <span className="muted">No tags yet. Add tags in the sidebar.</span>
             )}
           </div>
-        )}
-           <FiltersBar
+           )}
+          <FiltersBar
   chain={chain}
   setChain={setChain}
   channelOptions={channelOptions}
+  countryOptions={countryOptions}
   groups={groups}
   groupName={groupName}
   setGroupName={setGroupName}

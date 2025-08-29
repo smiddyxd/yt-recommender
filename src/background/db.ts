@@ -417,6 +417,11 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
           tags: Array.isArray(r.tags) ? r.tags : [],
           videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
           subs: Number(r.subs) || null,
+          views: Number(r.views) || null,
+          videos: Number(r.videos) || null,
+          country: r.country || null,
+          publishedAt: ((): number | null => { try { const t = Date.parse(r.publishedAt || ''); return Number.isFinite(t) ? t : (Number.isFinite(r.publishedAt) ? r.publishedAt : null); } catch { return Number.isFinite(r.publishedAt) ? r.publishedAt : null; } })(),
+          subsHidden: r.subsHidden === true,
           keywords: r.keywords || null,
           topics: Array.isArray(r.topics) ? r.topics : []
         };

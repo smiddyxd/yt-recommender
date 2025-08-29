@@ -225,7 +225,7 @@ export function conditionToChainSimple(cond: any): FilterEntry[] | null {
       return { op: undefined, not, pred: { kind: 'group', ids: leaf.ids || [] } };
     }
     if (leaf.kind === 'ageDays') {
-      return { op: undefined, not, pred: { kind: 'age', min: leaf.min, max: leaf.max } } as any;
+      return { op: undefined, not, pred: { kind: 'age', ui: { min: leaf.min, max: leaf.max, unit: 'd' } } } as any;
     }
     return null; // other predicates not yet mapped back
   };
