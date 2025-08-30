@@ -124,6 +124,7 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [refreshApplied, setRefreshApplied] = useState<number>(0);
   const [refreshFailed, setRefreshFailed] = useState<number>(0);
   const [refreshLastError, setRefreshLastError] = useState<string | null>(null);
+  const [stubCount, setStubCount] = useState<number>(0);
   const [openChannelDebug, setOpenChannelDebug] = useState<Set<string>>(new Set());
   const [channelFull, setChannelFull] = useState<Record<string, any>>({});
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
@@ -673,6 +674,13 @@ const channelsFiltered = useMemo(() => {
     }
   }
 
+  async function refreshStubCount() {
+    try {
+      const resp: any = await sendBg('videos/stubsCount', {});
+      if (resp?.ok && Number.isFinite(resp?.count)) setStubCount(resp.count | 0);
+    } catch {}
+  }
+
   // ---- One-time import: tags => channelIds[] ----
   function normTag(s: string): string {
     return (s || '').toString().trim();
@@ -761,6 +769,13 @@ const channelsFiltered = useMemo(() => {
       return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     } catch { return ''; }
   }
+
+  useEffect(() => {
+    refreshStubCount();
+    const h = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'videos') refreshStubCount(); };
+    chrome.runtime.onMessage.addListener(h);
+    return () => chrome.runtime.onMessage.removeListener(h);
+  }, []);
 
   function applyTagToSelection(tag: string) {
     if (inChannels) {
@@ -927,6 +942,9 @@ const channelsFiltered = useMemo(() => {
             >
               {refreshing ? 'Refreshing…' : 'Refresh data'}
             </button>
+            {!refreshing && (
+              <span className="muted" title="Videos without API data">{stubCount} stubs</span>
+            )}
             <button
               type="button"
               className="btn-ghost"

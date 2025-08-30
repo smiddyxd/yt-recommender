@@ -575,27 +575,34 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
   const statistics = ch?.statistics || {};
   const branding = ch?.brandingSettings || {};
   const topics = Array.isArray((ch?.topicDetails || {}).topicCategories) ? (ch.topicDetails.topicCategories as any[]) : [];
-  const rec = {
-    id,
-    name: snippet.title || id,
-    customUrl: snippet.customUrl || null,
-    thumbnails: snippet.thumbnails || null,
-    country: snippet.country || branding?.channel?.country || null,
-    publishedAt: ((): number | null => { try { const t = Date.parse(snippet.publishedAt || ''); return Number.isFinite(t) ? t : null; } catch { return null; } })(),
-    subs: Number(statistics?.subscriberCount) || null,
-    videos: Number(statistics?.videoCount) || null,
-    views: Number(statistics?.viewCount) || null,
-    keywords: (branding?.channel?.keywords as string) || null,
-    topics: topics as string[],
-    subsHidden: statistics?.hiddenSubscriberCount === true,
-    fetchedAt: Date.now(),
-    yt: ch,
-    tags: [],
-    videoTags: []
-  } as any;
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('channels', 'readwrite');
-    tx.objectStore('channels').put(rec);
+    const os = tx.objectStore('channels');
+    const g = os.get(id);
+    g.onsuccess = () => {
+      const prev = (g.result as any) || { id };
+      // Start from previous to preserve local fields like tags, videoTags, and scraped* metadata
+      const next: any = { ...prev };
+      next.name = snippet.title || prev.name || id;
+      next.customUrl = snippet.customUrl || prev.customUrl || null;
+      next.thumbnails = snippet.thumbnails || prev.thumbnails || null;
+      next.country = snippet.country || (branding?.channel?.country) || prev.country || null;
+      try {
+        const t = Date.parse(snippet.publishedAt || '');
+        next.publishedAt = Number.isFinite(t) ? t : (prev.publishedAt ?? null);
+      } catch { next.publishedAt = prev.publishedAt ?? null; }
+      next.subs = Number(statistics?.subscriberCount) || null;
+      next.videos = Number(statistics?.videoCount) || null;
+      next.views = Number(statistics?.viewCount) || null;
+      next.keywords = (branding?.channel?.keywords as string) || prev.keywords || null;
+      next.topics = topics as string[];
+      next.subsHidden = statistics?.hiddenSubscriberCount === true;
+      next.fetchedAt = Date.now();
+      next.yt = ch;
+      // DO NOT touch next.tags or next.videoTags here; they are local/derived
+      os.put(next);
+    };
+    g.onerror = () => reject(g.error);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -760,6 +767,40 @@ export async function recomputeVideoTagsForChannels(chanIds: string[]) {
         });
       }
     })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Set scrapedAt and optional scrapedVideoCount on a channel record
+export async function markChannelScraped(id: string, at: number, opts?: { tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null }) {
+  const chId = (id || '').trim();
+  if (!chId) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    const g = os.get(chId);
+    g.onsuccess = () => {
+      const row = g.result || { id: chId };
+      // Global last-scraped timestamp (any tab)
+      (row as any).scrapedAt = at;
+      if (opts && 'totalVideoCountOnScrapeTime' in opts) {
+        (row as any).totalVideoCountOnScrapeTime = opts?.totalVideoCountOnScrapeTime ?? null;
+      }
+      if (opts?.tab && typeof opts?.count === 'number') {
+        const n = Math.max(0, Math.floor(opts.count));
+        if (opts.tab === 'videos') (row as any).scrapedVideoCount = n;
+        else if (opts.tab === 'shorts') (row as any).scrapedShortsCount = n;
+        else if (opts.tab === 'live') (row as any).scrapedLivestreamCount = n;
+        // Per-tab scrapedAt fields
+        if (opts.tab === 'videos') (row as any).scrapedAtVideos = at;
+        else if (opts.tab === 'shorts') (row as any).scrapedAtShorts = at;
+        else if (opts.tab === 'live') (row as any).scrapedAtLivestreams = at;
+      }
+      os.put(row);
+    };
+    g.onerror = () => reject(g.error);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

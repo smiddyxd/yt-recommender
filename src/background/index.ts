@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -22,6 +22,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       if (raw.type === 'cache/VIDEO_SEEN') {
         await upsertVideo(raw.payload);
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'cache/VIDEO_STUB') {
+        await upsertVideo(raw.payload);
+        sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_PROGRESS') {
         const { id, current, duration, started, completed } = raw.payload;
         await upsertVideo({
@@ -30,6 +33,15 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           flags: { started: !!started, completed: !!completed }
         });
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'cache/VIDEO_PROGRESS_PCT') {
+        const { id, pct, started, completed } = raw.payload || {};
+        const pctNum = Number(pct);
+        if (id && Number.isFinite(pctNum)) {
+          await upsertVideo({ id, progress: { pct: Math.max(0, Math.min(100, pctNum)) }, flags: { started: !!started, completed: !!completed } });
+          sendResponse?.({ ok: true });
+        } else {
+          sendResponse?.({ ok: false });
+        }
       } else if (raw.type === 'groups/list') {
         const items = await listGroups();
         sendResponse?.({ ok: true, items });
@@ -148,6 +160,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         await applyChannelTags(ids || [], addIds, removeIds);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'channels/markScraped') {
+        const { id, at, tab, count, totalVideoCountOnScrapeTime } = raw.payload || {};
+        if (!id || !at) { sendResponse?.({ ok: false }); return; }
+        try {
+          await markChannelScraped(id, Number(at), { tab, count, totalVideoCountOnScrapeTime });
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];
         dlog('videos/delete count=', ids.length);
@@ -239,6 +261,27 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         chrome.runtime.sendMessage({ type: 'refresh/done', payload: { processed, total, applied, failedBatches, at: Date.now() } });
         sendResponse?.({ ok: true, processed, total, applied, failedBatches });
+      } else if (raw.type === 'videos/stubsCount') {
+        try {
+          const db = await openDB();
+          const tx = db.transaction('videos', 'readonly');
+          const os = tx.objectStore('videos');
+          const cur = os.openCursor();
+          let count = 0;
+          await new Promise<void>((resolve, reject) => {
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(); return; }
+              const row: any = c.value;
+              if (!Number.isFinite(row?.fetchedAt)) count += 1;
+              c.continue();
+            };
+            cur.onerror = () => reject(cur.error);
+          });
+          sendResponse?.({ ok: true, count });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e), count: 0 });
+        }
       }
     } catch (e: any) {
       derr('bg handler error:', e?.message || e);

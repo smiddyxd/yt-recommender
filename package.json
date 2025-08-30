@@ -7,12 +7,15 @@
     "build:bg": "esbuild src/background/index.ts --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/background",
     "build:cs": "esbuild src/content/index.ts   --bundle --format=iife --platform=browser --target=es2022 --outdir=dist/content",
     "build:opt": "esbuild src/ui/options/index.tsx --jsx=automatic --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/ui/options",
+    "build:pop": "esbuild src/ui/popup/index.tsx   --jsx=automatic --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/ui/popup",
     "copy:manifest": "node -e \"require('fs').cpSync('manifest.json','dist/manifest.json')\"",
     "copy:opt": "node -e \"const fs=require('fs'); fs.mkdirSync('dist/ui/options',{recursive:true}); fs.cpSync('src/ui/options/index.html','dist/ui/options/index.html'); fs.cpSync('src/ui/options/styles.css','dist/ui/options/styles.css');\"",
-    "build": "npm run clean && npm run build:bg && npm run build:cs && npm run build:opt && npm run copy:manifest && npm run copy:opt",
+    "copy:pop": "node -e \"const fs=require('fs'); fs.mkdirSync('dist/ui/popup',{recursive:true}); fs.cpSync('src/ui/popup/index.html','dist/ui/popup/index.html'); fs.existsSync('src/ui/popup/styles.css') && fs.cpSync('src/ui/popup/styles.css','dist/ui/popup/styles.css');\"",
+    "build": "npm run clean && npm run build:bg && npm run build:cs && npm run build:opt && npm run build:pop && npm run copy:manifest && npm run copy:opt && npm run copy:pop",
     "watch:bg": "esbuild src/background/index.ts --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/background --watch",
     "watch:cs": "esbuild src/content/index.ts    --bundle --format=iife --platform=browser --target=es2022 --outdir=dist/content --watch",
-    "watch:opt": "esbuild src/ui/options/index.tsx --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/ui/options --watch"
+    "watch:opt": "esbuild src/ui/options/index.tsx --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/ui/options --watch",
+    "watch:pop": "esbuild src/ui/popup/index.tsx   --bundle --format=esm  --platform=browser --target=es2022 --outdir=dist/ui/popup --watch"
   },
   "keywords": [],
   "author": "",
