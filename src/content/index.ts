@@ -2,6 +2,7 @@ import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture
 import { onNavigate } from './yt-navigation';
 import { parseVideoIdFromHref } from '../types/util';
 import { scrapeWatchStub } from './yt-watch-stub';
+import { startWatchProgressTracking, stopWatchProgressTracking } from './yt-watch-progress';
 
 // Only act when background asks us to scrape
 chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
@@ -48,10 +49,16 @@ try {
 // On YT SPA navigation, auto-capture watch stubs if enabled
 try {
   onNavigate(() => {
-    if (!autoStubOnWatch) return;
     const ctx = detectPageContext();
+    // Always track progress on watch pages
     if (ctx.page === 'watch') {
-      try { void scrapeWatchStub(); } catch {}
+      try { void startWatchProgressTracking(); } catch {}
+      if (autoStubOnWatch) {
+        try { void scrapeWatchStub(); } catch {}
+      }
+    } else {
+      // Stop tracker when leaving watch pages
+      try { stopWatchProgressTracking(); } catch {}
     }
   });
 } catch {}

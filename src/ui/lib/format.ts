@@ -12,5 +12,10 @@ export function fmtDate(ts?: number) {
   return new Date(ts).toLocaleString();
 }
 export const thumbUrl = (id: string) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
-export const watchUrl = (id: string) => `https://www.youtube.com/watch?v=${id}`;
+export const watchUrl = (id: string, t?: number) => {
+  const base = `https://www.youtube.com/watch?v=${id}`;
+  const sec = Number(t);
+  if (Number.isFinite(sec) && sec > 0) return `${base}&t=${Math.floor(sec)}`;
+  return base;
+};
 export const hmsToSec = (h=0,m=0,s=0) => (Math.max(0, h|0)*3600) + (Math.max(0, m|0)*60) + Math.max(0, s|0);

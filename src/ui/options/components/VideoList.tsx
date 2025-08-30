@@ -12,6 +12,7 @@ type Video = {
   channelId?: string | null;
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
+  progressSec?: number | null;
 };
 
 type Props = {
@@ -60,9 +61,17 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
             />
             <div>
               <h3 className="title">
-                <a href={watchUrl(v.id)} target="_blank" rel="noopener noreferrer">
-                  {v.title || '(no title)'}
-                </a>
+                {(() => {
+                  const t = (typeof v.progressSec === 'number' && v.progressSec > 0)
+                    ? v.progressSec
+                    : (v.flags?.started ? 1 : undefined);
+                  const href = watchUrl(v.id, t);
+                  return (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {v.title || '(no title)'}
+                    </a>
+                  );
+                })()}
               </h3>
               <div className="meta">
                 {[

@@ -24,6 +24,7 @@ type Video = {
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
   sources?: Array<{ type: string; id?: string | null }> | null;
+  progressSec?: number | null;
   // Extended fields for filters
   description?: string | null;
   categoryId?: number | null;
@@ -52,6 +53,19 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
     flags: r.flags,
     tags: Array.isArray(r.tags) ? r.tags : [],
     sources: Array.isArray(r.sources) ? r.sources.map((s:any)=> ({ type: String(s?.type || ''), id: (s?.id ?? null) })) : null,
+    progressSec: (() => {
+      try {
+        const ps = Number(r?.progress?.sec);
+        if (Number.isFinite(ps) && ps > 0) return Math.floor(ps);
+        const pct = Number(r?.progress?.pct);
+        const dur = Number(r?.progress?.duration ?? r?.durationSec);
+        if (Number.isFinite(pct) && Number.isFinite(dur) && dur > 0) {
+          const clamped = Math.max(0, Math.min(100, pct));
+          return Math.floor((clamped / 100) * dur);
+        }
+      } catch {}
+      return null;
+    })(),
     description: typeof r.description === 'string' ? r.description : null,
     categoryId: Number.isFinite(r.categoryId) ? Number(r.categoryId) : null,
     languageCode: (r.languageCode === 'en' || r.languageCode === 'de' || r.languageCode === 'other') ? r.languageCode : null,
