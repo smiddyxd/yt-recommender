@@ -624,7 +624,8 @@ const channelsFiltered = useMemo(() => {
     return applySort(channelsFiltered, channelSorts, 'channels');
   }, [channelsFiltered, channelSorts]);
 
-  const total = inChannels ? sortedChannels.length : sortedVideos.length;
+  const inChannelLike = inChannels || inChannelsTrash;
+  const total = inChannelLike ? sortedChannels.length : sortedVideos.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   // keep page in range when filter or page size changes
@@ -880,7 +881,7 @@ const channelsFiltered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Select page (visible)"
-                onClick={() => selectAllVisible(inChannels ? channelsPageItems.map(ch => ch.id) : pageItems.map(v => v.id))}
+                onClick={() => selectAllVisible(inChannelLike ? channelsPageItems.map(ch => ch.id) : pageItems.map(v => v.id))}
               >
                 Select page
               </button>
@@ -889,7 +890,7 @@ const channelsFiltered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Select all (matching filter)"
-                onClick={() => selectAllMatching(inChannels ? channelsFiltered.map(ch => ch.id) : filtered.map(v => v.id))}
+                onClick={() => selectAllMatching(inChannelLike ? channelsFiltered.map(ch => ch.id) : filtered.map(v => v.id))}
               >
                 Select all (matching)
               </button>
@@ -1059,10 +1060,10 @@ const channelsFiltered = useMemo(() => {
   {/* Sorts row */}
   <div className="sorts" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
     <label style={{ marginRight: 4 }}>Sort by:</label>
-    {(inChannels ? channelSorts : videoSorts).map((s, i) => (
+    {(inChannelLike ? channelSorts : videoSorts).map((s, i) => (
       <span key={i} className="badge" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-        <select className="chip-input" value={s.field} onChange={(e)=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, field: e.target.value } : x))}>
-          {inChannels ? (
+        <select className="chip-input" value={s.field} onChange={(e)=> (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, field: e.target.value } : x))}>
+          {inChannelLike ? (
             <>
               <option value="name">Name</option>
               <option value="subs">Subscribers</option>
@@ -1079,16 +1080,16 @@ const channelsFiltered = useMemo(() => {
             </>
           )}
         </select>
-        <select className="chip-input" value={s.dir} onChange={(e)=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, dir: e.target.value as 'asc'|'desc' } : x))}>
+        <select className="chip-input" value={s.dir} onChange={(e)=> (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x,idx)=> idx===i ? { ...x, dir: e.target.value as 'asc'|'desc' } : x))}>
           <option value="asc">asc</option>
           <option value="desc">desc</option>
         </select>
-        <button className="chip-remove" onClick={()=> (inChannels ? setChannelSorts : setVideoSorts)(arr => arr.filter((_,idx)=> idx!==i))} title="Remove">A-</button>
+        <button className="chip-remove" onClick={()=> (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.filter((_,idx)=> idx!==i))} title="Remove">A-</button>
       </span>
     ))}
-    <select className="add-filter" value="" onChange={(e)=>{ const v=e.target.value as string; if(!v) return; (inChannels ? setChannelSorts : setVideoSorts)(arr => [...arr, { field: v, dir: 'desc' }]); (e.target as HTMLSelectElement).value=''; }}>
+    <select className="add-filter" value="" onChange={(e)=>{ const v=e.target.value as string; if(!v) return; (inChannelLike ? setChannelSorts : setVideoSorts)(arr => [...arr, { field: v, dir: 'desc' }]); (e.target as HTMLSelectElement).value=''; }}>
       <option value="">+ Add sort...</option>
-      {inChannels ? (
+      {inChannelLike ? (
         <>
           <option value="name">Name</option>
           <option value="subs">Subscribers</option>
@@ -1146,7 +1147,7 @@ const channelsFiltered = useMemo(() => {
 </div>
 
 {/* The list itself */}
-{inChannels ? (
+{inChannelLike ? (
   <div style={{ padding: 16 }}>
     {channelsPageItems.map(ch => (
       <>
