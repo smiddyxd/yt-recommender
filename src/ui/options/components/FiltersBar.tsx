@@ -5,6 +5,7 @@ import type { FilterEntry, FilterNode, DurationUI } from '../lib/filters';
 import { VIDEO_CATEGORIES } from '../lib/videoCategories';
 export type ChannelOption = { id: string; name: string };
 type TagOption = { name: string; count: number };
+type SourceOption = { type: string; id: string | null; count: number };
 
 type Props = {
   // chain editor state
@@ -15,6 +16,7 @@ type Props = {
   channelOptions: ChannelOption[];
   countryOptions?: string[];
   topicOptions?: string[];
+  videoSourceOptions?: SourceOption[];
   videoTagOptions?: TagOption[];
   channelTagOptions?: TagOption[];
   groups: GroupRec[];
@@ -34,6 +36,7 @@ export default function FiltersBar({
   channelOptions,
   countryOptions,
   topicOptions,
+  videoSourceOptions,
   videoTagOptions,
   channelTagOptions,
   groups,
@@ -57,6 +60,7 @@ export default function FiltersBar({
       kind === 'v_desc'        ? { kind: 'v_desc', pattern: '', flags: 'i' } as any :
       kind === 'v_topics_any'  ? { kind: 'v_topics_any', itemsCsv: '' } as any :
       kind === 'v_topics_all'  ? { kind: 'v_topics_all', itemsCsv: '' } as any :
+      kind === 'v_sources_any' ? { kind: 'v_sources_any', itemsCsv: '' } as any :
       kind === 'v_flag'        ? { kind: 'v_flag', name: 'started', value: true } as any :
       kind === 'v_tags_any'    ? { kind: 'v_tags_any', tagsCsv: '' } as any :
       kind === 'v_tags_all'    ? { kind: 'v_tags_all', tagsCsv: '' } as any :
@@ -181,6 +185,56 @@ export default function FiltersBar({
                   <span>:</span>
                   <input className="chip-input small" type="number" min={0} value={ui.maxS} onChange={(e) => set('maxS', Number(e.target.value))} aria-label="Max seconds" />
                 </div>
+              </div>
+            </div>
+          );
+        }
+
+        // ---- VIDEO: SOURCES ANY CHIP ----
+        if (f.kind === 'v_sources_any') {
+          const label = 'Sources';
+          const raw = ((f as any).itemsCsv || '') as string;
+          const normalize = (s: string) => (s || '').trim();
+          const selected = new Set<string>(raw.split(',').map(normalize).filter(Boolean));
+          const tokenOf = (type: string, id: string | null) => `${type}:${id == null ? 'null' : String(id)}`;
+          const toggle = (type: string, id: string | null) => setChain(arr => arr.map((e,i)=> {
+            if (i !== idx || e.pred.kind !== 'v_sources_any') return e;
+            const val = (e.pred as any).itemsCsv || '';
+            const parts = Array.from(new Set<string>(val.split(',').map((s: string)=> (s||'').trim()).filter(Boolean)));
+            const tok = tokenOf(type, id);
+            const has = parts.includes(tok);
+            const next = has ? parts.filter(x=>x!==tok) : [...parts, tok];
+            return { ...e, pred: { ...e.pred, itemsCsv: next.join(', ') } };
+          }));
+          const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && e.pred.kind==='v_sources_any' ? { ...e, pred: { ...e.pred, itemsCsv: '' } } : e));
+          const all = Array.isArray(videoSourceOptions) ? videoSourceOptions : [];
+          return (
+            <div className="filter-chip-row" key={idx}>
+              {OpToggle}
+              <div className="filter-chip">
+                <div className="chip-head">
+                  <span>{label}</span>
+                  <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                    <label className="chip-not">
+                      <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
+                      NOT
+                    </label>
+                    <button className="btn-ghost" onClick={clearAll} title="Clear all">None</button>
+                    <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
+                  </span>
+                </div>
+                {all.length > 0 ? (
+                  <div className="chip-list">
+                    {all.map(opt => (
+                      <label key={`${opt.type}:${opt.id == null ? 'null' : String(opt.id)}`} className="chip-check">
+                        <input type="checkbox" checked={selected.has(tokenOf(opt.type, opt.id))} onChange={() => toggle(opt.type, opt.id)} />
+                        <span>{opt.type} {opt.id == null ? 'null' : String(opt.id)}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="muted">No sources yet.</div>
+                )}
               </div>
             </div>
           );
@@ -932,6 +986,7 @@ export default function FiltersBar({
           <option value="v_livestream">Livestream</option>
           <option value="v_language">Language</option>
           <option value="v_visibility">Visibility</option>
+          <option value="v_sources_any">Sources</option>
           <option value="v_tags_any">Tags (any)</option>
           <option value="v_tags_all">Tags (all)</option>
           <option value="v_tags_none">Tags (none)</option>

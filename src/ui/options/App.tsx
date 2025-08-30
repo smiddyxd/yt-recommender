@@ -23,6 +23,7 @@ type Video = {
   deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
   tags?: string[];
+  sources?: Array<{ type: string; id?: string | null }> | null;
   // Extended fields for filters
   description?: string | null;
   categoryId?: number | null;
@@ -50,6 +51,7 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
     deletedAt: r.deletedAt,
     flags: r.flags,
     tags: Array.isArray(r.tags) ? r.tags : [],
+    sources: Array.isArray(r.sources) ? r.sources.map((s:any)=> ({ type: String(s?.type || ''), id: (s?.id ?? null) })) : null,
     description: typeof r.description === 'string' ? r.description : null,
     categoryId: Number.isFinite(r.categoryId) ? Number(r.categoryId) : null,
     languageCode: (r.languageCode === 'en' || r.languageCode === 'de' || r.languageCode === 'other') ? r.languageCode : null,
@@ -127,6 +129,36 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
+  const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
+    // Build condition without source predicates so list reflects other filters
+    const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
+    const cond = chainToCondition(pruned);
+    let base = videos;
+    if (cond) {
+      base = base.filter(v => matches(v as any, cond, {
+        resolveGroup: (id) => groups.find(g => g.id === id),
+        resolveChannel: (id) => channels.find(c => c.id === id) as any
+      }));
+    }
+    const needle = q.trim().toLowerCase();
+    if (needle) {
+      base = base.filter(v => (v.title || '').toLowerCase().includes(needle) || (v.channelName || v.channelId || '').toLowerCase().includes(needle));
+    }
+    const counts = new Map<string, { type: string; id: string | null; count: number }>();
+    for (const v of base) {
+      const list = Array.isArray(v.sources) ? v.sources : [];
+      for (const s of list) {
+        const type = String(s?.type || '');
+        const id = (s?.id ?? null) as string | null;
+        if (!type) continue;
+        const key = `${type}:${id == null ? 'null' : String(id)}`;
+        const prev = counts.get(key);
+        if (prev) prev.count++;
+        else counts.set(key, { type, id, count: 1 });
+      }
+    }
+    return Array.from(counts.values()).sort((a,b)=> a.type === b.type ? String(a.id||'').localeCompare(String(b.id||'')) : a.type.localeCompare(b.type));
+  }, [videos, chain, q, groups, channels]);
   // One-time import state
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
@@ -955,6 +987,7 @@ const channelsFiltered = useMemo(() => {
   setChain={setChain}
   channelOptions={channelOptions}
   videoTagOptions={videoTagOptions}
+  videoSourceOptions={videoSourcesOptionsMemo}
   channelTagOptions={channelTagOptions}
   topicOptions={topicOptions}
   countryOptions={countryOptions}
@@ -1066,9 +1099,24 @@ const channelsFiltered = useMemo(() => {
         <label className="select">
           <input type="checkbox" checked={selected.has(ch.id)} onChange={() => toggleSelect(ch.id)} aria-label="Select channel" />
         </label>
-        <img src={ch.thumbUrl || ''} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222' }} />
+        <img
+          src={ch.thumbUrl || ''}
+          alt="avatar"
+          style={{ width: 40, height: 40, borderRadius: '50%', background: '#222', cursor: 'pointer' }}
+          onClick={() => toggleSelect(ch.id)}
+          title={selected.has(ch.id) ? 'Deselect' : 'Select'}
+        />
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <strong>{ch.name || ch.id}</strong>
+          <strong>
+            <a
+              href={`https://www.youtube.com/channel/${ch.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open channel on YouTube"
+            >
+              {ch.name || ch.id}
+            </a>
+          </strong>
           <span className="muted" style={{ fontSize: 12 }}>{ch.subs ? `${ch.subs.toLocaleString()} subscribers` : ''}</span>
           {Array.isArray((ch as any).tags) && (ch as any).tags.length > 0 && (
             <span className="badge">{(ch as any).tags.join(', ')}</span>

@@ -18,6 +18,7 @@ export type Pred =
   | { kind: 'tagsAll';  tags: string[] }
   | { kind: 'tagsNone'; tags: string[] }                        // has none of
   | { kind: 'flag'; name: 'started' | 'completed'; value: boolean }
+  | { kind: 'sourceAny'; items: Array<{ type: string; id?: string | null }> }
   | { kind: 'sourcePlaylistAny'; ids: string[] }
   | { kind: 'groupRef'; ids: string[] }                         // video matches ANY of these groups
   // Channel-specific predicates (used on videos via resolveChannel; and directly on channels via matchesChannel)
@@ -220,6 +221,13 @@ export function matches(
       const val = (f as any)[p.name] === true;
       return p.value ? val : !val;
     }
+    case 'sourceAny': {
+      const src = Array.isArray(v.sources) ? v.sources : [];
+      if (!src.length) return false;
+      const items = Array.isArray(p.items) ? p.items : [];
+      if (!items.length) return false;
+      return src.some(s => items.some(it => (s?.type || '') === (it?.type || '') && ((s?.id ?? null) === (it?.id ?? null))));
+    }
     case 'sourcePlaylistAny': {
       const src = v.sources ?? [];
       const set = new Set(p.ids);
@@ -257,7 +265,7 @@ export function matchesChannel(
     p.kind === 'descriptionRegex' || p.kind === 'categoryIn' || p.kind === 'isLive' ||
     p.kind === 'languageCodeIn' || p.kind === 'visibilityIn' || p.kind === 'topicAny' ||
     p.kind === 'topicAll' || p.kind === 'tagsAny' || p.kind === 'tagsAll' || p.kind === 'tagsNone' ||
-    p.kind === 'flag' || p.kind === 'sourcePlaylistAny' || p.kind === 'groupRef'
+    p.kind === 'flag' || p.kind === 'sourceAny' || p.kind === 'sourcePlaylistAny' || p.kind === 'groupRef'
   );
   if (isVideoPred) {
     const vids = ctx.videos.filter(v => (v.channelId || '') === ch.id);

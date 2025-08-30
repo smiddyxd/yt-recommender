@@ -22,6 +22,7 @@ export type FilterNode =
   | { kind: 'v_visibility'; values: Array<'public'|'unlisted'|'private'> }
   | { kind: 'v_topics_any'; itemsCsv: string }
   | { kind: 'v_topics_all'; itemsCsv: string }
+  | { kind: 'v_sources_any'; itemsCsv: string }
   // Channel filters
   | { kind: 'c_subs'; min?: number; max?: number }
   | { kind: 'c_views'; min?: number; max?: number }
@@ -151,6 +152,22 @@ export function entryToCondition(e: FilterEntry): Condition | null {
     const node: Condition = { kind: 'topicAll', topics: items } as any;
     return e.not ? ({ not: node } as any) : node;
   }
+  if (f.kind === 'v_sources_any') {
+    const items = csv(f.itemsCsv)
+      .map(tok => {
+        const i = tok.indexOf(':');
+        if (i < 0) return null;
+        const type = tok.slice(0, i).trim();
+        const idRaw = tok.slice(i + 1).trim();
+        if (!type) return null;
+        const id = idRaw === 'null' ? null : (idRaw || '');
+        return { type, id } as any;
+      })
+      .filter(Boolean) as Array<{ type: string; id?: string | null }>;
+    if (!items.length) return null;
+    const node: Condition = { kind: 'sourceAny', items } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
   // Channel filters
   if (f.kind === 'c_subs') {
     const node: Condition = { kind: 'channelSubsRange', ...(Number.isFinite(f.min!) ? { min: Math.floor(f.min!) } : {}), ...(Number.isFinite(f.max!) ? { max: Math.floor(f.max!) } : {}) } as any;
@@ -248,6 +265,16 @@ export function conditionToChainSimple(cond: any): FilterEntry[] | null {
     }
     if (leaf.kind === 'ageDays') {
       return { op: undefined, not, pred: { kind: 'age', ui: { min: leaf.min, max: leaf.max, unit: 'd' } } } as any;
+    }
+    if (leaf.kind === 'sourceAny') {
+      const items: Array<{ type: string; id?: string | null }> = Array.isArray(leaf.items) ? leaf.items : [];
+      const csvStr = items.map(it => `${it.type}:${it.id == null ? 'null' : String(it.id)}`).join(', ');
+      return { op: undefined, not, pred: { kind: 'v_sources_any', itemsCsv: csvStr } as any };
+    }
+    if (leaf.kind === 'sourcePlaylistAny') {
+      const ids: string[] = Array.isArray(leaf.ids) ? leaf.ids : [];
+      const csvStr = ids.map(id => `playlist:${id}`).join(', ');
+      return { op: undefined, not, pred: { kind: 'v_sources_any', itemsCsv: csvStr } as any };
     }
     return null; // other predicates not yet mapped back
   };
