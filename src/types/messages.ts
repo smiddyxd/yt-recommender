@@ -5,7 +5,7 @@ export type Msg =
   | { type: 'cache/VIDEO_SEEN'; payload: VideoSeed }
   | { type: 'cache/VIDEO_PROGRESS'; payload: { id: string; current: number; duration: number; started?: boolean; completed?: boolean } }
   | { type: 'cache/VIDEO_PROGRESS_PCT'; payload: { id: string; pct: number; started?: boolean; completed?: boolean } }
-  | { type: 'cache/VIDEO_STUB'; payload: { id: string; title?: string | null; channelName?: string | null; channelId?: string | null; sources?: Array<{ type: 'playlist' | 'panel'; id?: string | null }> } }
+  | { type: 'cache/VIDEO_STUB'; payload: { id: string; title?: string | null; channelName?: string | null; channelId?: string | null; sources?: VideoSeed['sources'] } }
   | { type: 'scrape/NOW'; payload: {} }
   | { type: 'page/GET_CONTEXT'; payload: {} }
   | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' } } // optional push event
@@ -17,10 +17,14 @@ export type Msg =
   | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
   | { type: 'videos/stubsCount'; payload: {} }
   | { type: 'channels/list'; payload: {} }
+  | { type: 'channels/trashList'; payload: {} }
   | { type: 'channels/refreshUnfetched'; payload: {} }
   | { type: 'channels/refreshByIds'; payload: { ids: string[] } }
   | { type: 'channels/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   | { type: 'channels/markScraped'; payload: { id: string; at: number; tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null } }
+  | { type: 'channels/delete'; payload: { ids: string[] } }
+  | { type: 'channels/restore'; payload: { ids: string[] } }
+  | { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
   | { type: 'tags/create';  payload: { name: string; color?: string } }
@@ -43,7 +47,20 @@ export type Msg =
 
 export interface VideoSeed {
   id: string;
-  sources: Array<{ type: 'playlist' | 'panel'; id?: string | null }>;
+  sources: Array<{
+    type:
+      | 'playlist'
+      | 'panel'
+      | 'WatchPage'
+      | 'ChannelVideosTab'
+      | 'ChannelShortsTab'
+      | 'ChannelLivestreamsTab';
+    id?: string | null;
+  }>;
 }
+
+// Background message for creating/updating a minimal channel stub
+// Used by watch-page stub capture to ensure the channel exists in DB.
+export type ChannelUpsertStubMsg = { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } };
 
 export interface TagRec { name: string; color?: string; createdAt?: number }

@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -21,9 +21,11 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
     try {
       if (raw.type === 'cache/VIDEO_SEEN') {
         await upsertVideo(raw.payload);
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_STUB') {
         await upsertVideo(raw.payload);
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_PROGRESS') {
         const { id, current, duration, started, completed } = raw.payload;
@@ -32,12 +34,14 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           progress: { sec: current, duration },
           flags: { started: !!started, completed: !!completed }
         });
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_PROGRESS_PCT') {
         const { id, pct, started, completed } = raw.payload || {};
         const pctNum = Number(pct);
         if (id && Number.isFinite(pctNum)) {
           await upsertVideo({ id, progress: { pct: Math.max(0, Math.min(100, pctNum)) }, flags: { started: !!started, completed: !!completed } });
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
           sendResponse?.({ ok: true });
         } else {
           sendResponse?.({ ok: false });
@@ -47,6 +51,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         sendResponse?.({ ok: true, items });
       } else if (raw.type === 'channels/list') {
         const items = await listChannels();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'channels/trashList') {
+        const items = await listChannelsTrash();
         sendResponse?.({ ok: true, items });
       } else if (raw.type === 'topics/list') {
         try {
@@ -88,6 +95,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } else if (raw.type === 'tags/list') {
         const items = await listTags();
         sendResponse?.({ ok: true, items });
+      } else if ((raw as any)?.type === 'channels/upsertStub') {
+        const { id, name, handle } = (raw as any).payload || {};
+        if (!id) { sendResponse?.({ ok: false }); return; }
+        try {
+          await upsertChannelStub(id, name, handle);
+          chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
       } else if (raw.type === 'tags/create') {
         await createTag(raw.payload?.name, raw.payload?.color);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
@@ -158,6 +175,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         dlog('channels/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
         await applyChannelTags(ids || [], addIds, removeIds);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'channels/delete') {
+        const ids: string[] = raw.payload?.ids || [];
+        await moveChannelsToTrash(ids);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'channels/restore') {
+        const ids: string[] = raw.payload?.ids || [];
+        await restoreChannelsFromTrash(ids);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         sendResponse?.({ ok: true });
       } else if (raw.type === 'channels/markScraped') {

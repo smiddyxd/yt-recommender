@@ -1,4 +1,4 @@
-import { scrapeNowDetailed, detectPageContext } from './yt-playlist-capture';
+import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
 import { onNavigate } from './yt-navigation';
 import { parseVideoIdFromHref } from '../types/util';
 import { scrapeWatchStub } from './yt-watch-stub';
@@ -7,9 +7,15 @@ import { scrapeWatchStub } from './yt-watch-stub';
 chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   try {
     if (msg?.type === 'scrape/NOW') {
-      const info = scrapeNowDetailed();
-      sendResponse?.({ ok: true, ...info });
-      return true;
+      (async () => {
+        try {
+          const info = await scrapeNowDetailedAsync();
+          sendResponse?.({ ok: true, ...info });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      })();
+      return true; // keep channel open for async
     } else if (msg?.type === 'page/GET_CONTEXT') {
       const ctx = detectPageContext();
       sendResponse?.(ctx);
@@ -26,7 +32,16 @@ let autoStubOnWatch = false;
 try {
   chrome.storage?.local?.get('autoStubOnWatch', (o) => { autoStubOnWatch = !!o?.autoStubOnWatch; });
   chrome.storage?.onChanged?.addListener((changes, area) => {
-    if (area === 'local' && changes?.autoStubOnWatch) autoStubOnWatch = !!changes.autoStubOnWatch.newValue;
+    if (area === 'local' && changes?.autoStubOnWatch) {
+      autoStubOnWatch = !!changes.autoStubOnWatch.newValue;
+      // If toggled on while on a watch page, capture immediately once
+      if (autoStubOnWatch) {
+        try {
+          const ctx = detectPageContext();
+          if (ctx.page === 'watch') scrapeWatchStub();
+        } catch {}
+      }
+    }
   });
 } catch {}
 
@@ -36,7 +51,7 @@ try {
     if (!autoStubOnWatch) return;
     const ctx = detectPageContext();
     if (ctx.page === 'watch') {
-      try { scrapeWatchStub(); } catch {}
+      try { void scrapeWatchStub(); } catch {}
     }
   });
 } catch {}

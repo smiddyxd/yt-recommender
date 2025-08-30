@@ -44,6 +44,10 @@ export async function openDB(): Promise<IDBDatabase> {
         c.createIndex('byName', 'name', { unique: false });
         c.createIndex('byFetchedAt', 'fetchedAt', { unique: false });
       }
+      if (!db.objectStoreNames.contains('channels_trash')) {
+        const t = db.createObjectStore('channels_trash', { keyPath: 'id' });
+        t.createIndex('byDeletedAt', 'deletedAt', { unique: false });
+      }
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta', { keyPath: 'key' });
       }
@@ -769,6 +773,100 @@ export async function recomputeVideoTagsForChannels(chanIds: string[]) {
     })().then(() => (tx as any).commit?.());
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Upsert a minimal channel stub (id + optional name/handle) without clobbering local fields
+export async function upsertChannelStub(id: string, name?: string | null, handle?: string | null) {
+  const chId = (id || '').trim();
+  if (!chId) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    const g = os.get(chId);
+    g.onsuccess = () => {
+      const prev = (g.result as any) || { id: chId };
+      const next: any = { ...prev };
+      if (name && !next.name) next.name = name;
+      if (handle) next.handle = handle;
+      os.put(next);
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function moveChannelsToTrash(ids: string[]) {
+  if (!ids?.length) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['channels', 'channels_trash'], 'readwrite');
+    const cs = tx.objectStore('channels');
+    const ts = tx.objectStore('channels_trash');
+    (async () => {
+      for (const id of ids) {
+        await new Promise<void>((res, rej) => {
+          const g = cs.get(id);
+          g.onsuccess = () => {
+            const row = g.result;
+            if (row) {
+              ts.put({ ...row, deletedAt: Date.now() });
+              cs.delete(id);
+            }
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function restoreChannelsFromTrash(ids: string[]) {
+  if (!ids?.length) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['channels', 'channels_trash'], 'readwrite');
+    const cs = tx.objectStore('channels');
+    const ts = tx.objectStore('channels_trash');
+    (async () => {
+      for (const id of ids) {
+        await new Promise<void>((res, rej) => {
+          const g = ts.get(id);
+          g.onsuccess = () => {
+            const row = g.result;
+            if (row) {
+              const { deletedAt, ...rest } = row;
+              cs.put(rest);
+              ts.delete(id);
+            }
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function listChannelsTrash(): Promise<any[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('channels_trash', 'readonly');
+    const os = tx.objectStore('channels_trash');
+    const req = os.getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as any[];
+      rows.sort((a,b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
   });
 }
 

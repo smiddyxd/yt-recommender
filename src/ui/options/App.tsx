@@ -74,9 +74,10 @@ export default function App() {
   const [layout, setLayout] = useState<'grid' | 'list'>('list'); // UI-only state
   const isGrid = layout === 'grid';
   const isList = layout === 'list';
-  const [view, setView] = useState<'videos' | 'trash' | 'channels'>('videos');
+  const [view, setView] = useState<'videos' | 'trash' | 'channels' | 'channelsTrash'>('videos');
   const inTrash = view === 'trash';
   const inChannels = view === 'channels';
+  const inChannelsTrash = view === 'channelsTrash';
   // Selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const selectedCount = selected.size;
@@ -125,6 +126,7 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [refreshFailed, setRefreshFailed] = useState<number>(0);
   const [refreshLastError, setRefreshLastError] = useState<string | null>(null);
   const [stubCount, setStubCount] = useState<number>(0);
+  const [showStubsOnly, setShowStubsOnly] = useState<boolean>(false);
   const [openChannelDebug, setOpenChannelDebug] = useState<Set<string>>(new Set());
   const [channelFull, setChannelFull] = useState<Record<string, any>>({});
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
@@ -207,7 +209,7 @@ function cancelEditing() {
     } catch { setTopicOptions([]); }
   }
   async function loadChannelsDir() {
-    const resp: any = await sendBg('channels/list', {});
+    const resp: any = await sendBg(inChannelsTrash ? 'channels/trashList' : 'channels/list', {} as any);
     setChannels(resp?.items || []);
   }
   useEffect(() => {
@@ -294,7 +296,14 @@ function startEditFromGroup(g: GroupRec) {
   async function deleteSelected() {
     const ids = Array.from(selected);
     if (!ids.length) return;
-    await sendBg('videos/delete', { ids });
+    if (inChannels || inChannelsTrash) {
+      await sendBg('channels/delete', { ids });
+      await loadChannelsDir();
+      clearSelection();
+      return;
+    } else {
+      await sendBg('videos/delete', { ids });
+    }
 
     setLastDeleted(ids);
     setShowUndo(true);
@@ -308,6 +317,7 @@ function startEditFromGroup(g: GroupRec) {
 
   async function undoDelete() {
     if (!lastDeleted?.length) return;
+    // Undo only applies to videos (channels use explicit Restore in trash view)
     await sendBg('videos/restore', { ids: lastDeleted });
 
     setShowUndo(false);
@@ -371,10 +381,11 @@ function startEditFromGroup(g: GroupRec) {
     setPage(1);
     setQ('');
     setChain([]);
-    refresh(); // reload from the correct store
+    refresh(); // reload from the correct store (videos vs trash)
     loadTags();
+    if (inChannels || inChannelsTrash) loadChannelsDir();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view]);
+  }, [view, inChannels, inChannelsTrash]);
 
 useEffect(() => {
   function onMsg(msg: any) {
@@ -470,6 +481,7 @@ const groupsById = useMemo(() => {
 
 const filtered = useMemo(() => {
   let base = videos;
+  if (showStubsOnly) base = base.filter(v => !Number.isFinite(v.fetchedAt || undefined));
 
   const cond = chainToCondition(chain);
   if (cond) {
@@ -485,12 +497,13 @@ const filtered = useMemo(() => {
     (v.title || '').toLowerCase().includes(needle) ||
     (v.channelName || v.channelId || '').toLowerCase().includes(needle)
   );
-}, [videos, chain, q, groups]);
+}, [videos, chain, q, groups, showStubsOnly]);
 
 const channelsFiltered = useMemo(() => {
   // Apply boolean filter condition first (channel + video cross-scope), then search filter by text
   const cond = chainToCondition(chain);
   let base = channels;
+  if (showStubsOnly) base = base.filter(ch => !Number.isFinite((ch.fetchedAt as any) || undefined));
   if (cond) {
     base = channels.filter(ch => matchesChannel(
       ch as any,
@@ -506,7 +519,7 @@ const channelsFiltered = useMemo(() => {
     (Array.isArray(ch.tags) && ch.tags.some(t => (t || '').toLowerCase().includes(needle))) ||
     (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
   );
-}, [channels, q, chain, videos, groups]);
+}, [channels, q, chain, videos, groups, showStubsOnly]);
 
   // Tag options derived from current results, ignoring the tag predicates themselves
   const videoTagOptions = useMemo((): Array<{ name: string; count: number }> => {
@@ -898,12 +911,23 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-danger"
-              title={inTrash ? 'Delete is disabled in Trash view' : 'Delete selected (moves to Trash)'}
-              onClick={!inTrash ? deleteSelected : undefined}
-              disabled={inTrash || selectedCount === 0}
+              title={(inTrash || inChannelsTrash) ? 'Delete is disabled in Trash view' : 'Delete selected (moves to Trash)'}
+              onClick={!(inTrash || inChannelsTrash) ? deleteSelected : undefined}
+              disabled={inTrash || inChannelsTrash || selectedCount === 0}
             >
               Delete
             </button>
+            {inChannelsTrash && (
+              <button
+                type="button"
+                className="btn-ghost"
+                title="Restore selected channels from trash"
+                onClick={async () => { const ids = Array.from(selected); if (!ids.length) return; await sendBg('channels/restore', { ids }); clearSelection(); await loadChannelsDir(); }}
+                disabled={selectedCount === 0}
+              >
+                Restore
+              </button>
+            )}
             <button
               type="button"
               className="btn-ghost"
@@ -936,6 +960,15 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-ghost"
+              aria-pressed={inChannelsTrash}
+              title={inChannelsTrash ? 'Show channels directory' : 'Show channels trash'}
+              onClick={() => setView(inChannelsTrash ? 'channels' : 'channelsTrash')}
+            >
+              Channel trash
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
               title="Fetch metadata for all videos via YouTube API"
               onClick={refreshData}
               disabled={refreshing}
@@ -945,6 +978,10 @@ const channelsFiltered = useMemo(() => {
             {!refreshing && (
               <span className="muted" title="Videos without API data">{stubCount} stubs</span>
             )}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8 }} title="Show only videos that have not been fetched via API">
+              <input type="checkbox" checked={showStubsOnly} onChange={(e)=> setShowStubsOnly(e.target.checked)} />
+              <span className="muted">Stubs only</span>
+            </label>
             <button
               type="button"
               className="btn-ghost"

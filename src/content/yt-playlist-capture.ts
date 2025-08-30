@@ -87,9 +87,10 @@ export function detectPageContext() {
   return out;
 }
 
+const TILE_ROOT_SEL = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, ytd-compact-video-renderer';
+
 function findTileRootFromAnchor(a: HTMLAnchorElement): HTMLElement | null {
-  const sel = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer, ytd-compact-video-renderer, ytd-video-renderer';
-  return (a.closest(sel) as HTMLElement | null) || null;
+  return (a.closest(TILE_ROOT_SEL) as HTMLElement | null) || null;
 }
 
 export function scrapeProgressForTile(a: HTMLAnchorElement, videoId: string) {
@@ -121,6 +122,7 @@ function getActiveChannelTab(): 'videos' | 'shorts' | 'live' | 'other' {
 // Click-to-scrape: returns details for popup to record per-tab counts
 export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'other'; pageTab?: 'videos'|'shorts'|'live'|'other'; channelId?: string | null } {
   let sent = 0;
+  const added = new Set<string>();
   const ctx = detectPageContext();
   const listId = getPlaylistIdFromURL();
   const container = q1(SELECTORS.playlistContainer);
@@ -133,12 +135,15 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         const node = el as HTMLElement;
         const seed = tileToSeed(node, { type: 'playlist', id: listId });
         if (seed) {
-          send('cache/VIDEO_SEEN', seed);
-          sent++;
+          if (!added.has(seed.id)) {
+            added.add(seed.id);
+            send('cache/VIDEO_SEEN', seed);
+            sent++;
+          }
           const a = node.querySelector(SELECTORS.tileLink) as HTMLAnchorElement | null;
           if (a) {
             const id = parseVideoIdFromHref(a.href);
-            if (id) scrapeProgressForTile(a, id);
+            if (id && !added.has(id)) scrapeProgressForTile(a, id);
           }
         }
       });
@@ -167,27 +172,27 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
       } catch { /* ignore */ }
       return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
     } else {
-      // Videos or Live: regular tiles with /watch?v=
+      // Videos or Live: scan document-wide anchors, filter by tile roots, de-dupe by video id
       const sourceType = pageTab === 'live' ? 'ChannelLivestreamsTab' : 'ChannelVideosTab';
-      if (container) {
-        // General approach: scan anchors with watch links within the container
-        const anchors = Array.from(container.querySelectorAll('a#thumbnail[href], a#video-title[href]')) as HTMLAnchorElement[];
-        const seen = new Set<string>();
-        for (const a of anchors) {
-          const id = parseVideoIdFromHref(a.href);
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          const root = a.closest('ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, ytd-playlist-video-renderer, ytd-playlist-panel-video-renderer') as HTMLElement | null;
-          const seed = root ? tileToSeed(root, { type: sourceType }) : ({ id, sources: [{ type: sourceType }] } as VideoSeed);
-          if (seed) {
-            send('cache/VIDEO_SEEN', seed);
-            sent++;
-            // Try progress
-            scrapeProgressForTile(a, id);
-          }
+      const anchors = Array.from(document.querySelectorAll(
+        'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
+      )) as HTMLAnchorElement[];
+      const seen = new Set<string>();
+      for (const a of anchors) {
+        const root = findTileRootFromAnchor(a);
+        if (!root) continue;
+        const id = parseVideoIdFromHref(a.href);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const seed = tileToSeed(root, { type: sourceType });
+        if (seed) {
+          send('cache/VIDEO_SEEN', seed);
+          sent++;
+          // Try progress
+          scrapeProgressForTile(a, id);
         }
-        return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
       }
+      return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
     }
   }
 
@@ -195,7 +200,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
   const url = new URL(location.href);
   const id = url.searchParams.get('v') || (location.pathname.startsWith('/shorts/') ? location.pathname.split('/')[2] : null);
   if (id) {
-    // Capture title and channel name from watch page
+    // Capture title and channel name from watch page (best-effort without waits here)
     const titleEl = document.querySelector('ytd-watch-metadata h1 yt-formatted-string') || document.querySelector('h1.ytd-watch-metadata yt-formatted-string');
     const title = titleEl ? (titleEl as HTMLElement).textContent?.trim() || null : null;
     let channelName: string | null = null;
@@ -203,7 +208,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
       const chTxt = document.querySelector('ytd-channel-name #text a, #channel-name #text a') as HTMLElement | null;
       channelName = chTxt?.textContent?.trim() || null;
     } catch { channelName = null; }
-    // Try resolve channel id via canonical
+    // Try resolve channel id via canonical / owner / subscribe renderer
     let channelId: string | null = null;
     try {
       const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
@@ -224,9 +229,22 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         }
       } catch {}
     }
+    if (!channelId) {
+      try {
+        const el = document.querySelector('[data-channel-external-id]') as HTMLElement | null;
+        const val = el?.getAttribute('data-channel-external-id');
+        if (val) channelId = val;
+      } catch {}
+    }
 
-    chrome.runtime.sendMessage({ type: 'cache/VIDEO_STUB', payload: { id, title, channelName, channelId, sources: [{ type: 'panel', id: null }] } });
-    sent++;
+    if (!added.has(id)) {
+      added.add(id);
+    chrome.runtime.sendMessage({ type: 'cache/VIDEO_STUB', payload: { id, title, channelName, channelId, sources: [{ type: 'WatchPage', id: null }] } });
+    if (channelId) {
+      try { chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: channelId, name: channelName || null } }); } catch {}
+    }
+      sent++;
+    }
 
     // Progress from player time display
     try {
@@ -244,17 +262,33 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
 
   // General fallback: scan visible anchors pointing to /watch and de-dupe by id
   try {
-    const anchors = Array.from(document.querySelectorAll('a#thumbnail[href], a#video-title[href]')) as HTMLAnchorElement[];
+    const anchors = Array.from(document.querySelectorAll('a#thumbnail[href], a#video-title[href], a#video-title-link[href]')) as HTMLAnchorElement[];
     const seen = new Set<string>();
     for (const a of anchors) {
       const vid = parseVideoIdFromHref(a.href);
-      if (!vid || seen.has(vid)) continue;
+      if (!vid || seen.has(vid) || added.has(vid)) continue;
       seen.add(vid);
       const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
+      added.add(vid);
       send('cache/VIDEO_SEEN', seed);
       sent++;
       scrapeProgressForTile(a, vid);
     }
   } catch { /* ignore */ }
   return { count: sent, page: ctx.page || 'other' } as any;
+}
+
+function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+
+// Async wrapper with brief retries to avoid racing render on channel pages
+export async function scrapeNowDetailedAsync(): Promise<{ count: number; page: 'watch'|'channel'|'other'; pageTab?: 'videos'|'shorts'|'live'|'other'; channelId?: string | null }> {
+  const first = scrapeNowDetailed();
+  if (first.page === 'channel' && first.count === 0) {
+    for (let i = 0; i < 2; i++) { // two quick retries
+      await sleep(180);
+      const again = scrapeNowDetailed();
+      if (again.count > 0) return again;
+    }
+  }
+  return first;
 }
