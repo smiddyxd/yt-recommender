@@ -6,7 +6,7 @@ import type { FilterEntry } from './lib/filters';
 import { chainToCondition, conditionToChainSimple } from './lib/filters';
 import { getAll as idbGetAll } from '../lib/idb';
 import { send as sendBg } from '../lib/messaging';
-import type { TagRec } from '../../types/messages';
+import type { TagRec, TagGroupRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import VideoList from './components/VideoList';
 
@@ -104,6 +104,7 @@ export default function App() {
   const [showTagger, setShowTagger] = useState(false);
 
   const [tags, setTags] = useState<TagRec[]>([]);
+  const [tagGroups, setTagGroups] = useState<TagGroupRec[]>([]);
   const [tagEditing, setTagEditing] = useState<string | null>(null);
   const [tagEditValue, setTagEditValue] = useState('');
   const [newSidebarTag, setNewSidebarTag] = useState('');
@@ -397,6 +398,7 @@ function startEditFromGroup(g: GroupRec) {
     setChain([]);
     refresh(); // reload from the correct store (videos vs trash)
     loadTags();
+    loadTagGroups();
     if (inChannels || inChannelsTrash) loadChannelsDir();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, inChannels, inChannelsTrash]);
@@ -407,6 +409,7 @@ useEffect(() => {
       const ent = msg.payload?.entity;
       if (ent === 'videos' || ent == null) { refresh(); loadTopicOptions(); }
       if (ent === 'tags')   loadTags();
+      if (ent === 'tagGroups') loadTagGroups();
       if (ent === 'groups') loadGroups();
       if (ent === 'channels') loadChannelsDir();
       if (ent === 'topics') loadTopicOptions();
@@ -462,6 +465,19 @@ const groupsById = useMemo(() => {
   // AFTER: derive names from the registry we loaded via tags/list
   // All registry tags (for the tag apply UI)
   const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
+  const tagsByGroup = useMemo(() => {
+    const byId = new Map<string, TagGroupRec>();
+    for (const g of tagGroups) byId.set(g.id, g);
+    const grouped = new Map<string, string[]>();
+    for (const t of tags) {
+      const gid = (t.groupId || '') as string;
+      const key = gid && byId.has(gid) ? gid : '';
+      const list = grouped.get(key) || (grouped.set(key, []), grouped.get(key)!);
+      list.push(t.name);
+    }
+    for (const [k, list] of grouped) list.sort((a,b)=> a.localeCompare(b));
+    return { byId, grouped } as { byId: Map<string, TagGroupRec>; grouped: Map<string, string[]> };
+  }, [tags, tagGroups]);
 
   const countryOptions = useMemo(() => {
     const codes = new Set<string>();
@@ -824,6 +840,28 @@ const channelsFiltered = useMemo(() => {
     }).then(() => refresh());
   }
 
+  async function loadTagGroups() {
+    try { const r: any = await sendBg('tagGroups/list', {} as any); setTagGroups(r?.items || []); } catch {}
+  }
+
+  async function createTagGroup(name: string) {
+    await sendBg('tagGroups/create', { name });
+    loadTagGroups();
+  }
+  async function renameTagGroup(id: string, name: string) {
+    await sendBg('tagGroups/rename', { id, name });
+    loadTagGroups();
+  }
+  async function deleteTagGroup(id: string) {
+    await sendBg('tagGroups/delete', { id });
+    loadTagGroups();
+    loadTags(); // tags changed group binding
+  }
+  async function assignTagToGroup(tagName: string, groupId: string | null) {
+    await sendBg('tags/assignGroup', { name: tagName, groupId });
+    loadTags();
+  }
+
   return (
     <div className="page">
 <Sidebar
@@ -841,6 +879,11 @@ const channelsFiltered = useMemo(() => {
   importing={importing}
   importMessage={importMessage}
   onImportFile={handleImportFile}
+  tagGroups={tagGroups}
+  onCreateTagGroup={createTagGroup}
+  onRenameTagGroup={renameTagGroup}
+  onDeleteTagGroup={deleteTagGroup}
+  onAssignTagToGroup={assignTagToGroup}
   groups={groups}
   startEditFromGroup={startEditFromGroup}
   removeGroup={removeGroup}
@@ -1028,40 +1071,55 @@ const channelsFiltered = useMemo(() => {
           </div>
         </header>
         {showTagger && selectedCount > 0 && (
-          <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ marginRight: 8 }}>Apply tag:</span>
-            {availableTags.map((tag: string) => {
-              const haveAll = inChannels
-                ? (channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
-                : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
+            {/* Grouped dropdowns */}
+            {Array.from(tagsByGroup.grouped.entries()).map(([gid, names]) => {
+              const grp = gid ? tagsByGroup.byId.get(gid) : null;
+              const title = grp ? grp.name : 'Ungrouped';
+              if (names.length === 0) return null;
               return (
-                <button
-                  key={tag}
-                  type="button"
-                  className="btn-ghost"
-                  onClick={() => applyTagToSelection(tag)}
-                  style={{ background: haveAll ? '#203040' : undefined }}
-                  title={haveAll ? 'Remove from all selected' : 'Add to all selected'}
-                >
-                  {tag}
-                </button>
+                <details key={gid || 'ungrouped'} className="tag-dropdown">
+                  <summary>{title}</summary>
+                  <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
+                    {names.map(tag => {
+                      const haveAll = inChannels
+                        ? (channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
+                        : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          className="btn-ghost"
+                          onClick={() => applyTagToSelection(tag)}
+                          style={{ background: haveAll ? '#203040' : undefined }}
+                          title={haveAll ? 'Remove from all selected' : 'Add to all selected'}
+                        >
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </details>
               );
             })}
             {availableTags.length === 0 && (
               <span className="muted">No tags yet. Add tags in the sidebar.</span>
             )}
           </div>
-           )}
-  <FiltersBar
-  chain={chain}
-  setChain={setChain}
-  channelOptions={channelOptions}
-  videoTagOptions={videoTagOptions}
-  videoSourceOptions={videoSourcesOptionsMemo}
-  channelTagOptions={channelTagOptions}
-  topicOptions={topicOptions}
-  countryOptions={countryOptions}
-  groups={groups}
+        )}
+    <FiltersBar
+    chain={chain}
+    setChain={setChain}
+    channelOptions={channelOptions}
+    videoTagOptions={videoTagOptions}
+    videoSourceOptions={videoSourcesOptionsMemo}
+    channelTagOptions={channelTagOptions}
+    tagsRegistry={tags}
+    tagGroups={tagGroups}
+    topicOptions={topicOptions}
+    countryOptions={countryOptions}
+    groups={groups}
   groupName={groupName}
   setGroupName={setGroupName}
   editingGroupId={editingGroupId}

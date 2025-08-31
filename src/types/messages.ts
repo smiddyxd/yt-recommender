@@ -8,7 +8,7 @@ export type Msg =
   | { type: 'cache/VIDEO_STUB'; payload: { id: string; title?: string | null; channelName?: string | null; channelId?: string | null; sources?: VideoSeed['sources'] } }
   | { type: 'scrape/NOW'; payload: {} }
   | { type: 'page/GET_CONTEXT'; payload: {} }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' } } // optional push event
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' } } // optional push event
   | { type: 'videos/delete';  payload: { ids: string[] } }
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
@@ -30,11 +30,17 @@ export type Msg =
   | { type: 'tags/create';  payload: { name: string; color?: string } }
   | { type: 'tags/rename';  payload: { oldName: string; newName: string } }
   | { type: 'tags/delete';  payload: { name: string; cascade?: boolean } }
+  | { type: 'tags/assignGroup'; payload: { name: string; groupId: string | null } }
   // GROUPS
   | { type: 'groups/list';   payload: {} }
   | { type: 'groups/create'; payload: { name: string; condition: Condition } }
   | { type: 'groups/update'; payload: { id: string; patch: Partial<Group> } }
   | { type: 'groups/delete'; payload: { id: string } }
+  // TAG GROUPS (for organizing tags)
+  | { type: 'tagGroups/list';   payload: {} }
+  | { type: 'tagGroups/create'; payload: { name: string } }
+  | { type: 'tagGroups/rename'; payload: { id: string; name: string } }
+  | { type: 'tagGroups/delete'; payload: { id: string } }
   // META
   | { type: 'topics/list'; payload: {} }
   // RULES (stubs for next step)
@@ -43,7 +49,7 @@ export type Msg =
   | { type: 'rules/update';  payload: any }
   | { type: 'rules/delete';  payload: { id: string } }
   | { type: 'rules/runAll';  payload: { onlyEnabled?: boolean } }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' } };
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } };
 
 export interface VideoSeed {
   id: string;
@@ -63,4 +69,5 @@ export interface VideoSeed {
 // Used by watch-page stub capture to ensure the channel exists in DB.
 export type ChannelUpsertStubMsg = { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } };
 
-export interface TagRec { name: string; color?: string; createdAt?: number }
+export interface TagRec { name: string; color?: string; createdAt?: number; groupId?: string | null }
+export interface TagGroupRec { id: string; name: string; createdAt?: number }

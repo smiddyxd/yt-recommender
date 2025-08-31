@@ -1,5 +1,6 @@
 // src/ui/options/components/FiltersBar.tsx
 import React from 'react';
+import type { TagRec, TagGroupRec } from '../../../types/messages';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { FilterEntry, FilterNode, DurationUI } from '../lib/filters';
 import { VIDEO_CATEGORIES } from '../lib/videoCategories';
@@ -20,6 +21,9 @@ type Props = {
   videoTagOptions?: TagOption[];
   channelTagOptions?: TagOption[];
   groups: GroupRec[];
+  // tag registry for grouping in tag chips
+  tagsRegistry?: TagRec[];
+  tagGroups?: TagGroupRec[];
 
   // group save/edit UI
   groupName: string;
@@ -40,6 +44,8 @@ export default function FiltersBar({
   videoTagOptions,
   channelTagOptions,
   groups,
+  tagsRegistry,
+  tagGroups,
   groupName,
   setGroupName,
   editingGroupId,
@@ -707,6 +713,25 @@ export default function FiltersBar({
           }));
           const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='c_tags_any' || e.pred.kind==='c_tags_all' || e.pred.kind==='c_tags_none') ? { ...e, pred: { ...e.pred, tagsCsv: '' } } : e));
           const all = Array.isArray(channelTagOptions) ? channelTagOptions : [];
+          // Group options by tagGroups using tagsRegistry's groupId
+          const tg = Array.isArray(tagGroups) ? tagGroups : [];
+          const byId = new Map<string, TagGroupRec>(tg.map(g => [g.id, g] as [string, TagGroupRec]));
+          const reg = new Map<string, TagRec>((Array.isArray(tagsRegistry) ? tagsRegistry : []).map(t => [t.name, t] as [string, TagRec]));
+          const grouped = new Map<string, TagOption[]>(); // key: groupId or ''
+          for (const opt of all) {
+            const rec = reg.get(opt.name);
+            const key = (rec?.groupId && byId.has(String(rec.groupId))) ? String(rec!.groupId) : '';
+            const arr = grouped.get(key) || (grouped.set(key, []), grouped.get(key)!);
+            arr.push(opt);
+          }
+          const entries = Array.from(grouped.entries()).sort((a,b) => {
+            if (a[0] === '' && b[0] !== '') return -1;
+            if (a[0] !== '' && b[0] === '') return 1;
+            const an = a[0] ? (byId.get(a[0])?.name || '') : 'Ungrouped';
+            const bn = b[0] ? (byId.get(b[0])?.name || '') : 'Ungrouped';
+            return an.localeCompare(bn);
+          });
+          for (const [, arr] of entries) arr.sort((a,b)=> a.name.localeCompare(b.name));
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -723,12 +748,19 @@ export default function FiltersBar({
                   </span>
                 </div>
                 {all.length > 0 ? (
-                  <div className="chip-list">
-                    {all.map(opt => (
-                      <label key={opt.name} className="chip-check">
-                        <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
-                        <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
-                      </label>
+                  <div className="chip-list" style={{ display: 'grid', gap: 6 }}>
+                    {entries.map(([gid, list]) => (
+                      <details key={gid || 'ungrouped'}>
+                        <summary>{gid ? (byId.get(gid)?.name || gid) : 'Ungrouped'}</summary>
+                        <div className="chip-list" style={{ paddingTop: 6 }}>
+                          {list.map(opt => (
+                            <label key={opt.name} className="chip-check">
+                              <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
+                              <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </details>
                     ))}
                   </div>
                 ) : (
@@ -811,6 +843,25 @@ export default function FiltersBar({
           }));
           const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='v_tags_any' || e.pred.kind==='v_tags_all' || e.pred.kind==='v_tags_none') ? { ...e, pred: { ...e.pred, tagsCsv: '' } } : e));
           const all = Array.isArray(videoTagOptions) ? videoTagOptions : [];
+          // Group options by tagGroups using tagsRegistry's groupId
+          const tg = Array.isArray(tagGroups) ? tagGroups : [];
+          const byId = new Map<string, TagGroupRec>(tg.map(g => [g.id, g] as [string, TagGroupRec]));
+          const reg = new Map<string, TagRec>((Array.isArray(tagsRegistry) ? tagsRegistry : []).map(t => [t.name, t] as [string, TagRec]));
+          const grouped = new Map<string, TagOption[]>(); // key: groupId or ''
+          for (const opt of all) {
+            const rec = reg.get(opt.name);
+            const key = (rec?.groupId && byId.has(String(rec.groupId))) ? String(rec!.groupId) : '';
+            const arr = grouped.get(key) || (grouped.set(key, []), grouped.get(key)!);
+            arr.push(opt);
+          }
+          const entries = Array.from(grouped.entries()).sort((a,b) => {
+            if (a[0] === '' && b[0] !== '') return -1;
+            if (a[0] !== '' && b[0] === '') return 1;
+            const an = a[0] ? (byId.get(a[0])?.name || '') : 'Ungrouped';
+            const bn = b[0] ? (byId.get(b[0])?.name || '') : 'Ungrouped';
+            return an.localeCompare(bn);
+          });
+          for (const [, arr] of entries) arr.sort((a,b)=> a.name.localeCompare(b.name));
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -827,12 +878,19 @@ export default function FiltersBar({
                   </span>
                 </div>
                 {all.length > 0 ? (
-                  <div className="chip-list">
-                    {all.map(opt => (
-                      <label key={opt.name} className="chip-check">
-                        <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
-                        <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
-                      </label>
+                  <div className="chip-list" style={{ display: 'grid', gap: 6 }}>
+                    {entries.map(([gid, list]) => (
+                      <details key={gid || 'ungrouped-v'}>
+                        <summary>{gid ? (byId.get(gid)?.name || gid) : 'Ungrouped'}</summary>
+                        <div className="chip-list" style={{ paddingTop: 6 }}>
+                          {list.map(opt => (
+                            <label key={opt.name} className="chip-check">
+                              <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
+                              <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </details>
                     ))}
                   </div>
                 ) : (

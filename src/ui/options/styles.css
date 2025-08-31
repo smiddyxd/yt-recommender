@@ -314,7 +314,7 @@ footer {
 /* ===== Page layout: fixed left sidebar + main content ===== */
 .page {
   display: grid;
-  grid-template-columns: 260px 1fr; /* sidebar width, then content */
+  grid-template-columns: 338px 1fr; /* sidebar width, then content (1.3x previous 260px) */
   min-height: 100vh;
   background: var(--bg);
 }
@@ -462,11 +462,24 @@ footer {
   padding-right: 4px; /* keep scrollbar from overlapping content */
 }
 .tag-row {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
-  gap: 8px;
-  align-items: center;
-}
+    display: grid;
+    grid-template-columns: 1fr auto auto auto; /* name | select | rename | delete */
+    gap: 6px;
+    align-items: center;
+  }
+  .tag-row .tag-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tag-row select.side-input {
+    max-width: 160px;
+    padding: 4px 6px;
+  }
+  .tag-row .btn-ghost {
+    padding: 2px 6px;
+    min-width: 0;
+  }
 .tag-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -494,11 +507,20 @@ footer {
 
 .group-list { display: grid; gap: 6px; }
 .group-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
-  align-items: center;
-}
+    display: grid;
+    grid-template-columns: 1fr auto auto; /* name | rename | delete (or name | save | cancel) */
+    gap: 6px;
+    align-items: center;
+  }
+  .group-row .tag-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .group-row .btn-ghost {
+    padding: 2px 6px;
+    min-width: 0;
+  }
 .group-form { display: grid; gap: 8px; margin-bottom: 10px; }
 .group-form-actions { display: flex; gap: 8px; }
 /* Filters panel */

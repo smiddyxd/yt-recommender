@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { send as sendBg } from '../lib/messaging';
-import { getOne, getVideosByChannel } from '../lib/idb';
-import { VIDEO_CATEGORIES } from '../options/lib/videoCategories';
-import type { TagRec } from '../../types/messages';
+import { getOne } from '../lib/idb';
+import type { TagRec, TagGroupRec } from '../../types/messages';
 
 type PageContext = {
   page: 'watch' | 'channel' | 'other';
@@ -53,6 +52,21 @@ function useTagsRegistry() {
   return all;
 }
 
+function useTagGroups() {
+  const [groups, setGroups] = useState<TagGroupRec[]>([]);
+  const refresh = async () => {
+    const r: any = await sendBg('tagGroups/list', {});
+    if (r?.ok && Array.isArray(r.items)) setGroups(r.items as TagGroupRec[]);
+  };
+  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    const h = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'tagGroups') refresh(); };
+    chrome.runtime.onMessage.addListener(h);
+    return () => chrome.runtime.onMessage.removeListener(h);
+  }, []);
+  return groups;
+}
+
 function useRowRefresh<T>(store: 'videos' | 'channels', id?: string | null) {
   const [row, setRow] = useState<T | undefined>(undefined);
   const refresh = async () => {
@@ -98,12 +112,24 @@ function AddTagSelect(props: { all: string[]; onAdd: (name: string)=>void; disab
 function PopupApp() {
   const { tabId, ctx } = useActiveTabContext();
   const allTags = useTagsRegistry();
+  const tagGroups = useTagGroups();
   const video = useRowRefresh<any>('videos', ctx.videoId || null);
   const channel = useRowRefresh<any>('channels', ctx.channelId || null);
   const [scrapeCount, setScrapeCount] = useState<number | null>(null);
   const [autoStubOnWatch, setAutoStubOnWatch] = useState<boolean>(false);
 
-  const allTagNames = useMemo(() => allTags.map(t => t.name), [allTags]);
+  const byGroup = useMemo(() => {
+    const map = new Map<string, string[]>();
+    const groupById = new Map(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
+    for (const t of allTags) {
+      const gid = (t.groupId || '') as string;
+      const key = gid && groupById.has(gid) ? gid : '';
+      const list = map.get(key) || (map.set(key, []), map.get(key)!);
+      list.push(t.name);
+    }
+    for (const [k, list] of map) list.sort((a,b)=> a.localeCompare(b));
+    return { map, groupById };
+  }, [allTags, tagGroups]);
 
   const addVideoTag = async (name: string) => {
     if (!ctx.videoId) return;
@@ -115,7 +141,16 @@ function PopupApp() {
   };
   const addChannelTag = async (name: string) => {
     if (!ctx.channelId) return;
-    await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: [name] });
+    try {
+      // Ensure the auto-tag exists in registry, then apply both
+      const auto = '.tagged';
+      if (name !== auto) {
+        try { await sendBg('tags/create', { name: auto }); } catch { /* noop */ }
+        await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: [name, auto] });
+      } else {
+        await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: [name] });
+      }
+    } catch { /* ignore */ }
   };
   const removeChannelTag = async (name: string) => {
     if (!ctx.channelId) return;
@@ -154,38 +189,7 @@ function PopupApp() {
   const videoTags = Array.isArray((video as any)?.tags) ? (video as any).tags as string[] : [];
   const channelTags = Array.isArray((channel as any)?.tags) ? (channel as any).tags as string[] : [];
 
-  // Load and derive suggestions from channel's stored videos
-  const [chanVideoCats, setChanVideoCats] = useState<string[]>([]);
-  const [chanVideoTopics, setChanVideoTopics] = useState<string[]>([]);
-  useEffect(() => {
-    (async () => {
-      if (!ctx.channelId) { setChanVideoCats([]); setChanVideoTopics([]); return; }
-      try {
-        const vids = await getVideosByChannel<any>(ctx.channelId);
-        const catSet = new Set<number>();
-        const topicSet = new Set<string>();
-        for (const v of vids) {
-          const cid = Number(v?.categoryId);
-          if (Number.isFinite(cid)) catSet.add(cid);
-          const ts: string[] = Array.isArray(v?.videoTopics) ? v.videoTopics : [];
-          for (const t of ts) { const s = (t || '').toString().trim(); if (s) topicSet.add(s); }
-        }
-        const catNames: string[] = Array.from(catSet.values()).map(id => VIDEO_CATEGORIES.find(c => c.id === id)?.name).filter(Boolean) as string[];
-        setChanVideoCats(catNames.sort((a,b)=>a.localeCompare(b)));
-        setChanVideoTopics(Array.from(topicSet.values()).sort((a,b)=>a.localeCompare(b)));
-      } catch {
-        setChanVideoCats([]); setChanVideoTopics([]);
-      }
-    })();
-  }, [ctx.channelId]);
-
-  // Video-level suggestions from its own metadata
-  const videoCatName = useMemo(() => {
-    const cid = Number((video as any)?.categoryId);
-    if (!Number.isFinite(cid)) return null;
-    return VIDEO_CATEGORIES.find(c => c.id === cid)?.name || null;
-  }, [video]);
-  const videoTopics = useMemo(() => Array.isArray((video as any)?.videoTopics) ? ((video as any).videoTopics as string[]) : [], [video]);
+  // Suggestions removed per user preference; show only registry tags for both video and channel.
 
   // Auto-stub toggle (read + write to storage)
   useEffect(() => {
@@ -214,45 +218,47 @@ function PopupApp() {
         <span className="meta">{ctx.page === 'watch' ? `watch: ${ctx.videoId}` : ctx.page === 'channel' ? `channel: ${ctx.channelId || 'unknown'}` : 'Not on YouTube'}</span>
       </div>
 
-      {ctx.channelId && (
-        <div className="section">
-          <h2>Channel Tags</h2>
-          <TagChips labels={channelTags} onRemove={removeChannelTag} />
-          <div style={{ marginTop: 6 }}>
-            <AddTagSelect all={allTagNames} onAdd={addChannelTag} />
-          </div>
-          {(chanVideoCats.length > 0 || chanVideoTopics.length > 0 || Array.isArray((channel as any)?.videoTags)) && (
-            <div style={{ marginTop: 6 }}>
-              <AddTagSelect
-                all={Array.from(new Set<string>([
-                  ...(Array.isArray((channel as any)?.videoTags) ? (channel as any).videoTags as string[] : []),
-                  ...chanVideoCats,
-                  ...chanVideoTopics,
-                ]))}
-                onAdd={addChannelTag}
-              />
-              <div className="meta">Suggestions from channel videos (tags, categories, topics)</div>
-            </div>
-          )}
-        </div>
-      )}
-
       {ctx.videoId && (
         <div className="section">
           <h2>Video Tags</h2>
           <TagChips labels={videoTags} onRemove={removeVideoTag} />
-          <div style={{ marginTop: 6 }}>
-            <AddTagSelect all={allTagNames} onAdd={addVideoTag} />
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {Array.from(byGroup.map.entries()).map(([gid, names]) => (
+              <details key={gid || 'ungrouped-v'}>
+                <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
+                <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
+                  {names.map(n => {
+                    const active = Array.isArray(videoTags) && videoTags.includes(n);
+                    return (
+                      <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addVideoTag(n)} title={active ? 'Already applied' : 'Apply to video'}>{n}</button>
+                    );
+                  })}
+                </div>
+              </details>
+            ))}
           </div>
-          {(videoCatName || (videoTopics && videoTopics.length)) && (
-            <div style={{ marginTop: 6 }}>
-              <AddTagSelect all={Array.from(new Set<string>([
-                ...(videoCatName ? [videoCatName] : []),
-                ...videoTopics,
-              ]))} onAdd={addVideoTag} />
-              <div className="meta">Suggestions from this video (category, topics)</div>
-            </div>
-          )}
+        </div>
+      )}
+
+      {ctx.channelId && (
+        <div className="section">
+          <h2>Channel Tags</h2>
+          <TagChips labels={channelTags} onRemove={removeChannelTag} />
+          <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {Array.from(byGroup.map.entries()).map(([gid, names]) => (
+              <details key={gid || 'ungrouped-c'}>
+                <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
+                <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
+                  {names.map(n => {
+                    const active = Array.isArray(channelTags) && channelTags.includes(n);
+                    return (
+                      <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addChannelTag(n)} title={active ? 'Already applied' : 'Apply to channel'}>{n}</button>
+                    );
+                  })}
+                </div>
+              </details>
+            ))}
+          </div>
         </div>
       )}
     </div>

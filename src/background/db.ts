@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -28,6 +28,12 @@ export async function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('tags')) {
         const t = db.createObjectStore('tags', { keyPath: 'name' });
         t.createIndex('byCreatedAt', 'createdAt', { unique: false });
+      }
+      // Tag groups (for organizing tags)
+      if (!db.objectStoreNames.contains('tag_groups')) {
+        const tg = db.createObjectStore('tag_groups', { keyPath: 'id' });
+        tg.createIndex('byName', 'name', { unique: false });
+        tg.createIndex('byCreatedAt', 'createdAt', { unique: false });
       }
       if (!db.objectStoreNames.contains('groups')) {
         const g = db.createObjectStore('groups', { keyPath: 'id' });
@@ -345,6 +351,104 @@ export async function deleteTag(name: string, cascade: boolean = true) {
 
     tx.oncomplete = () => resolve();
     tx.onerror    = () => reject(tx.error);
+  });
+}
+
+// Assign or clear a tag's group association (groupId nullable)
+export async function setTagGroup(name: string, groupId: string | null) {
+  const tag = (name ?? '').trim();
+  const gid = (groupId ?? null) as (string | null);
+  if (!tag) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('tags', 'readwrite');
+    const os = tx.objectStore('tags');
+    const g = os.get(tag);
+    g.onsuccess = () => {
+      const row = (g.result as any) || null;
+      if (row) {
+        row.groupId = gid || undefined;
+        os.put(row);
+      }
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ---- Tag Groups CRUD ----
+export async function listTagGroups(): Promise<Array<{ id: string; name: string; createdAt?: number }>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('tag_groups', 'readonly');
+    const os = tx.objectStore('tag_groups');
+    const req = os.getAll();
+    req.onsuccess = () => {
+      const rows = (req.result || []) as any[];
+      rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      resolve(rows);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function createTagGroup(name: string): Promise<string> {
+  const nm = (name ?? '').trim();
+  if (!nm) return '';
+  const db = await openDB();
+  const id = crypto.randomUUID();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('tag_groups', 'readwrite');
+    tx.objectStore('tag_groups').put({ id, name: nm, createdAt: Date.now() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return id;
+}
+
+export async function renameTagGroup(id: string, newName: string) {
+  const gid = (id ?? '').trim();
+  const nm = (newName ?? '').trim();
+  if (!gid || !nm) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('tag_groups', 'readwrite');
+    const os = tx.objectStore('tag_groups');
+    const g = os.get(gid);
+    g.onsuccess = () => {
+      const row = g.result as any;
+      if (row) { row.name = nm; os.put(row); }
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function deleteTagGroup(id: string) {
+  const gid = (id ?? '').trim();
+  if (!gid) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['tag_groups', 'tags'], 'readwrite');
+    (tx.objectStore('tag_groups') as IDBObjectStore).delete(gid);
+    // Clear groupId from any tags referencing this group
+    const ts = tx.objectStore('tags');
+    const cur = ts.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return;
+      const row = c.value as any;
+      if (row && row.groupId === gid) {
+        delete row.groupId;
+        c.update(row);
+      }
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 

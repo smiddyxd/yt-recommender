@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -95,6 +95,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } else if (raw.type === 'tags/list') {
         const items = await listTags();
         sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'tags/assignGroup') {
+        const name = String(raw.payload?.name || '');
+        const groupId = (raw.payload?.groupId ?? null) as (string | null);
+        await setTagGroup(name, groupId);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        sendResponse?.({ ok: true });
       } else if ((raw as any)?.type === 'channels/upsertStub') {
         const { id, name, handle } = (raw as any).payload || {};
         if (!id) { sendResponse?.({ ok: false }); return; }
@@ -121,6 +127,22 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
       if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
       sendResponse?.({ ok: true });
+      } else if (raw.type === 'tagGroups/list') {
+        const items = await listTagGroups();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'tagGroups/create') {
+        const id = await createTagGroup(String(raw.payload?.name || ''));
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        sendResponse?.({ ok: true, id });
+      } else if (raw.type === 'tagGroups/rename') {
+        await renameTagGroup(String(raw.payload?.id || ''), String(raw.payload?.name || ''));
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'tagGroups/delete') {
+        await deleteTagGroup(String(raw.payload?.id || ''));
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        sendResponse?.({ ok: true });
     } else if (raw.type === 'channels/refreshUnfetched') {
       const apiKey = await getApiKey();
       if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
