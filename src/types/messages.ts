@@ -51,7 +51,14 @@ export type Msg =
   | { type: 'rules/update';  payload: any }
   | { type: 'rules/delete';  payload: { id: string } }
   | { type: 'rules/runAll';  payload: { onlyEnabled?: boolean } }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } };
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } }
+  // BACKUP (Google Drive)
+  | { type: 'backup/saveSettings'; payload: { passphrase?: string } }
+  | { type: 'backup/getClientId'; payload: {} }
+  | { type: 'backup/setClientId'; payload: { clientId: string } }
+  | { type: 'backup/restoreSettings'; payload: { passphrase?: string } }
+  | { type: 'backup/listFiles'; payload: {} }
+  | { type: 'backup/downloadFile'; payload: { id: string } };
 
 export interface VideoSeed {
   id: string;

@@ -4,6 +4,7 @@ import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
 import { matches, type Group as GroupRec } from '../shared/conditions';
+import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64 } from './driveBackup';
 
 // Click the extension icon to trigger scrape in active tab
 chrome.action?.onClicked.addListener((tab) => {
@@ -14,6 +15,23 @@ chrome.action?.onClicked.addListener((tab) => {
     // ignore
   }
 });
+
+// --- Google Drive backup wiring ---
+registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
+  const [tags, tagGroups, groups] = await Promise.all([
+    listTags().catch(() => []),
+    listTagGroups().catch(() => []),
+    listGroups().catch(() => []),
+  ]);
+  return {
+    version: 1 as const,
+    at: Date.now(),
+    tags: (tags as any) || [],
+    tagGroups: (tagGroups as any) || [],
+    groups: (groups as any) || [],
+  };
+});
+initDriveBackupAlarms();
 
 chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
   (async () => {
@@ -340,6 +358,63 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           sendResponse?.({ ok: true, count });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e), count: 0 });
+        }
+      }
+      // --- Backup routes ---
+      else if ((raw as any)?.type === 'backup/saveSettings') {
+        const passphrase: string | undefined = (raw as any)?.payload?.passphrase || undefined;
+        try {
+          const snapshot = await (async (): Promise<SettingsSnapshot> => {
+            const [tags, tagGroups, groups] = await Promise.all([
+              listTags().catch(() => []),
+              listTagGroups().catch(() => []),
+              listGroups().catch(() => []),
+            ]);
+            return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any };
+          })();
+          await saveSettingsNow(snapshot, passphrase ? { passphrase } : undefined);
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/getClientId') {
+        try {
+          const id = await getClientIdState();
+          sendResponse?.({ ok: true, clientId: id });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/setClientId') {
+        try {
+          const id = String((raw as any)?.payload?.clientId || '');
+          await setClientId(id);
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/restoreSettings') {
+        try {
+          const passphrase: string | undefined = (raw as any)?.payload?.passphrase || undefined;
+          const snap = await restoreSettings(passphrase ? { passphrase } : undefined);
+          sendResponse?.({ ok: true, snapshot: snap });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/listFiles') {
+        try {
+          const items = await listAppDataFiles();
+          sendResponse?.({ ok: true, items });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e), items: [] });
+        }
+      } else if ((raw as any)?.type === 'backup/downloadFile') {
+        try {
+          const id = String((raw as any)?.payload?.id || '');
+          if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
+          const res = await downloadAppDataFileBase64(id);
+          sendResponse?.({ ok: true, ...res });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       }
     } catch (e: any) {

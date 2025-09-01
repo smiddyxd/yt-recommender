@@ -9,6 +9,7 @@ import { send as sendBg } from '../lib/messaging';
 import type { TagRec, TagGroupRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import VideoList from './components/VideoList';
+import BackupModal from './components/BackupModal';
 
 // ---- Types ----
 type Video = {
@@ -149,6 +150,8 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
+  const [driveClientId, setDriveClientId] = useState<string | null>(null);
+  const [showBackups, setShowBackups] = useState<boolean>(false);
   const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
     // Build condition without source predicates so list reflects other filters
     const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
@@ -272,6 +275,8 @@ function cancelEditing() {
     loadGroups();
     loadChannelsDir();
     loadTopicOptions();
+    // Drive client id
+    try { sendBg('backup/getClientId', {} as any).then((r: any) => setDriveClientId((r?.clientId as string) || null)).catch(()=>setDriveClientId(null)); } catch {}
     // load last refresh time from storage
     try {
       chrome.storage?.local?.get('lastRefreshAt', (obj) => {
@@ -367,6 +372,32 @@ function startEditFromGroup(g: GroupRec) {
     // auto-hide toast after a bit (optional)
     setTimeout(() => setShowUndo(false), 6000);
   }
+
+  // --- Backup (Google Drive) ---
+  async function setDriveClientIdInteractive() {
+    try {
+      const cur = driveClientId || '';
+      const next = window.prompt('Enter Google OAuth Client ID (Web app) with redirect URI https://<your-ext-id>.chromiumapp.org/', cur || '') || '';
+      const trimmed = next.trim();
+      if (!trimmed) return;
+      const r: any = await sendBg('backup/setClientId', { clientId: trimmed } as any);
+      if (r?.ok) setDriveClientId(trimmed);
+      else alert(`Save failed: ${r?.error || 'unknown error'}`);
+    } catch (e: any) { alert(`Save failed: ${e?.message || e}`); }
+  }
+
+  async function backupSettingsInteractive() {
+    try {
+      const pass = window.prompt('Optional: enter passphrase to encrypt (AES-GCM). Leave blank for no encryption.');
+      const r: any = await sendBg('backup/saveSettings', pass ? ({ passphrase: pass } as any) : ({} as any));
+      if (r?.ok) alert('Settings backed up to Google Drive (appDataFolder) as settings.json');
+      else alert(`Backup failed: ${r?.error || 'unknown error'}`);
+    } catch (e: any) {
+      alert(`Backup failed: ${e?.message || e}`);
+    }
+  }
+  function openBackups() { try { console.log('[UI] openBackups'); } catch {} setShowBackups(true); }
+  function closeBackups() { setShowBackups(false); }
 
 
   async function undoDelete() {
@@ -936,6 +967,10 @@ const channelsFiltered = useMemo(() => {
   removeGroup={removeGroup}
   isPresetScrapeCheckable={isPresetScrapeCheckable}
   toggleGroupScrape={toggleGroupScrape}
+  driveClientId={driveClientId}
+  onSetDriveClientId={setDriveClientIdInteractive}
+  onBackupNow={backupSettingsInteractive}
+  onViewBackups={openBackups}
 />
       <div className="content">
         <header>
@@ -1341,6 +1376,7 @@ const channelsFiltered = useMemo(() => {
   </div>
 )}
       </div>{/* .content */}
+      <BackupModal open={showBackups} onClose={closeBackups} />
     </div>
   );
 }

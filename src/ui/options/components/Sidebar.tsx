@@ -32,6 +32,11 @@ type Props = {
   removeGroup: (id:string)=>void;
   isPresetScrapeCheckable?: (id: string) => boolean;
   toggleGroupScrape?: (id: string, next: boolean) => void;
+  // Backup (Google Drive)
+  driveClientId?: string | null;
+  onSetDriveClientId?: () => void;
+  onBackupNow?: () => void;
+  onViewBackups?: () => void;
 };
 
 export default function Sidebar(props: Props) {
@@ -61,6 +66,10 @@ export default function Sidebar(props: Props) {
   removeGroup,
   isPresetScrapeCheckable,
   toggleGroupScrape,
+  driveClientId,
+  onSetDriveClientId,
+  onBackupNow,
+  onViewBackups,
 } = props;
 
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -242,6 +251,23 @@ export default function Sidebar(props: Props) {
             <li>Rules</li>
             <li>Presets</li>
           </ul>
+        </div>
+
+        <div className="side-section">
+          <div className="side-title">Backup</div>
+          <div className="side-row" title={driveClientId ? driveClientId : ''}>
+            <span className="muted" style={{ flex: 1 }}>
+              Client ID: {driveClientId ? `${driveClientId.slice(0,6)}…${driveClientId.slice(-10)}` : '(not set)'}
+            </span>
+          </div>
+          <div className="side-row" style={{ gap: 8 }}>
+            <button className="btn-ghost" onClick={onSetDriveClientId}>Set Client ID</button>
+            <button className="btn-ghost" onClick={onBackupNow}>Backup Settings</button>
+            <button className="btn-ghost" onClick={() => { try { console.log('[UI] View Backups click'); } catch {} onViewBackups && onViewBackups(); }}>View Backups</button>
+          </div>
+          <div className="muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
+            Uses Google Drive appDataFolder. During backup you’ll be asked to sign in. Optional passphrase encrypts data locally.
+          </div>
         </div>
       </aside>
   );

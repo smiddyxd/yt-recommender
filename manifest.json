@@ -3,7 +3,7 @@
   "name": "YT Playlist Cacher (Dev)",
   "version": "0.0.1",
   "description": "Scrapes playlist tiles you see and stores them locally.",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "identity", "alarms"],
   "host_permissions": ["https://www.youtube.com/*", "https://www.googleapis.com/*"],
   "background": {
     "service_worker": "background/index.js",
