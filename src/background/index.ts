@@ -4,7 +4,7 @@ import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
 import { matches, type Group as GroupRec } from '../shared/conditions';
-import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64 } from './driveBackup';
+import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, queueSettingsBackup } from './driveBackup';
 
 // Click the extension icon to trigger scrape in active tab
 chrome.action?.onClicked.addListener((tab) => {
@@ -23,15 +23,85 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
     listTagGroups().catch(() => []),
     listGroups().catch(() => []),
   ]);
+  const db = await openDB();
+  const videoIndex: Array<{ id: string; tags?: string[]; sources?: Array<{ type: string; id?: string | null }>; progressSec?: number | null; channelId?: string | null }> = [];
+  const channelIndex: Array<{ id: string; tags?: string[] }> = [];
+  const pendingChannels: Array<{ key: string; name?: string | null; handle?: string | null }> = [];
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['videos', 'channels', 'channels_pending'] as any, 'readonly');
+    // videos
+    try {
+      const vs = tx.objectStore('videos');
+      const curV = vs.openCursor();
+      curV.onsuccess = () => {
+        const c = curV.result as IDBCursorWithValue | null;
+        if (!c) return;
+        const r: any = c.value || {};
+        const entry: any = { id: r.id };
+        if (Array.isArray(r.tags) && r.tags.length) entry.tags = r.tags.slice();
+        if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s: any) => ({ type: String(s?.type || ''), id: (s?.id ?? null) }));
+        let ps: number | null = null;
+        try {
+          const sec = Number(r?.progress?.sec);
+          if (Number.isFinite(sec) && sec > 0) ps = Math.floor(sec);
+          else {
+            const pct = Number(r?.progress?.pct);
+            const dur = Number(r?.progress?.duration ?? r?.durationSec);
+            if (Number.isFinite(pct) && Number.isFinite(dur) && dur > 0) ps = Math.floor(Math.max(0, Math.min(100, pct)) / 100 * dur);
+          }
+        } catch {}
+        if (ps != null) entry.progressSec = ps;
+        if (r.channelId) entry.channelId = r.channelId;
+        videoIndex.push(entry);
+        c.continue();
+      };
+      curV.onerror = () => reject(curV.error);
+    } catch {}
+    // channels
+    try {
+      const cs = tx.objectStore('channels');
+      const curC = cs.openCursor();
+      curC.onsuccess = () => {
+        const c = curC.result as IDBCursorWithValue | null;
+        if (!c) return;
+        const r: any = c.value || {};
+        const entry: any = { id: r.id };
+        if (Array.isArray(r.tags) && r.tags.length) entry.tags = r.tags.slice();
+        channelIndex.push(entry);
+        c.continue();
+      };
+      curC.onerror = () => reject(curC.error);
+    } catch {}
+    // pending channels
+    try {
+      const ps = (tx as any).objectStore('channels_pending') as IDBObjectStore;
+      const curP = ps.openCursor();
+      curP.onsuccess = () => {
+        const c = curP.result as IDBCursorWithValue | null;
+        if (!c) return;
+        const r: any = c.value || {};
+        pendingChannels.push({ key: String(r.key || ''), name: r.name ?? null, handle: r.handle ?? null });
+        c.continue();
+      };
+      curP.onerror = () => reject(curP.error);
+    } catch {}
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
   return {
     version: 1 as const,
     at: Date.now(),
     tags: (tags as any) || [],
     tagGroups: (tagGroups as any) || [],
     groups: (groups as any) || [],
+    videoIndex,
+    channelIndex,
+    pendingChannels,
   };
 });
 initDriveBackupAlarms();
+
+function scheduleBackup() { try { queueSettingsBackup(); } catch {} }
 
 chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
   (async () => {
@@ -40,10 +110,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       if (raw.type === 'cache/VIDEO_SEEN') {
         await upsertVideo(raw.payload);
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_STUB') {
         await upsertVideo(raw.payload);
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_PROGRESS') {
         const { id, current, duration, started, completed } = raw.payload;
@@ -53,6 +125,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           flags: { started: !!started, completed: !!completed }
         });
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_PROGRESS_PCT') {
         const { id, pct, started, completed } = raw.payload || {};
@@ -60,6 +133,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         if (id && Number.isFinite(pctNum)) {
           await upsertVideo({ id, progress: { pct: Math.max(0, Math.min(100, pctNum)) }, flags: { started: !!started, completed: !!completed } });
           try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+          scheduleBackup();
           sendResponse?.({ ok: true });
         } else {
           sendResponse?.({ ok: false });
@@ -87,16 +161,19 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         const { name, condition } = raw.payload || {};
         await createGroup(name, condition);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'groups/update') {
         const { id, patch } = raw.payload || {};
         await updateGroup(id, patch);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'groups/delete') {
         const { id } = raw.payload || {};
         await deleteGroup(id);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
@@ -109,6 +186,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/list') {
         const items = await listTags();
@@ -118,6 +196,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         const groupId = (raw.payload?.groupId ?? null) as (string | null);
         await setTagGroup(name, groupId);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if ((raw as any)?.type === 'channels/upsertStub') {
         const { id, name, handle } = (raw as any).payload || {};
@@ -125,6 +204,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         try {
           await upsertChannelStub(id, name, handle);
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+          scheduleBackup();
           sendResponse?.({ ok: true });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
@@ -132,18 +212,21 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } else if (raw.type === 'tags/create') {
         await createTag(raw.payload?.name, raw.payload?.color);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/rename') {
         await renameTag(raw.payload?.oldName, raw.payload?.newName);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
         try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{}
+        scheduleBackup();
         sendResponse?.({ ok: true });
   } else if (raw.type === 'tags/delete') {
         const cascade = raw.payload?.cascade ?? true;
         await deleteTag(raw.payload?.name, cascade);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
       if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
+      scheduleBackup();
       sendResponse?.({ ok: true });
       } else if (raw.type === 'tagGroups/list') {
         const items = await listTagGroups();
@@ -151,15 +234,18 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } else if (raw.type === 'tagGroups/create') {
         const id = await createTagGroup(String(raw.payload?.name || ''));
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        scheduleBackup();
         sendResponse?.({ ok: true, id });
       } else if (raw.type === 'tagGroups/rename') {
         await renameTagGroup(String(raw.payload?.id || ''), String(raw.payload?.name || ''));
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tagGroups/delete') {
         await deleteTagGroup(String(raw.payload?.id || ''));
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
     } else if (raw.type === 'channels/refreshUnfetched') {
       const apiKey = await getApiKey();
@@ -186,7 +272,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }
-    } else if (raw.type === 'channels/refreshByIds') {
+      } else if (raw.type === 'channels/refreshByIds') {
       const ids: string[] = Array.isArray(raw.payload?.ids) ? raw.payload.ids.filter(Boolean) : [];
       const apiKey = await getApiKey();
       if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
@@ -216,16 +302,19 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         dlog('channels/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
         await applyChannelTags(ids || [], addIds, removeIds);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'channels/delete') {
         const ids: string[] = raw.payload?.ids || [];
         await moveChannelsToTrash(ids);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'channels/restore') {
         const ids: string[] = raw.payload?.ids || [];
         await restoreChannelsFromTrash(ids);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'channels/markScraped') {
         const { id, at, tab, count, totalVideoCountOnScrapeTime } = raw.payload || {};
@@ -252,6 +341,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         dlog('videos/delete count=', ids.length);
         await moveToTrash(ids);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        scheduleBackup();
         dlog('videos/delete done');
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/restore') {
@@ -259,10 +349,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         console.log('[bg] videos/restore', ids.length);
         await restoreFromTrash(ids);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/wipeSources') {
         await wipeSourcesDuplicates();
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/applyYTBatch') {
         const items: any[] = raw.payload?.items || [];
@@ -270,6 +362,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           try { await applyYouTubeVideo(it); } catch { /* ignore individual item errors */ }
         }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        scheduleBackup();
         sendResponse?.({ ok: true, count: items.length });
       } else if (raw.type === 'videos/refreshAll') {
         const skipFetched = !!raw.payload?.skipFetched;
@@ -337,6 +430,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         try { chrome.storage?.local?.set({ lastRefreshAt: Date.now() }); } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
         chrome.runtime.sendMessage({ type: 'refresh/done', payload: { processed, total, applied, failedBatches, at: Date.now() } });
+        scheduleBackup();
         sendResponse?.({ ok: true, processed, total, applied, failedBatches });
       } else if (raw.type === 'videos/stubsCount') {
         try {
@@ -364,17 +458,77 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
       else if ((raw as any)?.type === 'backup/saveSettings') {
         const passphrase: string | undefined = (raw as any)?.payload?.passphrase || undefined;
         try {
+          try { chrome.runtime.sendMessage({ type: 'backup/progress', payload: {} }); } catch {}
           const snapshot = await (async (): Promise<SettingsSnapshot> => {
             const [tags, tagGroups, groups] = await Promise.all([
               listTags().catch(() => []),
               listTagGroups().catch(() => []),
               listGroups().catch(() => []),
             ]);
-            return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any };
+            // Also include compact indices
+            const db = await openDB();
+            const videoIndex: any[] = [];
+            const channelIndex: any[] = [];
+            const pendingChannels: any[] = [];
+            await new Promise<void>((resolve, reject) => {
+              const tx = db.transaction(['videos','channels','channels_pending'] as any, 'readonly');
+              const vs = tx.objectStore('videos');
+              const curV = vs.openCursor();
+              curV.onsuccess = () => {
+                const c = curV.result as IDBCursorWithValue | null;
+                if (!c) return;
+                const r: any = c.value || {};
+                const entry: any = { id: r.id };
+                if (Array.isArray(r.tags) && r.tags.length) entry.tags = r.tags.slice();
+                if (Array.isArray(r.sources) && r.sources.length) entry.sources = r.sources.map((s: any) => ({ type: String(s?.type || ''), id: (s?.id ?? null) }));
+                let ps: number | null = null;
+                try {
+                  const sec = Number(r?.progress?.sec);
+                  if (Number.isFinite(sec) && sec > 0) ps = Math.floor(sec);
+                  else {
+                    const pct = Number(r?.progress?.pct);
+                    const dur = Number(r?.progress?.duration ?? r?.durationSec);
+                    if (Number.isFinite(pct) && Number.isFinite(dur) && dur > 0) ps = Math.floor(Math.max(0, Math.min(100, pct)) / 100 * dur);
+                  }
+                } catch {}
+                if (ps != null) entry.progressSec = ps;
+                if (r.channelId) entry.channelId = r.channelId;
+                videoIndex.push(entry);
+                c.continue();
+              };
+              curV.onerror = () => reject(curV.error);
+              const cs = tx.objectStore('channels');
+              const curC = cs.openCursor();
+              curC.onsuccess = () => {
+                const c = curC.result as IDBCursorWithValue | null;
+                if (!c) return;
+                const r: any = c.value || {};
+                const entry: any = { id: r.id };
+                if (Array.isArray(r.tags) && r.tags.length) entry.tags = r.tags.slice();
+                channelIndex.push(entry);
+                c.continue();
+              };
+              curC.onerror = () => reject(curC.error);
+              const ps = (tx as any).objectStore('channels_pending') as IDBObjectStore;
+              const curP = ps.openCursor();
+              curP.onsuccess = () => {
+                const c = curP.result as IDBCursorWithValue | null;
+                if (!c) return;
+                const r: any = c.value || {};
+                pendingChannels.push({ key: String(r.key || ''), name: r.name ?? null, handle: r.handle ?? null });
+                c.continue();
+              };
+              curP.onerror = () => reject(curP.error);
+              tx.oncomplete = () => resolve();
+              tx.onerror = () => reject(tx.error);
+            });
+            return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any, videoIndex, channelIndex, pendingChannels };
           })();
           await saveSettingsNow(snapshot, passphrase ? { passphrase } : undefined);
+          try { const now = Date.now(); chrome.storage?.local?.set({ lastBackupAt: now }); chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } }); } catch {}
           sendResponse?.({ ok: true });
         } catch (e: any) {
+          try { chrome.runtime.sendMessage({ type: 'backup/error', payload: { message: e?.message || String(e) } }); } catch {}
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       } else if ((raw as any)?.type === 'backup/getClientId') {

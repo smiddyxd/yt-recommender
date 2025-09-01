@@ -152,6 +152,9 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
   const [driveClientId, setDriveClientId] = useState<string | null>(null);
   const [showBackups, setShowBackups] = useState<boolean>(false);
+  const [backupInProgress, setBackupInProgress] = useState<boolean>(false);
+  const [lastBackupAt, setLastBackupAt] = useState<number | null>(null);
+  const [backupLastError, setBackupLastError] = useState<string | null>(null);
   const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
     // Build condition without source predicates so list reflects other filters
     const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
@@ -277,11 +280,15 @@ function cancelEditing() {
     loadTopicOptions();
     // Drive client id
     try { sendBg('backup/getClientId', {} as any).then((r: any) => setDriveClientId((r?.clientId as string) || null)).catch(()=>setDriveClientId(null)); } catch {}
-    // load last refresh time from storage
+    // load last refresh/backup time from storage
     try {
       chrome.storage?.local?.get('lastRefreshAt', (obj) => {
         const t = obj?.lastRefreshAt as number | undefined;
         if (t && Number.isFinite(t)) setLastRefreshAt(t);
+      });
+      chrome.storage?.local?.get('lastBackupAt', (obj) => {
+        const t = obj?.lastBackupAt as number | undefined;
+        if (t && Number.isFinite(t)) setLastBackupAt(t);
       });
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -509,6 +516,17 @@ useEffect(() => {
       setRefreshApplied(p.applied | 0);
       setRefreshFailed(p.failedBatches | 0);
       if (p.at) setLastRefreshAt(p.at);
+    } else if (msg?.type === 'backup/progress') {
+      setBackupInProgress(true);
+      setBackupLastError(null);
+    } else if (msg?.type === 'backup/done') {
+      setBackupInProgress(false);
+      const at = msg?.payload?.at | 0;
+      if (at) setLastBackupAt(at);
+    } else if (msg?.type === 'backup/error') {
+      setBackupInProgress(false);
+      const err = msg?.payload?.message || '';
+      if (err) setBackupLastError(String(err));
     }
   }
   chrome.runtime.onMessage.addListener(onMsg);
@@ -1139,6 +1157,14 @@ const channelsFiltered = useMemo(() => {
             )}
             {!refreshing && (
               <span className="muted" aria-live="polite" title="Last refresh time">{fmtTime(lastRefreshAt)}</span>
+            )}
+            {backupInProgress ? (
+              <span className="muted" aria-live="polite" title="Backup in progress" style={{ marginLeft: 8 }}>Backing up…</span>
+            ) : (
+              <span className="muted" aria-live="polite" title="Last backup time" style={{ marginLeft: 8 }}>{fmtTime(lastBackupAt)}</span>
+            )}
+            {backupLastError && (
+              <span className="muted" style={{ color: 'salmon' }} title="Backup error">{String(backupLastError).slice(0, 120)}</span>
             )}
             {refreshLastError && (
               <span className="muted" style={{ color: 'salmon' }} title="Last error">{String(refreshLastError).slice(0, 140)}</span>

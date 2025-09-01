@@ -6,12 +6,27 @@ import type { Group as GroupRec } from '../shared/conditions';
 import type { TagRec, TagGroupRec } from '../types/messages';
 
 // -------------------- Types --------------------
+export type VideoIndexEntry = {
+  id: string;
+  tags?: string[];
+  sources?: Array<{ type: string; id?: string | null }>;
+  progressSec?: number | null;
+  channelId?: string | null;
+};
+
+export type ChannelIndexEntry = { id: string; tags?: string[] };
+
+export type PendingChannelEntry = { key: string; name?: string | null; handle?: string | null };
+
 export type SettingsSnapshot = {
   version: 1;
   at: number;
   tags: TagRec[];
   tagGroups: TagGroupRec[];
   groups: GroupRec[]; // includes scrape?: boolean
+  videoIndex: VideoIndexEntry[];
+  channelIndex: ChannelIndexEntry[];
+  pendingChannels: PendingChannelEntry[];
   // Future: add rules/prefs as needed
 };
 
@@ -213,10 +228,17 @@ export function queueSettingsBackup(opts?: { passphrase?: string }) {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(async () => {
     try {
+      try { chrome.runtime.sendMessage({ type: 'backup/progress', payload: {} }); } catch {}
       const snap = await settingsProducer!();
       await saveSettingsNow(snap, opts);
+      try {
+        const now = Date.now();
+        chrome.storage?.local?.set({ lastBackupAt: now });
+        chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } });
+      } catch {}
     } catch (e) {
       console.error('[driveBackup] settings backup failed:', e);
+      try { chrome.runtime.sendMessage({ type: 'backup/error', payload: { message: (e as any)?.message || String(e) } }); } catch {}
     }
   }, 3000) as unknown as number;
 }
