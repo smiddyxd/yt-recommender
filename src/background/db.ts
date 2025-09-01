@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 10;
+const DB_VERSION = 11;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -61,6 +61,15 @@ export async function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('meta')) {
         db.createObjectStore('meta', { keyPath: 'key' });
+      }
+      // Event history (commits + events)
+      if (!db.objectStoreNames.contains('events_commits')) {
+        const ec = db.createObjectStore('events_commits', { keyPath: 'commitId' });
+        ec.createIndex('byTs', 'ts', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('events')) {
+        const ev = db.createObjectStore('events', { keyPath: 'id' });
+        ev.createIndex('byCommit', 'commitId', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -600,6 +609,12 @@ function applyYouTubeFields(row: any, yt: any) {
     const lsd = yt?.liveStreamingDetails || null;
     row.fetchedAt = Date.now();
     row.title = sn.title ?? row.title ?? null;
+    // best available thumbnail url
+    try {
+      const thumbs = sn.thumbnails || {};
+      const best = thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null;
+      row.thumbUrl = best || row.thumbUrl || null;
+    } catch { /* ignore */ }
     row.channelId = sn.channelId ?? row.channelId ?? null;
     row.channelName = sn.channelTitle ?? row.channelName ?? null;
     row.uploadedAt = parseIsoDate(sn.publishedAt) ?? row.uploadedAt ?? null;
@@ -700,6 +715,11 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
       next.customUrl = snippet.customUrl || prev.customUrl || null;
       next.thumbnails = snippet.thumbnails || prev.thumbnails || null;
       next.country = snippet.country || (branding?.channel?.country) || prev.country || null;
+      // Store description for diffing/history
+      next.description = typeof snippet.description === 'string' ? snippet.description : (prev.description ?? null);
+      // Store banner image link for diffing/history
+      const banner = (branding?.image?.bannerExternalUrl as string) || null;
+      next.bannerUrl = banner || prev.bannerUrl || null;
       try {
         const t = Date.parse(snippet.publishedAt || '');
         next.publishedAt = Number.isFinite(t) ? t : (prev.publishedAt ?? null);

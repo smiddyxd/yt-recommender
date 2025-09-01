@@ -10,6 +10,7 @@ import type { TagRec, TagGroupRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import VideoList from './components/VideoList';
 import BackupModal from './components/BackupModal';
+import HistoryModal from './components/HistoryModal';
 
 // ---- Types ----
 type Video = {
@@ -152,6 +153,7 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
   const [driveClientId, setDriveClientId] = useState<string | null>(null);
   const [showBackups, setShowBackups] = useState<boolean>(false);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const [backupInProgress, setBackupInProgress] = useState<boolean>(false);
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null);
   const [backupLastError, setBackupLastError] = useState<string | null>(null);
@@ -405,6 +407,8 @@ function startEditFromGroup(g: GroupRec) {
   }
   function openBackups() { try { console.log('[UI] openBackups'); } catch {} setShowBackups(true); }
   function closeBackups() { setShowBackups(false); }
+  function openHistory() { setShowHistory(true); }
+  function closeHistory() { setShowHistory(false); }
 
 
   async function undoDelete() {
@@ -988,7 +992,7 @@ const channelsFiltered = useMemo(() => {
   driveClientId={driveClientId}
   onSetDriveClientId={setDriveClientIdInteractive}
   onBackupNow={backupSettingsInteractive}
-  onViewBackups={openBackups}
+  onOpenHistory={openHistory}
 />
       <div className="content">
         <header>
@@ -1403,6 +1407,7 @@ const channelsFiltered = useMemo(() => {
 )}
       </div>{/* .content */}
       <BackupModal open={showBackups} onClose={closeBackups} />
+      <HistoryModal open={showHistory} onClose={closeHistory} />
     </div>
   );
 }

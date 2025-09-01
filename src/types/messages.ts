@@ -58,7 +58,12 @@ export type Msg =
   | { type: 'backup/setClientId'; payload: { clientId: string } }
   | { type: 'backup/restoreSettings'; payload: { passphrase?: string } }
   | { type: 'backup/listFiles'; payload: {} }
-  | { type: 'backup/downloadFile'; payload: { id: string } };
+  | { type: 'backup/downloadFile'; payload: { id: string } }
+  | { type: 'backup/history/list'; payload: { limit?: number } }
+  | { type: 'backup/history/getCommit'; payload: { commitId: string } }
+  | { type: 'backup/history/getUpTo'; payload: { commitId: string } }
+  | { type: 'backup/history/deleteUpTo'; payload: { commitId: string } }
+  | { type: 'backup/history/usage'; payload: {} };
 
 export interface VideoSeed {
   id: string;

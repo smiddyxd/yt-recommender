@@ -214,10 +214,24 @@ export function registerSettingsProducer(fn: () => Promise<SettingsSnapshot>) {
   settingsProducer = fn;
 }
 
+// Expose current snapshot via the registered producer
+export async function getCurrentSettingsSnapshot(): Promise<SettingsSnapshot> {
+  if (!settingsProducer) throw new Error('No settings producer registered');
+  return await settingsProducer();
+}
+
 export async function saveSettingsNow(snapshot: SettingsSnapshot, opts?: { passphrase?: string }) {
   const token = await getAccessToken(true);
   const name = 'settings.json';
 
+  const fileId = await findAppDataFileId(name, token);
+  const body = opts?.passphrase ? await encryptJSON(snapshot, opts.passphrase) : snapshot;
+  await uploadJSONAppData(name, body, token, fileId || undefined);
+}
+
+// Save a snapshot under a custom name (e.g., snapshots/settings-<ts>.json)
+export async function saveSnapshotWithName(name: string, snapshot: SettingsSnapshot, opts?: { passphrase?: string }) {
+  const token = await getAccessToken(true);
   const fileId = await findAppDataFileId(name, token);
   const body = opts?.passphrase ? await encryptJSON(snapshot, opts.passphrase) : snapshot;
   await uploadJSONAppData(name, body, token, fileId || undefined);
@@ -322,4 +336,36 @@ export async function downloadAppDataFileBase64(id: string): Promise<{ contentB6
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   const contentB64 = btoa(s);
   return { contentB64, name: meta?.name || null, mimeType: meta?.mimeType || null };
+}
+
+// Upsert arbitrary text file (used for events JSONL). Creates or replaces content.
+export async function upsertAppDataTextFile(name: string, text: string): Promise<void> {
+  const token = await getAccessToken(true);
+  const fileId = await findAppDataFileId(name, token);
+  if (!fileId) {
+    const meta = { name, parents: ['appDataFolder'] };
+    const boundary = 'batch_' + Math.random().toString(36).slice(2);
+    const body =
+      `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n` +
+      JSON.stringify(meta) +
+      `\r\n--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n` +
+      text +
+      `\r\n--${boundary}--`;
+    await driveFetch(`/upload/drive/v3/files?uploadType=multipart`, {
+      method: 'POST', token,
+      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body,
+    });
+  } else {
+    await driveFetch(`/upload/drive/v3/files/${fileId}?uploadType=media`, {
+      method: 'PATCH', token,
+      headers: { 'Content-Type': 'text/plain; charset=UTF-8' },
+      body: text,
+    });
+  }
+}
+
+export async function deleteAppDataFile(id: string): Promise<void> {
+  const token = await getAccessToken(true);
+  await driveFetch(`/drive/v3/files/${encodeURIComponent(id)}`, { method: 'DELETE', token });
 }
