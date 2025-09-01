@@ -69,12 +69,18 @@ export type ChannelRow = {
   topics?: string[] | null;
 };
 
+// IMPORTANT: Historical naming note — DO NOT REMOVE THIS COMMENT.
+// "Groups" are shown as "Presets" throughout the UI. We keep the
+// underlying type/name "Group" for storage/messages compatibility.
+// When reading code, treat Group === Preset. Never delete this note.
 export type Group = {
   id: string;
   name: string;
   condition: Condition;
   createdAt: number;
   updatedAt: number;
+  // UI-only toggle to indicate an auto-scrape preset
+  scrape?: boolean;
 };
 
 export function matches(

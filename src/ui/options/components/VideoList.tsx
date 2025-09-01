@@ -74,11 +74,24 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
                 })()}
               </h3>
               <div className="meta">
-                {[
-                  v.channelName || '(unknown channel)',
-                  secToClock(v.durationSec),
-                  v.uploadedAt ? fmtDate(v.uploadedAt) : ''
-                ].filter(Boolean).join(' · ')}
+                {(() => {
+                  const nodes: React.ReactNode[] = [];
+                  const chName = v.channelName || '(unknown channel)';
+                  if (v.channelId) {
+                    const chHref = `https://www.youtube.com/channel/${v.channelId}`;
+                    nodes.push(<a key="ch" href={chHref} target="_blank" rel="noopener noreferrer">{chName}</a>);
+                  } else {
+                    nodes.push(<span key="ch">{chName}</span>);
+                  }
+                  nodes.push(<span key="dur">{secToClock(v.durationSec)}</span>);
+                  if (v.uploadedAt) nodes.push(<span key="up">{fmtDate(v.uploadedAt)}</span>);
+                  return nodes.map((node, i) => (
+                    <React.Fragment key={`p-${i}`}>
+                      {i > 0 && <span> · </span>}
+                      {node}
+                    </React.Fragment>
+                  ));
+                })()}
               </div>
               <div className="badges">
                 {v.flags?.started && <span className="badge">started</span>}
@@ -115,3 +128,4 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
     </main>
   );
 }
+

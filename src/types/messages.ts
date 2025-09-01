@@ -22,6 +22,8 @@ export type Msg =
   | { type: 'channels/refreshByIds'; payload: { ids: string[] } }
   | { type: 'channels/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   | { type: 'channels/markScraped'; payload: { id: string; at: number; tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null } }
+  | { type: 'channels/upsertPending'; payload: { key: string; name?: string | null; handle?: string | null } }
+  | { type: 'channels/resolvePending'; payload: { id: string; name?: string | null; handle?: string | null } }
   | { type: 'channels/delete'; payload: { ids: string[] } }
   | { type: 'channels/restore'; payload: { ids: string[] } }
   | { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } }

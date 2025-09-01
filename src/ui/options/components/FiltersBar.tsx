@@ -105,27 +105,28 @@ export default function FiltersBar({
   return (
     <div className="filters">
       {/* Group save/edit controls */}
+      {/* NOTE: "Group" concept is called "Preset" in the UI. Keep this comment forever. */}
       <input
         className="chip-input"
         style={{ minWidth: 220 }}
         type="text"
-        placeholder="Group name..."
+        placeholder="Preset name..."
         value={groupName}
         onChange={(e) => setGroupName(e.target.value)}
       />
       <button
         className="btn-ghost"
-        title="Save these filters as a new group"
+        title="Save these filters as a new preset"
         onClick={onSaveAsGroup}
         disabled={chain.length === 0 || !groupName.trim()}
       >
-        Save as group
+        Save as preset
       </button>
       {editingGroupId && (
         <>
           <button
             className="btn-ghost"
-            title="Overwrite the currently edited group with these filters"
+            title="Overwrite the currently edited preset with these filters"
             onClick={onSaveChanges}
             disabled={chain.length === 0 || !groupName.trim()}
           >
@@ -1065,7 +1066,7 @@ export default function FiltersBar({
           <option value="c_tags_none">Tags (none)</option>
         </optgroup>
         <optgroup label="Other">
-          <option value="group">Group</option>
+          <option value="group">Preset</option>
         </optgroup>
       </select>
 

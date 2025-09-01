@@ -3,6 +3,8 @@ import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { TagRec } from '../../../types/messages';
 
+// NOTE: "Groups" are called "Presets" in the UI. Keep this comment forever.
+// The underlying storage/type is still named Group for compatibility.
 type Props = {
   tags: TagRec[];
   newTag: string;
@@ -28,6 +30,8 @@ type Props = {
   groups: GroupRec[];
   startEditFromGroup: (g: GroupRec)=>void;
   removeGroup: (id:string)=>void;
+  isPresetScrapeCheckable?: (id: string) => boolean;
+  toggleGroupScrape?: (id: string, next: boolean) => void;
 };
 
 export default function Sidebar(props: Props) {
@@ -55,6 +59,8 @@ export default function Sidebar(props: Props) {
   groups,
   startEditFromGroup,
   removeGroup,
+  isPresetScrapeCheckable,
+  toggleGroupScrape,
 } = props;
 
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -68,7 +74,7 @@ export default function Sidebar(props: Props) {
         <div className="side-section">
           <div className="side-title" style={{ display: 'flex', gap: 8 }}>
             <button className="btn-ghost" aria-pressed={tab==='tags'} onClick={()=>setTab('tags')}>Tags</button>
-            <button className="btn-ghost" aria-pressed={tab==='groups'} onClick={()=>setTab('groups')}>Groups</button>
+            <button className="btn-ghost" aria-pressed={tab==='groups'} onClick={()=>setTab('groups')}>Tag Groups</button>
           </div>
           {tab === 'tags' ? (
             <>
@@ -197,26 +203,33 @@ export default function Sidebar(props: Props) {
           )}
 
         </div>
-        <div className="side-section">
-          <div className="side-title">Groups</div>
+          <div className="side-section">
+          <div className="side-title">Presets</div>
 
           
 
-          {/* Group list (click to load into form) */}
+          {/* Preset list (click to load into form) */}
           <div className="group-list">
-            {groups.length === 0 && <div className="muted">No groups yet.</div>}
+            {groups.length === 0 && <div className="muted">No presets yet.</div>}
             {groups.map((g) => (
               <div className="group-row" key={g.id}>
                 <button
   className="side-btn"
   onClick={() => startEditFromGroup(g)}
-  title="Edit group in Filters"
+  title="Edit preset in Filters"
 >
   {g.name}
 </button>
-                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete group">
-                  Delete
+                <button
+                  className="btn-ghost"
+                  title={isPresetScrapeCheckable && !isPresetScrapeCheckable(g.id) ? 'Contains unsupported predicates for scrape-time; cannot enable' : 'Toggle scrape flag (S)'}
+                  onClick={() => toggleGroupScrape?.(g.id, !(g as any).scrape)}
+                  aria-pressed={(g as any).scrape === true}
+                  disabled={isPresetScrapeCheckable ? !isPresetScrapeCheckable(g.id) : false}
+                >
+                  S
                 </button>
+                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete preset">x</button>
               </div>
             ))}
           </div>
@@ -227,7 +240,7 @@ export default function Sidebar(props: Props) {
           <ul className="side-list">
             <li>Tags</li>
             <li>Rules</li>
-            <li>Groups</li>
+            <li>Presets</li>
           </ul>
         </div>
       </aside>

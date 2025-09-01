@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { dlog, derr } from '../../types/debug';
 import { matches, matchesChannel, type Condition, type Group as GroupRec } from '../../shared/conditions';
 import FiltersBar from './components/FiltersBar';
@@ -102,6 +102,8 @@ export default function App() {
   const [showUndo, setShowUndo] = useState(false);
 
   const [showTagger, setShowTagger] = useState(false);
+  // Debounced refresh to reduce churn from frequent db/change events
+  const refreshTimerRef = useRef<number | null>(null);
 
   const [tags, setTags] = useState<TagRec[]>([]);
   const [tagGroups, setTagGroups] = useState<TagGroupRec[]>([]);
@@ -223,6 +225,43 @@ function cancelEditing() {
       setTopicOptions(items);
     } catch { setTopicOptions([]); }
   }
+
+  async function toggleGroupScrape(id: string, next: boolean) {
+    try {
+      await sendBg('groups/update', { id, patch: { scrape: !!next } });
+      loadGroups();
+    } catch {}
+  }
+
+  // Determine if a preset (group) is scrape-checkable (only contains predicates we can evaluate at scrape time)
+  const isPresetScrapeCheckable = useMemo(() => {
+    const byId = new Map<string, GroupRec>();
+    for (const g of groups) byId.set(g.id, g);
+    const supported = new Set(['sourceAny','sourcePlaylistAny','channelIdIn','titleRegex','groupRef']);
+    function checkNode(node: any, seen: Set<string>): boolean {
+      if (!node) return true;
+      if ('all' in node) return (Array.isArray(node.all) ? node.all : []).every((n: any) => checkNode(n, seen));
+      if ('any' in node) return (Array.isArray(node.any) ? node.any : []).every((n: any) => checkNode(n, seen));
+      if ('not' in node) return checkNode(node.not, seen);
+      const p = node as any;
+      if (p?.kind === 'groupRef') {
+        const ids: string[] = Array.isArray(p.ids) ? p.ids : [];
+        if (!ids.length) return false;
+        return ids.every((gid) => {
+          if (!gid || seen.has(gid)) return true;
+          seen.add(gid);
+          const g = byId.get(gid);
+          return !!g && checkNode(g.condition as any, new Set(seen));
+        });
+      }
+      return supported.has(String(p?.kind || ''));
+    }
+    return (id: string) => {
+      const g = byId.get(id);
+      if (!g) return false;
+      return checkNode(g.condition as any, new Set());
+    };
+  }, [groups]);
   async function loadChannelsDir() {
     const resp: any = await sendBg(inChannelsTrash ? 'channels/trashList' : 'channels/list', {} as any);
     setChannels(resp?.items || []);
@@ -407,7 +446,15 @@ useEffect(() => {
   function onMsg(msg: any) {
     if (msg?.type === 'db/change') {
       const ent = msg.payload?.entity;
-      if (ent === 'videos' || ent == null) { refresh(); loadTopicOptions(); }
+      if (ent === 'videos' || ent == null) {
+        if (refreshTimerRef.current == null) {
+          refreshTimerRef.current = window.setTimeout(() => {
+            refreshTimerRef.current = null;
+            refresh();
+            loadTopicOptions();
+          }, 200) as unknown as number;
+        }
+      }
       if (ent === 'tags')   loadTags();
       if (ent === 'tagGroups') loadTagGroups();
       if (ent === 'groups') loadGroups();
@@ -824,7 +871,7 @@ const channelsFiltered = useMemo(() => {
   function applyTagToSelection(tag: string) {
     if (inChannels) {
       const selectedIds = Array.from(selected);
-      const haveAll = selectedIds.length > 0 && channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
+      const haveAll = selectedIds.length > 0 && channels.reduce((n: number, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
       sendBg('channels/applyTags', {
         ids: selectedIds,
         addIds: haveAll ? [] : [tag],
@@ -887,6 +934,8 @@ const channelsFiltered = useMemo(() => {
   groups={groups}
   startEditFromGroup={startEditFromGroup}
   removeGroup={removeGroup}
+  isPresetScrapeCheckable={isPresetScrapeCheckable}
+  toggleGroupScrape={toggleGroupScrape}
 />
       <div className="content">
         <header>
@@ -1084,7 +1133,7 @@ const channelsFiltered = useMemo(() => {
                   <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                     {names.map(tag => {
                       const haveAll = inChannels
-                        ? (channels.reduce((n, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
+                        ? (channels.reduce((n: number, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
                         : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
                       return (
                         <button

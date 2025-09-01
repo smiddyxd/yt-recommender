@@ -88,6 +88,9 @@ button:hover { border-color: #2a3543; }
 .title a { color: var(--text); text-decoration: none; }
 .title a:hover { color: var(--accent); text-decoration: underline; }
 .meta { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.meta a { color: var(--muted); text-decoration: none; }
+.meta a:visited { color: var(--muted); }
+.meta a:hover { color: var(--accent); text-decoration: underline; }
 .badges { display: flex; gap: 6px; flex-wrap: wrap; }
 .badge {
   font-size: 11px;
@@ -187,7 +190,12 @@ footer {
   color: var(--text);
   cursor: pointer;
 }
-.btn-ghost:disabled { opacity: 0.5; cursor: default; }
+.btn-ghost:disabled { opacity: 0.5; cursor: default; color: var(--muted); }
+.btn-ghost[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(106,167,255,0.18) inset;
+  background: #152033;
+}
 .sel-info { color: var(--muted); font-size: 12px; }
 
 /* Card selection overlay */

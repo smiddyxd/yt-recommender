@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -219,6 +219,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
+      } else if ((raw as any)?.type === 'channels/upsertPending') {
+        const { key, name, handle } = (raw as any).payload || {};
+        await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null });
+        // optional UI could listen to a 'channels' change, but pending are background-only for now
+        sendResponse?.({ ok: true });
+      } else if ((raw as any)?.type === 'channels/resolvePending') {
+        const { id, name, handle } = (raw as any).payload || {};
+        await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null });
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];
         dlog('videos/delete count=', ids.length);

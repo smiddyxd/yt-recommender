@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -39,6 +39,11 @@ export async function openDB(): Promise<IDBDatabase> {
         const g = db.createObjectStore('groups', { keyPath: 'id' });
         g.createIndex('byName', 'name', { unique: false });
         g.createIndex('byUpdatedAt', 'updatedAt', { unique: false });
+      }
+      // Pending channels (discovered by handle/name without id). Key is 'handle:@foo' or 'name:Some Name'
+      if (!db.objectStoreNames.contains('channels_pending')) {
+        const p = db.createObjectStore('channels_pending', { keyPath: 'key' });
+        p.createIndex('byCreatedAt', 'createdAt', { unique: false });
       }
       if (!db.objectStoreNames.contains('rules')) {
         const r = db.createObjectStore('rules', { keyPath: 'id' });
@@ -471,7 +476,7 @@ export async function createGroup(name: string, condition: Condition): Promise<s
   const db = await openDB();
   const id = crypto.randomUUID();
   const now = Date.now();
-  const rec: Group = { id, name, condition, createdAt: now, updatedAt: now };
+  const rec: Group = { id, name, condition, createdAt: now, updatedAt: now, scrape: false };
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('groups', 'readwrite');
     tx.objectStore('groups').put(rec);
@@ -1005,5 +1010,47 @@ export async function markChannelScraped(id: string, at: number, opts?: { tab?: 
     g.onerror = () => reject(g.error);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+// ---- Pending channels (handle/name without id) ----
+export async function upsertPendingChannel(key: string, data: { name?: string | null; handle?: string | null }) {
+  const k = (key || '').trim(); if (!k) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels_pending', 'readwrite');
+    const os = tx.objectStore('channels_pending');
+    const g = os.get(k);
+    g.onsuccess = () => {
+      const prev = (g.result as any) || { key: k, createdAt: Date.now() };
+      const next = { ...prev, ...data, updatedAt: Date.now() };
+      os.put(next);
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function resolvePendingChannel(channelId: string, hint?: { handle?: string | null; name?: string | null }) {
+  const id = (channelId || '').trim(); if (!id) return;
+  const db = await openDB();
+  // Upsert channel stub with resolved id
+  await upsertChannelStub(id, hint?.name || null, hint?.handle || null);
+  // Clear any matching pending
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels_pending', 'readwrite');
+    const os = tx.objectStore('channels_pending');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const row: any = c.value;
+      const matches = (hint?.handle && row?.handle && String(row.handle).toLowerCase() === String(hint!.handle).toLowerCase()) ||
+                      (hint?.name && row?.name && String(row.name).toLowerCase() === String(hint!.name).toLowerCase());
+      if (matches) c.delete();
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
   });
 }
