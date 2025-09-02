@@ -203,7 +203,7 @@ function PopupApp() {
 
   return (
     <div className="wrap">
-      <h1>YT Cacher</h1>
+      <h1>YT Manager</h1>
       <div className="row">
         <button onClick={onScrape}>Scrape current page</button>
         {typeof scrapeCount === 'number' && <span className="meta">Captured: {scrapeCount}</span>}

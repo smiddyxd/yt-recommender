@@ -64,15 +64,38 @@ export default function HistoryModal({ open, onClose }: Props) {
     } catch (e: any) { alert(`Bundle failed: ${e?.message || e}`); }
   }
 
-  async function deleteUpTo(commitId: string) {
-    if (!confirm('Delete Drive history up to this commit? Make sure you downloaded it first.')) return;
+  async function deleteUpToCommit(c: Commit) {
+    // Preflight: warn if there is no snapshot with modifiedTime <= this commit ts
     try {
-      const r: any = await sendBg('backup/history/deleteUpTo', { commitId } as any);
+      const filesResp: any = await sendBg('backup/listFiles', {} as any);
+      const files = Array.isArray(filesResp?.items) ? filesResp.items as Array<{ name: string; modifiedTime?: string | null }> : [];
+      const hasBaseline = files.some(f => (f.name || '').startsWith('snapshots/') && (Date.parse(String(f.modifiedTime || '')) || 0) <= (c.ts || 0));
+      const msg = hasBaseline
+        ? 'Delete Drive history up to this commit? Make sure you downloaded it first.'
+        : 'Warning: No baseline snapshot exists before this commit. Deleting will make it impossible to revert to commits near this cutoff. Proceed to delete?';
+      if (!confirm(msg)) return;
+    } catch {}
+    try {
+      const r: any = await sendBg('backup/history/deleteUpTo', { commitId: c.commitId } as any);
       if (!r?.ok) { alert(`Delete failed: ${r?.error || 'unknown'}`); return; }
       // refresh
       try { const u: any = await sendBg('backup/history/usage', {} as any); if (u?.ok) setUsage({ totalBytes: u.totalBytes | 0, files: u.files | 0 }); } catch {}
       try { const rr: any = await sendBg('backup/history/list', { limit: 200 } as any); setCommits(Array.isArray(rr?.commits) ? rr.commits : []); } catch {}
     } catch (e: any) { alert(`Delete failed: ${e?.message || e}`); }
+  }
+
+  async function revertTo(commitId: string, mode: 'dryRun' | 'apply') {
+    try {
+      let passphrase: string | undefined;
+      // Optional passphrase for encrypted snapshots
+      
+      const r: any = await sendBg('backup/history/revertTo', { commitId, dryRun: mode === 'dryRun' } as any);
+      if (!r?.ok) { alert(`Revert failed: ${r?.error || 'unknown'}`); return; }
+      const summary = r?.summary || r;
+      alert(`Revert ${mode === 'dryRun' ? 'preview' : 'applied'}:\n` + JSON.stringify(summary?.counts || summary, null, 2));
+    } catch (e: any) {
+      alert(`Revert failed: ${e?.message || e}`);
+    }
   }
 
   async function toggleDetails(commitId: string) {
@@ -114,10 +137,10 @@ export default function HistoryModal({ open, onClose }: Props) {
   if (!open) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999 }}>
-      <div style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, width: 720, maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', padding: 16 }}>
+      <div style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, width: 1100, maxWidth: '98vw', maxHeight: '85vh', overflow: 'auto', padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <h2 style={{ margin: 0, fontSize: 16 }}>Version History</h2>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input id="history-import" type="file" multiple style={{ display: 'none' }} accept=".json,.jsonl" />
             <button className="btn-ghost" onClick={async () => {
               const el = document.getElementById('history-import') as HTMLInputElement | null;
@@ -137,6 +160,16 @@ export default function HistoryModal({ open, onClose }: Props) {
               };
               el.click();
             }}>Reattach (Import)</button>
+            <button className="btn-ghost" onClick={async ()=>{
+              try {
+                
+                const r: any = await sendBg('backup/history/snapshotNow', { interactive: true } as any);
+                if (!r?.ok) { alert(`Snapshot failed: ${r?.error || 'unknown'}`); return; }
+                alert(`Snapshot saved: ${r?.name || 'snapshots/settings-*.json'}`);
+              } catch (e: any) {
+                alert(`Snapshot failed: ${e?.message || e}`);
+              }
+            }}>Snapshot now</button>
             <label className="muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
               <input type="checkbox" checked={fullDiffs} onChange={(e)=> setFullDiffs(e.currentTarget.checked)} /> Full diffs
             </label>
@@ -157,11 +190,13 @@ export default function HistoryModal({ open, onClose }: Props) {
                     weight {c.weight} • size {formatBytes(c.size)} • events {c.counts.events}{c.counts.videos?` • videos ${c.counts.videos}`:''}{c.counts.channels?` • channels ${c.counts.channels}`:''}{c.counts.tags?` • tags ${c.counts.tags}`:''}{c.counts.groups?` • groups ${c.counts.groups}`:''}
                   </div>
                   <button className="btn-ghost" onClick={() => toggleDetails(c.commitId)}>{openCommit === c.commitId ? 'Hide' : 'Details'}</button>
-                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                    <button className="btn-ghost" onClick={() => downloadCommit(c.commitId)}>Download commit</button>
-                    <button className="btn-ghost" onClick={() => downloadUpTo(c.commitId)}>Download up to here</button>
-                    <button className="btn-ghost" onClick={() => deleteUpTo(c.commitId)}>Delete up to here</button>
-                  </div>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn-ghost" onClick={() => downloadCommit(c.commitId)}>Download commit</button>
+                  <button className="btn-ghost" onClick={() => downloadUpTo(c.commitId)}>Download up to here</button>
+                  <button className="btn-ghost" onClick={() => deleteUpToCommit(c)}>Delete up to here</button>
+                  <button className="btn-ghost" onClick={() => revertTo(c.commitId, 'dryRun')}>Revert (dry‑run)</button>
+                  <button className="btn-ghost" onClick={() => revertTo(c.commitId, 'apply')}>Revert (apply)</button>
+                </div>
                 </div>
                 {openCommit === c.commitId && (
                   <div style={{ marginTop: 8 }}>

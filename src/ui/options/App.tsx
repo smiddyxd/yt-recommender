@@ -11,6 +11,7 @@ import Sidebar from './components/Sidebar';
 import VideoList from './components/VideoList';
 import BackupModal from './components/BackupModal';
 import HistoryModal from './components/HistoryModal';
+import PendingPanel from './components/PendingPanel';
 
 // ---- Types ----
 type Video = {
@@ -90,7 +91,7 @@ export default function App() {
   const [layout, setLayout] = useState<'grid' | 'list'>('list'); // UI-only state
   const isGrid = layout === 'grid';
   const isList = layout === 'list';
-  const [view, setView] = useState<'videos' | 'trash' | 'channels' | 'channelsTrash'>('videos');
+  const [view, setView] = useState<'videos' | 'trash' | 'channels' | 'channelsTrash' | 'pending'>('videos');
   const inTrash = view === 'trash';
   const inChannels = view === 'channels';
   const inChannelsTrash = view === 'channelsTrash';
@@ -157,6 +158,7 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [backupInProgress, setBackupInProgress] = useState<boolean>(false);
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null);
   const [backupLastError, setBackupLastError] = useState<string | null>(null);
+  const [unsyncedCount, setUnsyncedCount] = useState<number>(0);
   const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
     // Build condition without source predicates so list reflects other filters
     const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
@@ -292,6 +294,34 @@ function cancelEditing() {
         const t = obj?.lastBackupAt as number | undefined;
         if (t && Number.isFinite(t)) setLastBackupAt(t);
       });
+      // Load current unsynced commit backlog count
+      chrome.storage?.local?.get('drive.unsyncedCommitIds', (obj) => {
+        try {
+          const arr = Array.isArray((obj as any)?.['drive.unsyncedCommitIds']) ? (obj as any)['drive.unsyncedCommitIds'] : [];
+          setUnsyncedCount(arr.length || 0);
+        } catch {}
+      });
+      // Watch storage changes to update indicator and timestamps
+      const onStorage = (changes: any, area: string) => {
+        if (area !== 'local') return;
+        if (changes['drive.unsyncedCommitIds']) {
+          try {
+            const next = changes['drive.unsyncedCommitIds'].newValue;
+            setUnsyncedCount(Array.isArray(next) ? next.length : 0);
+          } catch {}
+        }
+        if (changes['lastBackupAt']) {
+          const v = changes['lastBackupAt'].newValue as number | undefined;
+          if (v && Number.isFinite(v)) setLastBackupAt(v);
+        }
+        if (changes['lastRefreshAt']) {
+          const v = changes['lastRefreshAt'].newValue as number | undefined;
+          if (v && Number.isFinite(v)) setLastRefreshAt(v);
+        }
+      };
+      chrome.storage?.onChanged?.addListener(onStorage);
+      // cleanup
+      return () => { try { chrome.storage?.onChanged?.removeListener(onStorage); } catch {} };
     } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1133,6 +1163,15 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-ghost"
+              aria-pressed={view==='pending'}
+              title={view==='pending' ? 'Show videos' : 'Show pending channels (debug)'}
+              onClick={() => setView(view==='pending' ? 'videos' : 'pending')}
+            >
+              Pending (debug)
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
               title="Fetch metadata for all videos via YouTube API"
               onClick={refreshData}
               disabled={refreshing}
@@ -1164,6 +1203,10 @@ const channelsFiltered = useMemo(() => {
             )}
             {backupInProgress ? (
               <span className="muted" aria-live="polite" title="Backup in progress" style={{ marginLeft: 8 }}>Backing up…</span>
+            ) : unsyncedCount > 0 ? (
+              <span className="badge" style={{ marginLeft: 8 }} title={`${unsyncedCount} commit(s) pending upload to Drive`}>
+                Drive backlog: {unsyncedCount}
+              </span>
             ) : (
               <span className="muted" aria-live="polite" title="Last backup time" style={{ marginLeft: 8 }}>{fmtTime(lastBackupAt)}</span>
             )}
@@ -1333,7 +1376,9 @@ const channelsFiltered = useMemo(() => {
 </div>
 
 {/* The list itself */}
-{inChannelLike ? (
+{view==='pending' ? (
+  <PendingPanel />
+) : inChannelLike ? (
   <div style={{ padding: 16 }}>
     {channelsPageItems.map(ch => (
       <>

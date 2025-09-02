@@ -1,11 +1,12 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
 import { matches, type Group as GroupRec } from '../shared/conditions';
-import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile } from './driveBackup';
-import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs } from './events';
+import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
+import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
+import { applyRestore, dryRunRestoreApply } from './restore';
 
 // Click the extension icon to trigger scrape in active tab
 chrome.action?.onClicked.addListener((tab) => {
@@ -101,13 +102,34 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
   };
 });
 initDriveBackupAlarms();
+// Try to ensure a baseline snapshot silently on startup (ignored if Drive not configured yet)
+try { void ensureBaselineSnapshot({ interactive: false }); } catch {}
 
 async function scheduleBackup() {
   try { queueCommitFlush(3000); } catch {}
   try { queueSettingsBackup(); } catch {}
+  try { void replayUnsyncedCommitsToDrive(); } catch {}
 }
 
-chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
+// Ensure there is at least one baseline snapshot in Drive appData so reverts are possible soon after setup
+async function ensureBaselineSnapshot(opts?: { interactive?: boolean }) {
+  try {
+    const files = await listAppDataFiles({ interactive: !!opts?.interactive });
+    const hasSnapshot = files.some(f => (f.name || '').startsWith('snapshots/'));
+    if (hasSnapshot) return;
+    // Create baseline from current producer snapshot
+    const snap = await getCurrentSettingsSnapshot();
+    const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T','-').slice(0, 15);
+    await saveSnapshotWithName(`snapshots/settings-${ts}.json`, snap, { interactive: !!opts?.interactive });
+    try { chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: Date.now() } }); } catch {}
+  } catch (e) {
+    // Silent failure is ok (e.g., Drive not configured yet)
+  }
+}
+
+const autoResolveTabIds = new Set<number>();
+
+chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
   (async () => {
     dlog('onMessage:', raw?.type, raw?.payload ? Object.keys(raw.payload) : null);
     try {
@@ -348,15 +370,23 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         }
       } else if ((raw as any)?.type === 'channels/upsertPending') {
         const { key, name, handle } = (raw as any).payload || {};
-        await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null });
+        const changed = await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null });
         // optional UI could listen to a 'channels' change, but pending are background-only for now
-        recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handle ?? null }, { impact: {} });
-        sendResponse?.({ ok: true });
+        if (changed) recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handle ?? null }, { impact: {} });
+        sendResponse?.({ ok: true, changed: !!changed });
       } else if ((raw as any)?.type === 'channels/resolvePending') {
         const { id, name, handle } = (raw as any).payload || {};
         await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         recordEvent('pending/resolve', { id: String(id || ''), name: name ?? null, handle: handle ?? null }, { impact: { channels: 1 } });
+        // If this came from a tab we opened to resolve, close it
+        try {
+          const tabId = sender?.tab?.id;
+          if (typeof tabId === 'number' && autoResolveTabIds.has(tabId)) {
+            autoResolveTabIds.delete(tabId);
+            chrome.tabs?.remove(tabId);
+          }
+        } catch {}
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/delete') {
         const ids = raw.payload.ids || [];
@@ -546,10 +576,44 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e), count: 0 });
         }
+      } else if ((raw as any)?.type === 'channels/pending/list') {
+        try {
+          const items = await listPendingChannels();
+          sendResponse?.({ ok: true, items });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'channels/pending/resolveBatch') {
+        try {
+          const limit = Math.max(1, Math.min(20, Number((raw as any)?.payload?.limit || 5)));
+          const all = await listPendingChannels();
+          const handles = all.map(it => String(it.handle || '')).filter(h => !!h && h.startsWith('@'));
+          // Exclude handles already opening
+          let opened = 0;
+          for (const h of handles) {
+            if (opened >= limit) break;
+            const url = `https://www.youtube.com/${h}`;
+            const tab = await chrome.tabs?.create?.({ url, active: false });
+            const tabId = tab?.id;
+            if (typeof tabId === 'number') {
+              autoResolveTabIds.add(tabId);
+              opened++;
+              // Safety: auto-close after 25s if unresolved
+              setTimeout(() => {
+                try {
+                  if (autoResolveTabIds.has(tabId)) { autoResolveTabIds.delete(tabId); chrome.tabs?.remove?.(tabId); }
+                } catch {}
+              }, 25000);
+            }
+          }
+          sendResponse?.({ ok: true, opened, remaining: Math.max(0, handles.length - opened) });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
       }
       // --- Backup routes ---
       else if ((raw as any)?.type === 'backup/saveSettings') {
-        const passphrase: string | undefined = (raw as any)?.payload?.passphrase || undefined;
+        
         try {
           try { chrome.runtime.sendMessage({ type: 'backup/progress', payload: {} }); } catch {}
           const snapshot = await (async (): Promise<SettingsSnapshot> => {
@@ -617,7 +681,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
             });
             return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any, videoIndex, channelIndex, pendingChannels };
           })();
-          await saveSettingsNow(snapshot, passphrase ? { passphrase } : undefined);
+          await saveSettingsNow(snapshot);
           try { const now = Date.now(); chrome.storage?.local?.set({ lastBackupAt: now }); chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } }); } catch {}
           sendResponse?.({ ok: true });
         } catch (e: any) {
@@ -635,14 +699,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         try {
           const id = String((raw as any)?.payload?.clientId || '');
           await setClientId(id);
+          // After client id is configured, try to create a baseline snapshot interactively
+          try { await ensureBaselineSnapshot({ interactive: true }); } catch {}
           sendResponse?.({ ok: true });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       } else if ((raw as any)?.type === 'backup/restoreSettings') {
         try {
-          const passphrase: string | undefined = (raw as any)?.payload?.passphrase || undefined;
-          const snap = await restoreSettings(passphrase ? { passphrase } : undefined);
+          
+          const snap = await restoreSettings();
           sendResponse?.({ ok: true, snapshot: snap });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
@@ -684,9 +750,132 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
         }
       } else if ((raw as any)?.type === 'backup/history/usage') {
         try {
-          const items = await listAppDataFiles();
+          const items = await listAppDataFiles({ interactive: true });
           const total = items.reduce((n, f) => n + (Number(f.size) || 0), 0);
           sendResponse?.({ ok: true, totalBytes: total, files: items.length });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/history/snapshotNow') {
+        try {
+          
+          const interactive: boolean = !!(raw as any)?.payload?.interactive;
+          const customName: string | undefined = (raw as any)?.payload?.name || undefined;
+          const snap = await getCurrentSettingsSnapshot();
+          const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T','-').slice(0, 15);
+          const name = customName && customName.trim() ? customName.trim() : `snapshots/settings-${ts}.json`;
+          await saveSnapshotWithName(name, snap, { interactive });
+          try { const now = Date.now(); chrome.storage?.local?.set({ lastBackupAt: now }); chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } }); } catch {}
+          sendResponse?.({ ok: true, name });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/history/revertTo') {
+        try {
+          const cid = String((raw as any)?.payload?.commitId || '');
+          const dry = !!(raw as any)?.payload?.dryRun;
+          
+          if (!cid) { sendResponse?.({ ok: false, error: 'Missing commitId' }); return; }
+          const commit = await getHistoryCommit(cid);
+          if (!commit) { sendResponse?.({ ok: false, error: 'Unknown commitId' }); return; }
+          // Find latest snapshot (snapshots/settings-*.json) with modifiedTime <= commit.ts
+          const files = await listAppDataFiles({ interactive: true });
+          let chosenSnap: { name: string; modifiedTime?: string | null } | null = null;
+          for (const f of files) {
+            const n = f.name || '';
+            if (n.startsWith('snapshots/')) {
+              const t = Date.parse(String(f.modifiedTime || '')) || 0;
+              if (t > 0 && t <= commit.ts) {
+                if (!chosenSnap || (Date.parse(String(chosenSnap.modifiedTime || '')) || 0) < t) {
+                  chosenSnap = { name: n, modifiedTime: f.modifiedTime };
+                }
+              }
+            }
+          }
+          if (!chosenSnap) { sendResponse?.({ ok: false, error: 'No snapshot found before target commit' }); return; }
+          const base = await downloadSnapshotByName(chosenSnap.name, { interactive: true as any });
+          if (!base) { sendResponse?.({ ok: false, error: 'Failed to load snapshot' }); return; }
+          // Build events up to and including target commit (similar to getUpTo)
+          const monthKey = (() => { const d = new Date(commit.ts); const y=d.getUTCFullYear(); const m=String(d.getUTCMonth()+1).padStart(2,'0'); return `${y}-${m}`; })();
+          const evLines: string[] = [];
+          for (const f of files) {
+            const name = f.name || '';
+            if (!(name.startsWith('events-') && name.endsWith('.jsonl'))) continue;
+            const month = name.substring('events-'.length, 'events-'.length+7);
+            if (month < monthKey) {
+              const one = await downloadAppDataFileBase64(f.id, { interactive: true });
+              evLines.push(atob(one.contentB64));
+            } else if (month === monthKey) {
+              const one = await downloadAppDataFileBase64(f.id, { interactive: true });
+              const text = atob(one.contentB64);
+              const lines = text.split('\n');
+              const header = lines[0] || '';
+              let lastIdx = -1;
+              for (let i=1;i<lines.length;i++) {
+                const line = lines[i]; if (!line.trim()) continue;
+                try { const obj = JSON.parse(line); if (obj?.commitId === cid) lastIdx = i; } catch {}
+              }
+              const keep: string[] = [header];
+              if (lastIdx >= 1) { for (let i=1;i<=lastIdx;i++) { const ln = lines[i]; if ((ln||'').trim()) keep.push(ln); } }
+              evLines.push(keep.join('\n'));
+            }
+          }
+          // Parse and replay
+          const result: SettingsSnapshot = JSON.parse(JSON.stringify(base));
+          const archiveVideos = new Map<string, any>();
+          const archiveChannels = new Map<string, any>();
+          const tagsSet = new Set((result.tags || []).map(t => t.name));
+          const tagByName = new Map<string, any>((result.tags || []).map(t => [t.name, t] as [string, any]));
+          const tgById = new Map<string, any>((result.tagGroups || []).map(g => [g.id, g] as [string, any]));
+          const groupsById = new Map<string, any>((result.groups || []).map(g => [g.id, g] as [string, any]));
+          const vidsById = new Map<string, any>((result.videoIndex || []).map(v => [v.id, v] as [string, any]));
+          const chansById = new Map<string, any>((result.channelIndex || []).map(c => [c.id, c] as [string, any]));
+          const applyTagAdd = (arr: string[]|undefined, add: string[]) => {
+            const set = new Set(arr || []); for (const t of add||[]) if (t) set.add(String(t)); return Array.from(set.values()); };
+          const applyTagRem = (arr: string[]|undefined, rem: string[]) => {
+            const set = new Set(arr || []); for (const t of rem||[]) set.delete(String(t)); return Array.from(set.values()); };
+          const pushUnique = (list: any[], obj: any, key: string) => { const set=new Set(list.map((x:any)=>x[key])); if (!set.has(obj[key])) list.push(obj); };
+          const parseAndReplay = (text: string) => {
+            const lines = (text || '').split('\n');
+            for (let i=1;i<lines.length;i++) {
+              const line = lines[i]; if (!line || !line.trim()) continue;
+              let ev: any; try { ev = JSON.parse(line); } catch { continue; }
+              const k = String(ev?.kind || ''); const p = ev?.payload || {};
+              if (k === 'tags/create') { const name = String(p?.name||''); if (name && !tagsSet.has(name)) { const rec:any={ name, createdAt: Date.now() }; (result.tags||(result.tags=[])).push(rec); tagsSet.add(name); tagByName.set(name, rec); } }
+              else if (k === 'tags/rename') { const from=String(p?.oldName||''); const to=String(p?.newName||''); if (from && to && from!==to && tagsSet.has(from)) { tagsSet.delete(from); tagsSet.add(to); const t=tagByName.get(from); if (t){ t.name=to; tagByName.delete(from); tagByName.set(to,t);} (result.videoIndex||[]).forEach(v=>{ if(Array.isArray((v as any).tags)) (v as any).tags = (v as any).tags.map((x:string)=> x===from?to:x); }); (result.channelIndex||[]).forEach(c=>{ if(Array.isArray((c as any).tags)) (c as any).tags = (c as any).tags.map((x:string)=> x===from?to:x); }); } }
+              else if (k === 'tags/delete') { const name=String(p?.name||''); if (name) { (result.tags||[]).splice((result.tags||[]).findIndex(t=>t.name===name),1); tagsSet.delete(name); tagByName.delete(name); (result.videoIndex||[]).forEach(v=>{ if(Array.isArray((v as any).tags)) (v as any).tags = (v as any).tags.filter((x:string)=> x!==name); }); (result.channelIndex||[]).forEach(c=>{ if(Array.isArray((c as any).tags)) (c as any).tags = (c as any).tags.filter((x:string)=> x!==name); }); } }
+              else if (k === 'tags/assignGroup') { const name=String(p?.name||''); const gid = (p?.groupId ?? null) as (string|null); const t = tagByName.get(name); if (t) { t.groupId = gid || undefined; } }
+              else if (k === 'tagGroups/create') { const id=String(p?.id||''); const name=String(p?.name||''); if (id && name && !tgById.has(id)) { const rec:any={ id, name, createdAt: Date.now() }; (result.tagGroups||(result.tagGroups=[])).push(rec); tgById.set(id, rec); } }
+              else if (k === 'tagGroups/rename') { const id=String(p?.id||''); const name=String(p?.name||''); const g=tgById.get(id); if (g) g.name=name; }
+              else if (k === 'tagGroups/delete') { const id=String(p?.id||''); if (id) { (result.tagGroups||[]).splice((result.tagGroups||[]).findIndex(g=>g.id===id),1); tgById.delete(id); (result.tags||[]).forEach(t=>{ if ((t as any).groupId===id) delete (t as any).groupId; }); } }
+              else if (k === 'groups/create') { const id=String(p?.id||''); if (id && !groupsById.has(id)) { const rec:any={ id, name: p?.name||id, condition: p?.condition, createdAt: Date.now(), updatedAt: Date.now(), scrape: !!p?.scrape }; (result.groups||(result.groups=[])).push(rec); groupsById.set(id, rec); } }
+              else if (k === 'groups/update') { const id=String(p?.id||''); const g=groupsById.get(id); if (g) { const patch=p?.patch||{}; Object.assign(g, patch, { updatedAt: Date.now() }); } }
+              else if (k === 'groups/delete') { const id=String(p?.id||''); if (id) { (result.groups||[]).splice((result.groups||[]).findIndex(g=>g.id===id),1); groupsById.delete(id); } }
+              else if (k === 'channels/applyTags') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; const add:Array<string>=Array.isArray(p?.addIds)?p.addIds:[]; const rem:Array<string>=Array.isArray(p?.removeIds)?p.removeIds:[]; for (const id of ids){ const row = chansById.get(id) || { id, tags: [] as string[] }; row.tags = applyTagRem(applyTagAdd(row.tags, add), rem); chansById.set(id, row); pushUnique((result.channelIndex||(result.channelIndex=[])), row, 'id'); } }
+              else if (k === 'videos/applyTags') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; const add:Array<string>=Array.isArray(p?.addIds)?p.addIds:[]; const rem:Array<string>=Array.isArray(p?.removeIds)?p.removeIds:[]; for (const id of ids){ const row = vidsById.get(id) || { id, tags: [] as string[] }; row.tags = applyTagRem(applyTagAdd(row.tags, add), rem); vidsById.set(id, row); pushUnique((result.videoIndex||(result.videoIndex=[])), row, 'id'); } }
+              else if (k === 'videos/delete') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; for (const id of ids){ const i=(result.videoIndex||[]).findIndex(v=>v.id===id); if (i>=0) { archiveVideos.set(id, (result.videoIndex as any)[i]); (result.videoIndex as any).splice(i,1); vidsById.delete(id); } } }
+              else if (k === 'videos/restore') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; for (const id of ids){ const prev = archiveVideos.get(id); if (prev) { pushUnique((result.videoIndex||(result.videoIndex=[])), prev, 'id'); vidsById.set(id, prev); } } }
+              else if (k === 'channels/delete') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; for (const id of ids){ const i=(result.channelIndex||[]).findIndex(c=>c.id===id); if (i>=0) { archiveChannels.set(id, (result.channelIndex as any)[i]); (result.channelIndex as any).splice(i,1); chansById.delete(id); } } }
+              else if (k === 'channels/restore') { const ids:Array<string>=Array.isArray(p?.ids)?p.ids:[]; for (const id of ids){ const prev = archiveChannels.get(id); if (prev) { pushUnique((result.channelIndex||(result.channelIndex=[])), prev, 'id'); chansById.set(id, prev); } } }
+              else if (k === 'pending/upsert') { const key=String(p?.key||''); const name=p?.name ?? null; const handle=p?.handle ?? null; if (key){ const list=(result.pendingChannels||(result.pendingChannels=[])); const idx=list.findIndex((x:any)=>x.key===key); const row={ key, name, handle }; if (idx>=0) list[idx]=row; else list.push(row); } }
+              else if (k === 'pending/resolve') { /* Best-effort: remove matching pending by handle or name */ const id=String(p?.id||''); const name=p?.name ?? null; const handle=p?.handle ?? null; const list=(result.pendingChannels||(result.pendingChannels=[])); (result.pendingChannels as any) = list.filter((x:any)=> !((handle && x.handle===handle) || (name && x.name===name))); }
+            }
+          };
+          for (const chunk of evLines) { if (chunk) parseAndReplay(chunk); }
+          const applyFlags = { channelTags: true, videoTags: true, sources: true, progress: true } as const;
+          if (dry) {
+            const summary = await dryRunRestoreApply(result, 'overwrite', applyFlags);
+            sendResponse?.({ ok: true, summary });
+          } else {
+            const summary = await applyRestore(result, 'overwrite', applyFlags);
+            try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } }); } catch {}
+            try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } }); } catch {}
+            try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+            try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
+            queueCommitFlush(3000);
+            queueSettingsBackup();
+            sendResponse?.({ ok: true, summary });
+          }
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
@@ -697,7 +886,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           const commit = await getHistoryCommit(cid);
           if (!commit) { sendResponse?.({ ok: false, error: 'Unknown commitId' }); return; }
           const commitMonth = (() => { const d = new Date(commit.ts); const y=d.getUTCFullYear(); const m=String(d.getUTCMonth()+1).padStart(2,'0'); return `${y}-${m}`; })();
-          const files = await listAppDataFiles();
+          const files = await listAppDataFiles({ interactive: true });
           // Collect earlier full months and partial of commit month
           const out: Array<{ name: string; contentB64: string }> = [];
           for (const f of files) {
@@ -706,25 +895,29 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
               const month = name.substring('events-'.length, 'events-'.length+7);
               if (month < commitMonth) {
                 // full file
-                const one = await downloadAppDataFileBase64(f.id);
+                const one = await downloadAppDataFileBase64(f.id, { interactive: true });
                 out.push({ name, contentB64: one.contentB64 });
               } else if (month === commitMonth) {
-                const one = await downloadAppDataFileBase64(f.id);
+                const one = await downloadAppDataFileBase64(f.id, { interactive: true });
                 const text = atob(one.contentB64);
                 const lines = text.split('\n');
                 const header = lines[0] || '';
-                const keep: string[] = [header];
+                // Include all lines up to and including the LAST event of this commitId
+                let lastIdx = -1;
                 for (let i=1;i<lines.length;i++) {
                   const line = lines[i];
                   if (!line.trim()) continue;
-                  try {
-                    const obj = JSON.parse(line);
-                    keep.push(line);
-                    if (obj?.commitId === cid) {
-                      // Stop after we included this commit's events
-                      break;
-                    }
-                  } catch { /* ignore parse errors */ }
+                  try { const obj = JSON.parse(line); if (obj?.commitId === cid) lastIdx = i; } catch { /* ignore */ }
+                }
+                const keep: string[] = [header];
+                if (lastIdx >= 1) {
+                  for (let i=1;i<=lastIdx;i++) { const ln = lines[i]; if ((ln || '').trim()) keep.push(ln); }
+                } else {
+                  // Fallback: include sequentially until first match (unlikely if commit exists)
+                  for (let i=1;i<lines.length;i++) {
+                    const ln = lines[i]; if (!ln || !ln.trim()) continue; keep.push(ln);
+                    try { const obj = JSON.parse(ln); if (obj?.commitId === cid) break; } catch {}
+                  }
                 }
                 const partial = keep.join('\n') + '\n';
                 const b64 = btoa(partial);
@@ -750,7 +943,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           const commit = await getHistoryCommit(cid);
           if (!commit) { sendResponse?.({ ok: false, error: 'Unknown commitId' }); return; }
           const commitMonth = (() => { const d = new Date(commit.ts); const y=d.getUTCFullYear(); const m=String(d.getUTCMonth()+1).padStart(2,'0'); return `${y}-${m}`; })();
-          const files = await listAppDataFiles();
+          const files = await listAppDataFiles({ interactive: true });
           let deleted = 0;
           // Delete full earlier months and older snapshots; rewrite partial month after commit
           for (const f of files) {
@@ -760,21 +953,20 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
               if (month < commitMonth) {
                 await deleteAppDataFile(f.id); deleted++;
               } else if (month === commitMonth) {
-                const one = await downloadAppDataFileBase64(f.id);
+                const one = await downloadAppDataFileBase64(f.id, { interactive: true });
                 const text = atob(one.contentB64);
                 const lines = text.split('\n');
                 const header = lines[0] || '';
-                const keep: string[] = [header];
-                let reached = false;
+                // Compute last index where commitId===cid, then keep everything AFTER that
+                let lastIdx = -1;
                 for (let i=1;i<lines.length;i++) {
                   const line = lines[i];
                   if (!line.trim()) continue;
-                  if (!reached) {
-                    try { const obj = JSON.parse(line); if (obj?.commitId === cid) { reached = true; } } catch {}
-                    continue; // skip until reached
-                  } else {
-                    keep.push(line);
-                  }
+                  try { const obj = JSON.parse(line); if (obj?.commitId === cid) lastIdx = i; } catch {}
+                }
+                const keep: string[] = [header];
+                for (let i=(lastIdx >= 0 ? lastIdx + 1 : 1); i<lines.length; i++) {
+                  const ln = lines[i]; if ((ln || '').trim()) keep.push(ln);
                 }
                 const remain = keep.join('\n');
                 await upsertAppDataTextFile(name, remain);
@@ -817,7 +1009,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           }
           // Validate against current Drive cutoff marker (if any)
           try {
-            const currentFiles = await listAppDataFiles();
+            const currentFiles = await listAppDataFiles({ interactive: true });
             // Prefer cutoff.json, otherwise latest cutoff-* marker
             let chosen = currentFiles.find(f => (f.name || '') === 'cutoff.json') || null as any;
             if (!chosen) {
@@ -828,7 +1020,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
                 if ((Date.parse(String(c.modifiedTime || '')) || 0) > (Date.parse(String(chosen.modifiedTime || '')) || 0)) chosen = c;
               }
             }
-            const marker = await downloadAppDataFileBase64(chosen.id);
+            const marker = await downloadAppDataFileBase64(chosen.id, { interactive: true });
             const markerObj = (()=>{ try { return JSON.parse(atob(marker.contentB64)); } catch { return null; } })();
             const expectedCid = markerObj?.cutoffAtCommitId ? String(markerObj.cutoffAtCommitId) : null;
             if (!importedCutoffCid || !expectedCid || importedCutoffCid !== expectedCid) {
@@ -846,18 +1038,18 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
                 const importedText = atob(f.contentB64);
                 if (!current) {
                   // Write imported (strip suffix in name)
-                  await upsertAppDataTextFile(baseName, importedText);
+                  await upsertAppDataTextFile(baseName, importedText, { interactive: true });
                 } else {
                   // Merge: imported is earlier part; existing is later part -> remove header from later part and concat
-                  const existing = await downloadAppDataFileBase64(current.id);
+                  const existing = await downloadAppDataFileBase64(current.id, { interactive: true });
                   const exText = atob(existing.contentB64);
                   const exLines = exText.split('\n');
                   const exBody = exLines.slice(1).join('\n');
                   const merged = importedText.replace(/\n*$/, '\n') + exBody;
-                  await upsertAppDataTextFile(baseName, merged);
+                  await upsertAppDataTextFile(baseName, merged, { interactive: true });
                 }
               } else if (f.name.startsWith('snapshots/')) {
-                await upsertAppDataTextFile(f.name, atob(f.contentB64));
+                await upsertAppDataTextFile(f.name, atob(f.contentB64), { interactive: true });
               }
             }
             // Delete cutoff marker after successful import
@@ -866,6 +1058,39 @@ chrome.runtime.onMessage.addListener((raw: Msg, _sender, sendResponse) => {
           } catch (e: any) {
             sendResponse?.({ ok: false, error: e?.message || String(e) });
           }
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/restore/dryRun') {
+        try {
+          const { name, snapshot, mode, apply } = (raw as any).payload || {};
+          let snap: SettingsSnapshot | null = null;
+          if (snapshot && typeof snapshot === 'object') snap = snapshot as SettingsSnapshot;
+          else if (name && typeof name === 'string') snap = await downloadSnapshotByName(String(name), {});
+          else snap = await restoreSettings(); // fallback to settings.json
+          if (!snap) { sendResponse?.({ ok: false, error: 'Snapshot not found' }); return; }
+          const res = await dryRunRestoreApply(snap, (mode === 'overwrite' ? 'overwrite' : 'merge'), apply || {});
+          sendResponse?.({ ok: true, summary: res });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/restore/apply') {
+        try {
+          const { name, snapshot, mode, apply } = (raw as any).payload || {};
+          let snap: SettingsSnapshot | null = null;
+          if (snapshot && typeof snapshot === 'object') snap = snapshot as SettingsSnapshot;
+          else if (name && typeof name === 'string') snap = await downloadSnapshotByName(String(name), {});
+          else snap = await restoreSettings(); // fallback to settings.json
+          if (!snap) { sendResponse?.({ ok: false, error: 'Snapshot not found' }); return; }
+          const res = await applyRestore(snap, (mode === 'overwrite' ? 'overwrite' : 'merge'), apply || {});
+          // Notify and backup
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
+          queueCommitFlush(3000);
+          queueSettingsBackup();
+          sendResponse?.({ ok: true, summary: res });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }

@@ -17,7 +17,7 @@ Auto-Scrape
 - Watch pages: Always scrapes the current video; suggested tiles gated by presets.
 - Scrape-time matching: A preset participates only if its condition tree is fully checkable in-page. Supported: `sourceAny`, `sourcePlaylistAny`, `channelIdIn`, `titleRegex`, `groupRef` (only if referenced presets are also fully checkable).
 - Title + channel matching: Extracts tile title and applies `titleRegex`. `channelIdIn` accepts channel id, handle (with/without @), or displayed name.
-- Pending channels: Tiles with only handle/name upsert to `channels_pending`; visiting a channel page resolves to channel id.
+- Pending channels: Tiles with only handle/name upsert to `channels_pending`; now gated by accepted presets and deduped per page. Visiting a channel page resolves to channel id. A debug resolver can open handle tabs in batches and auto-close on resolve.
 
 Storage Model (IndexedDB)
 
@@ -51,6 +51,7 @@ Messaging Protocol
   - Tag Groups: `tagGroups/list|create|rename|delete`
   - Topics: `topics/list`
   - Pending channels: `channels/upsertPending { key, name?, handle? }`, `channels/resolvePending { id, name?, handle? }`
+  - Pending debug: `channels/pending/list {}` → items; `channels/pending/resolveBatch { limit? }` → `{ opened, remaining }`
   - Groups update: `groups/update` accepts `{ scrape: boolean }` in patch
   - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings { passphrase? }`, `backup/restoreSettings { passphrase? }`
   - Drive files: `backup/listFiles`, `backup/downloadFile`
@@ -60,13 +61,14 @@ Messaging Protocol
 Options UI
 
 - Views: videos, trash, channels, channels trash; selection and bulk tag ops; pagination, multi-field sorts; inline debug inspector.
+- Debug: Pending Channels panel lists `channels_pending` and can open batches of channel tabs to auto-resolve handles to IDs (tabs close automatically).
 - Tags sidebar: “Tags” has tabs: Tags and Groups. Each tag row can assign a Tag Group. Tag Groups tab supports CRUD.
 - Tag pickers: Apply popovers group tags by Tag Group (+ “Ungrouped”); selection highlighting preserved in bulk.
 - Filters editor: Rich predicates with AND/OR/NOT; “Tags (any/all/none)” chips render grouped sections per Tag Group.
 - Presets: UI label “Presets” (storage/type still uses Group; groupRef remains storage-level). Each preset shows an “S” toggle (gates auto-scrape). Toggle disabled when the preset contains predicates unsupported at scrape time; tooltip explains.
 - Videos list: Channel names clickable (`/channel/<id>`) with muted style and hover accent.
 - Stability: DB reads close the IndexedDB connection after each transaction; videos view debounces `db/change` refresh by 200ms.
-- Backup section: Sidebar includes “Set Client ID”, “Backup Settings”, and “Version History”. Header shows “Backing up…” during flush and last backup time.
+- Backup section: Sidebar includes “Set Client ID”, “Backup Settings”, and “Version History”. Header shows “Backing up…” during flush; if unsynced commits exist, shows “Drive backlog: N” instead of last backup time.
 - Version History modal: Lists commits (time, summary, weight, size), shows Drive usage; expand per commit and resolve IDs to names via IndexedDB; actions: Download commit, Download up to here (Zip), Delete up to here, Reattach (Import). “Full diffs” toggle shows complete text for changed fields; Copy buttons for from/to diffs; “Show all” expands affected names.
 
 Popup UI
@@ -142,4 +144,35 @@ Files (for reference)
 - `src/ui/options/components/HistoryModal.tsx`
 - `src/ui/options/components/Sidebar.tsx`
 - `src/ui/options/App.tsx`
+ 
+Patch Notes (2025-09-01)
 
+- Restore & Apply:
+  - Background: added `src/background/restore.ts` with `dryRunRestoreApply` and `applyRestore` (merge/overwrite modes; tags/tagGroups/groups, channel/video tags/sources/progress, pending channels; version=1 enforced).
+  - Routes: `backup/restore/dryRun` and `backup/restore/apply` wired in `src/background/index.ts`.
+  - Types: message union extended in `src/types/messages.ts`.
+  - Drive helper: `downloadSnapshotByName(name,{ passphrase? })` in `src/background/driveBackup.ts`.
+
+- Pending Channels (noise fix + tools):
+  - Content: pending upserts now gated by accepted presets; per-page dedupe to avoid repeated upserts; normalized handle → key `handle:@foo`; reset dedupe on SPA navigation. File: `src/content/index.ts`.
+  - DB: `upsertPendingChannel` normalizes handle and returns `changed:boolean`; avoids rewriting identical rows. File: `src/background/db.ts`.
+  - Events: background records `pending/upsert` only when row changed. File: `src/background/index.ts`.
+  - New routes: `channels/pending/list`, `channels/pending/resolveBatch { limit? }` (opens background tabs for handles; auto-closes after resolve/timeout). Files: `src/background/db.ts`, `src/background/index.ts`.
+  - UI: “Pending (debug)” view lists `channels_pending` and can resolve handles in batches. File: `src/ui/options/components/PendingPanel.tsx`, `src/ui/options/App.tsx`.
+
+- Drive OAuth & backups (no random prompts):
+  - `getAccessToken(interactive=false)` with silent auth by default; UI ops pass `interactive:true` as needed. Prompt now `select_account` (not `consent`). File: `src/background/driveBackup.ts`.
+  - Background Drive calls (events JSONL, snapshots) use `interactive:false`. Files: `src/background/events.ts`, `src/background/index.ts`.
+  - `queueSettingsBackup` attempts silent save; on auth failure, pushes `backup/error` without prompting.
+
+- Backlog replay (missed uploads):
+  - Track unsynced commits in `chrome.storage.local['drive.unsyncedCommitIds']` when Drive append fails. File: `src/background/events.ts`.
+  - `replayUnsyncedCommitsToDrive()` replays queued commits (ordered by ts) on next cycles; `scheduleBackup()` invokes it. File: `src/background/index.ts`.
+  - UI header shows “Drive backlog: N” badge when unsynced > 0; otherwise shows last backup time. File: `src/ui/options/App.tsx`.
+
+- Messaging Protocol additions:
+  - Restore: `backup/restore/dryRun`, `backup/restore/apply`.
+  - Pending debug: `channels/pending/list`, `channels/pending/resolveBatch { limit? }`.
+
+- Other:
+  - Overview updated: Pending channels are gated/deduped; Options header indicates Drive backlog when present; Debug panel described.

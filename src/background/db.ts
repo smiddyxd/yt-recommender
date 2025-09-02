@@ -1034,20 +1034,31 @@ export async function markChannelScraped(id: string, at: number, opts?: { tab?: 
 }
 
 // ---- Pending channels (handle/name without id) ----
-export async function upsertPendingChannel(key: string, data: { name?: string | null; handle?: string | null }) {
-  const k = (key || '').trim(); if (!k) return;
+export async function upsertPendingChannel(key: string, data: { name?: string | null; handle?: string | null }): Promise<boolean> {
+  const k = (key || '').trim(); if (!k) return false;
+  // normalize handle to always include leading '@' if present
+  const incomingHandle = data?.handle ? (String(data.handle).startsWith('@') ? String(data.handle) : '@' + String(data.handle)) : null;
   const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<boolean>((resolve, reject) => {
     const tx = db.transaction('channels_pending', 'readwrite');
     const os = tx.objectStore('channels_pending');
     const g = os.get(k);
     g.onsuccess = () => {
-      const prev = (g.result as any) || { key: k, createdAt: Date.now() };
-      const next = { ...prev, ...data, updatedAt: Date.now() };
-      os.put(next);
+      const prev = (g.result as any) || null;
+      const created = !prev;
+      const prevName = prev?.name ?? null;
+      const prevHandle = prev?.handle ?? null;
+      const next = { key: k, createdAt: prev?.createdAt || Date.now(), name: data?.name ?? prevName ?? null, handle: incomingHandle ?? prevHandle ?? null, updatedAt: Date.now() } as any;
+      const changed = created || (String(prevName || '') !== String(next.name || '')) || (String(prevHandle || '') !== String(next.handle || ''));
+      if (changed) os.put(next);
+      else {
+        // Touch updatedAt conservatively to avoid churn
+        // Do not rewrite identical rows
+      }
+      resolve(changed);
     };
     g.onerror = () => reject(g.error);
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => void 0;
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -1072,5 +1083,28 @@ export async function resolvePendingChannel(channelId: string, hint?: { handle?:
       c.continue();
     };
     cur.onerror = () => reject(cur.error);
+  });
+}
+
+export async function listPendingChannels(): Promise<Array<{ key: string; name?: string | null; handle?: string | null; createdAt?: number; updatedAt?: number }>> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('channels_pending', 'readonly');
+    const os = tx.objectStore('channels_pending');
+    const req = (os as any).getAll ? (os as any).getAll() : os.openCursor();
+    const out: any[] = [];
+    if ('getAll' in os) {
+      (req as IDBRequest).onsuccess = () => resolve((((req as any).result as any[]) || []).map((r:any)=>({ key:String(r.key), name:r.name??null, handle:r.handle??null, createdAt:r.createdAt, updatedAt:r.updatedAt })));
+      (req as IDBRequest).onerror = () => reject((req as any).error);
+    } else {
+      (req as IDBRequest).onsuccess = () => {
+        const c = (req as any).result as IDBCursorWithValue | null;
+        if (!c) { resolve(out); return; }
+        const r:any = c.value || {};
+        out.push({ key:String(r.key), name:r.name??null, handle:r.handle??null, createdAt:r.createdAt, updatedAt:r.updatedAt });
+        c.continue();
+      };
+      (req as IDBRequest).onerror = () => reject((req as any).error);
+    }
   });
 }

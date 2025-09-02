@@ -52,6 +52,8 @@ try {
 // On YT SPA navigation, auto-capture watch stubs if enabled
 try {
   onNavigate(() => {
+    // Clear per-page pending dedupe on navigation
+    try { pendingKeysSubmitted.clear(); } catch {}
     const ctx = detectPageContext();
     dlog('[content] navigate', ctx?.page, location.pathname);
     // Always track progress on watch pages
@@ -163,6 +165,9 @@ function extractChannelIdFromTile(root: HTMLElement | null): { channelId?: strin
 
 type Cand = { id: string; sources: Array<{ type: string; id?: string | null }>; channelId?: string | null; handle?: string | null; channelName?: string | null; title?: string | null };
 
+// Track pending-channel keys we have already submitted on this page to avoid repeated upserts
+const pendingKeysSubmitted = new Set<string>();
+
 function candidateFromAnchor(a: HTMLAnchorElement): Cand | null {
   const id = parseVideoIdFromHref(a.href);
   if (!id) return null;
@@ -189,14 +194,6 @@ function candidateFromAnchor(a: HTMLAnchorElement): Cand | null {
       else if (location.pathname.startsWith('/@')) ch.handle = location.pathname.slice(1);
     }
   } catch {}
-  // If only handle/name known, record pending channel for later resolution
-  if (!ch.channelId && (ch.handle || ch.name)) {
-    const key = ch.handle ? `handle:@${ch.handle}` : (ch.name ? `name:${ch.name}` : null);
-    if (key) try { chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key, name: ch.name || null, handle: ch.handle || null } }); } catch {}
-  } else if (ch.channelId) {
-    // If we do have id, upsert a channel stub so directory fills in
-    try { chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: ch.channelId, name: ch.name || null, handle: ch.handle || null } }); } catch {}
-  }
   return { id, sources: src, channelId: ch.channelId || null, handle: ch.handle || null, channelName: ch.name || null, title };
 }
 
@@ -315,6 +312,19 @@ async function autoScanOnce() {
     const seen = new Set<string>();
     for (const c of accepted) {
       if (seen.has(c.id)) continue; seen.add(c.id);
+      // Channel side-effects now only for accepted candidates
+      try {
+        if (c.channelId) {
+          chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: c.channelId, name: c.channelName || null, handle: c.handle || null } });
+        } else if ((c.handle || c.channelName)) {
+          const handleKey = c.handle ? (c.handle!.startsWith('@') ? c.handle! : `@${c.handle!}`) : null;
+          const key = handleKey ? `handle:${handleKey}` : (c.channelName ? `name:${c.channelName}` : null);
+          if (key && !pendingKeysSubmitted.has(key)) {
+            pendingKeysSubmitted.add(key);
+            chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key, name: c.channelName || null, handle: handleKey || null } });
+          }
+        }
+      } catch {}
       try {
         dlog('[content] scrape candidate', c.id, { hasTitle: !!c.title });
         if (c.title || c.channelId || c.channelName) {

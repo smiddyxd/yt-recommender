@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "YT Playlist Cacher (Dev)",
+  "name": "YT Manager",
   "version": "0.0.1",
-  "description": "Scrapes playlist tiles you see and stores them locally.",
+  "description": "Advanced local YouTube manager: capture videos/channels as you browse, tag and filter with presets, maintain a channels directory, back up settings/history to Drive, with an upcoming Recommender page.",
   "permissions": ["storage", "tabs", "identity", "alarms"],
   "host_permissions": ["https://www.youtube.com/*", "https://www.googleapis.com/*"],
   "background": {
@@ -16,6 +16,6 @@
       "run_at": "document_idle"
     }
   ],
-  "action": { "default_title": "YT Cacher (Dev)", "default_popup": "ui/popup/index.html" },
+  "action": { "default_title": "YT Manager", "default_popup": "ui/popup/index.html" },
   "options_page": "ui/options/index.html"
 }

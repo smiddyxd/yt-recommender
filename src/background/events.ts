@@ -43,6 +43,21 @@ let accSize = 0;
 let currentCommitId: string | null = null;
 let commitTimer: number | undefined;
 
+// Track unsynced commits in chrome.storage.local so we can replay after auth reconnect
+const UNSYNCED_KEY = 'drive.unsyncedCommitIds';
+async function getUnsynced(): Promise<string[]> {
+  try {
+    const o = await new Promise<any>((res) => chrome.storage?.local?.get(UNSYNCED_KEY, (r) => res(r)));
+    const arr = Array.isArray(o?.[UNSYNCED_KEY]) ? o[UNSYNCED_KEY] : [];
+    return arr.map((s: any) => String(s)).filter(Boolean);
+  } catch { return []; }
+}
+async function setUnsynced(ids: string[]) {
+  try { await chrome.storage?.local?.set?.({ [UNSYNCED_KEY]: Array.from(new Set(ids)) }); } catch {}
+}
+async function addUnsynced(id: string) { const cur = await getUnsynced(); cur.push(id); await setUnsynced(cur); }
+async function removeUnsyncedMany(ids: string[]) { const set = new Set(ids); const cur = await getUnsynced(); await setUnsynced(cur.filter(x => !set.has(x))); }
+
 function nowCommitId(): string {
   const ts = Date.now();
   const rand = Math.random().toString(36).slice(2, 8);
@@ -99,7 +114,7 @@ export async function finalizeCommitAndFlushIfAny(): Promise<void> {
     tx.onerror = () => reject(tx.error);
   });
   // Flush to Drive JSONL and maybe snapshot
-  try { await appendCommitToDrive(commit, pending); } catch (e) { derr('appendCommitToDrive error', e as any); }
+  try { await appendCommitToDrive(commit, pending); } catch (e) { derr('appendCommitToDrive error', e as any); try { await addUnsynced(commitId); } catch {} }
   pending = [];
   accWeight = 0;
   accSize = 0;
@@ -128,7 +143,7 @@ async function appendCommitToDrive(commit: CommitRecord, events: EventRecord[]) 
   // Fetch existing file content (header + lines), append, upload
   let fileId: string | null = null;
   try {
-    const files = await listFiles();
+    const files = await listFiles({ interactive: false });
     const found = files.find(f => f.name === name);
     fileId = found ? found.id : null;
   } catch {}
@@ -138,7 +153,7 @@ async function appendCommitToDrive(commit: CommitRecord, events: EventRecord[]) 
     current += JSON.stringify(header) + '\n';
   } else {
     try {
-      const { contentB64 } = await dlFile(fileId);
+      const { contentB64 } = await dlFile(fileId, { interactive: false });
       const bin = atob(contentB64);
       current = bin;
     } catch { current = ''; }
@@ -148,7 +163,7 @@ async function appendCommitToDrive(commit: CommitRecord, events: EventRecord[]) 
   current += lines.join('\n') + '\n';
 
   // Upload new content
-  await upsertAppDataTextFile(name, current);
+  await upsertAppDataTextFile(name, current, { interactive: false });
 
   // Dynamic checkpoint
   try {
@@ -166,7 +181,7 @@ async function appendCommitToDrive(commit: CommitRecord, events: EventRecord[]) 
       try {
         const snap = await getCurrentSettingsSnapshot();
         const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T','-').slice(0, 15);
-        await saveSnapshotWithName(`snapshots/settings-${ts}.json`, snap);
+        await saveSnapshotWithName(`snapshots/settings-${ts}.json`, snap, { interactive: false });
         await set('eventsWeightSinceSnap', 0);
       } catch (e) { derr('checkpoint error', e as any); }
     }
@@ -218,6 +233,30 @@ export async function getCommit(commitId: string): Promise<CommitRecord | null> 
     req.onsuccess = () => resolve((req.result as CommitRecord) || null);
     req.onerror = () => reject(req.error);
   });
+}
+
+// Replay unsynced commits to Drive (silent). Returns number successfully flushed.
+export async function replayUnsyncedCommitsToDrive(): Promise<number> {
+  const ids = await getUnsynced();
+  if (!ids.length) return 0;
+  // fetch commit + events and sort by time
+  const items: Array<{ rec: CommitRecord; evs: EventRecord[] }> = [];
+  for (const cid of ids) {
+    try {
+      const rec = await getCommit(cid);
+      if (!rec) continue;
+      const evs = await getCommitEvents(cid);
+      items.push({ rec, evs });
+    } catch {}
+  }
+  items.sort((a, b) => a.rec.ts - b.rec.ts);
+  const okIds: string[] = [];
+  for (const it of items) {
+    try { await appendCommitToDrive(it.rec, it.evs); okIds.push(it.rec.commitId); }
+    catch { break; }
+  }
+  if (okIds.length) await removeUnsyncedMany(okIds);
+  return okIds.length;
 }
 
 // Purge local history (IDB) up to and including commits with ts <= cutoffTs

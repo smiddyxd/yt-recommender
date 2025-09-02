@@ -63,7 +63,12 @@ export type Msg =
   | { type: 'backup/history/getCommit'; payload: { commitId: string } }
   | { type: 'backup/history/getUpTo'; payload: { commitId: string } }
   | { type: 'backup/history/deleteUpTo'; payload: { commitId: string } }
-  | { type: 'backup/history/usage'; payload: {} };
+  | { type: 'backup/history/usage'; payload: {} }
+  | { type: 'backup/history/revertTo'; payload: { commitId: string; dryRun?: boolean } }
+  | { type: 'backup/history/snapshotNow'; payload: { interactive?: boolean; name?: string } }
+  // RESTORE & APPLY
+  | { type: 'backup/restore/dryRun'; payload: { name?: string; snapshot?: any; mode: 'merge'|'overwrite'; apply?: { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean } } }
+  | { type: 'backup/restore/apply';  payload: { name?: string; snapshot?: any; mode: 'merge'|'overwrite'; apply?: { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean } } };
 
 export interface VideoSeed {
   id: string;

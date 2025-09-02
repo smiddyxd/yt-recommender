@@ -1,0 +1,120 @@
+Ultimate Project Overview — YT Manager
+
+Meta: Always-Update Contract
+- Purpose: This document is the ground truth primer for new Codex chats. If code changes alter architecture, data schema, message contracts, or UI flows, update this file in the same PR.
+- When to update: Any change to one of the following:
+  - IndexedDB schema or `DB_VERSION`
+  - Message types in `src/types/messages.ts` or routes in `src/background/index.ts`
+  - Content auto-scrape behavior or gating rules
+  - Backup/history/restore behavior
+  - Options/Popup UI features or flows
+- How to update (checklist):
+  1) Bump “Verified As Of” date below. 2) Add/remove items in Architecture and Storage Model. 3) Reflect new/changed messages under Messaging Protocol. 4) Note any new user-visible flows in UI. 5) Record notable behavior changes in Changelog.
+
+Verified As Of: 2025-09-02
+
+TL;DR
+- Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
+- Build: `npm run build` → `dist/`; load unpacked extension from `dist` in Chromium-based browser.
+- Dev watch (run each in separate terminals): `npm run watch:bg`, `watch:cs`, `watch:opt`, `watch:pop`.
+- First-use: Open Options, click “Refresh data” and provide your YouTube API key (stored in `chrome.storage.local.ytApiKey`).
+
+Architecture
+- Manifest V3: background service worker, one content script, Options page (React), Popup (React).
+- Background
+  - `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes).
+  - `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 11`.
+  - `src/background/driveBackup.ts`: Google Drive appData auth + read/write (JSON, JSONL, snapshots), optional AES-GCM encryption.
+  - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
+  - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
+- Content
+  - `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle.
+  - `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
+  - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
+  - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
+  - `src/content/yt-navigation.ts`: navigation hooks (yt-navigate-finish + URL polling fallback).
+- UI
+  - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup history modal.
+  - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch).
+- Shared/Types
+  - `src/shared/conditions.ts`: Condition AST, evaluation for videos/channels; “Group” type (called “Preset” in UI).
+  - `src/types/messages.ts`: central message union and supporting types.
+  - `src/types/debug.ts`: simple debug logging flags.
+
+Data Flow (Happy Path)
+1) Content finds candidate video ids from tiles or the watch page; sends `cache/VIDEO_SEEN` or `cache/VIDEO_STUB` to background with minimal fields and sources (playlist/panel/watch/channel-tab).
+2) Background upserts into `videos` (merges flags/tags/progress/sources), optionally ensures channel stubs, and emits `db/change` to update UI.
+3) Options UI reads from IDB (read-only) and sends background actions (tagging, delete/restore, refresh, channel tagging, presets CRUD, backup/history ops).
+4) Refresh uses YouTube Data API (via stored API key) to fetch `videos.list` and `channels.list` in batches with retries; background normalizes and stores selective fields.
+5) On mutations, background records lightweight events → commits; appends to `events-YYYY-MM.jsonl` in Drive and occasionally saves snapshots.
+
+Auto-Scrape & Presets
+- Auto-scrape runs every ~2s only if user was active within the last 10s. Disabled on channel pages and all playlist pages.
+- Current watch page is always captured; other tiles are captured only if accepted by at least one enabled “Preset”.
+- A preset participates at scrape-time only if its condition tree is fully checkable from in-page data. Supported predicates: `sourceAny`, `sourcePlaylistAny`, `channelIdIn`, `titleRegex`, and `groupRef` (only if referenced presets are themselves checkable).
+- Tiles with just a handle/name may upsert to `channels_pending` (gated by accepted presets, per-page de-duped). Channel pages resolve pending entries to real ids automatically; Options exposes a debug panel to open background tabs and auto-resolve handles in batches.
+
+Storage Model (IndexedDB)
+- DB: `yt-recommender`, `DB_VERSION = 11`.
+- Stores and key fields
+  - `videos` (keyPath: `id`) — indexes: `byChannel` on `channelId`, `byTag` on `tags` (multiEntry).
+  - `trash` (keyPath: `id`) — index: `byDeletedAt`.
+  - `tags` (keyPath: `name`) — index: `byCreatedAt`; record: `{ name, color?, createdAt?, groupId? }`.
+  - `tag_groups` (keyPath: `id`) — indexes: `byName`, `byCreatedAt`.
+  - `groups` (keyPath: `id`) — indexes: `byName`, `byUpdatedAt`; record includes `scrape?: boolean`.
+  - `channels` (keyPath: `id`) — indexes: `byName`, `byFetchedAt`.
+  - `channels_trash` (keyPath: `id`) — index: `byDeletedAt`.
+  - `channels_pending` (keyPath: `key`) — index: `byCreatedAt`; rows like `{ key: 'handle:@foo' | 'name:Some Name', name?, handle?, createdAt?, updatedAt? }`.
+  - `meta` (keyPath: `key`) — holds aggregated lists like `{ key: 'videoTopics', list: string[] }`.
+  - `events_commits` (keyPath: `commitId`) — index: `byTs`.
+  - `events` (keyPath: `id`) — index: `byCommit`.
+- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`.
+- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `keywords`, `topics[]`, `description`, `bannerUrl`, `fetchedAt`, `scrapedAt*` and per-tab counts.
+
+Messaging Protocol (truth: `src/types/messages.ts`; router: background)
+- Content → Background
+  - `cache/VIDEO_SEEN`, `cache/VIDEO_STUB`
+  - `cache/VIDEO_PROGRESS`, `cache/VIDEO_PROGRESS_PCT`
+- UI → Background (selected)
+  - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
+  - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`
+  - Tags: `tags/list`, `tags/create`, `tags/rename`, `tags/delete`, `tags/assignGroup`
+  - Tag Groups: `tagGroups/list`, `tagGroups/create`, `tagGroups/rename`, `tagGroups/delete`
+  - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
+  - Topics: `topics/list`
+  - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`
+  - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings`, `backup/restoreSettings`, `backup/listFiles`, `backup/downloadFile`
+  - History: `backup/history/list`, `backup/history/getCommit`, `backup/history/getUpTo`, `backup/history/deleteUpTo`, `backup/history/usage`, `backup/history/import`
+  - Restore & Apply: `backup/restore/dryRun`, `backup/restore/apply`
+- Background → UI push
+  - `db/change { entity }` (videos | tags | groups | tagGroups | channels | topics)
+  - Refresh progress: `refresh/progress`, `refresh/error`, `refresh/done`
+  - Backup state: `backup/progress`, `backup/done`, `backup/error`
+
+YouTube API Refresh
+- Uses `videos.list` and `channels.list` with retries and chunking (50 ids per call). API key read from `chrome.storage.local.ytApiKey`.
+- Selective change history recorded during refresh:
+  - Videos: diffs for `title`, `thumbnailUrl`, `description`.
+  - Channels: diffs for best `avatarUrl` (from thumbnails), `bannerUrl`, `description`.
+- After video refresh, background ensures channel directory consistency (fetches missing/stale channels), recomputes `channel.videoTags[]`, and aggregates distinct `videoTopics` into `meta`.
+
+Backup, History, Snapshots (Google Drive appData)
+- OAuth via `chrome.identity.launchWebAuthFlow` (scope: `drive.appdata`). Silent by default; UI requests interactive on demand.
+- Files written:
+  - `settings.json` (latest snapshot; optionally encrypted with AES-GCM passphrase).
+  - `snapshots/settings-YYYYMMDD-HHMMSS.json` (dynamic checkpoints).
+  - `events-YYYY-MM.jsonl` (monthly append-only history with a JSON header line).
+  - Optional `cutoff.json` or `cutoff-*.json` marker after “Delete up to here”.
+- Dynamic checkpoints: when commit processing weight ≥ 10,000 or month file size ≥ 20 MB, background saves a snapshot and resets the counter.
+- Backlog replay: if Drive append fails, commit ids queue in `chrome.storage.local['drive.unsyncedCommitIds']`; background periodically replays to Drive. Options header shows a “Drive backlog: N” badge when > 0.
+- Import path: `backup/history/import` validates against the current cutoff marker and stitches imported month logs and snapshots, then removes the cutoff marker on success.
+
+Restore (Dry Run + Apply)
+- Snapshot shape: `{ version:1, at, tags[], tagGroups[], groups[], videoIndex[], channelIndex[], pendingChannels[] }`.
+- Dry run (`backup/restore/dryRun`): returns counts by category for merge/overwrite and which apply flags will touch what.
+- Apply (`backup/restore/apply`): merge/overwrite semantics; selective application of `channelTags`, `videoTags`, `sources`, `progress`.
+
+Options UI Highlights
+- Views: Videos, Trash, Channels, Channels Trash, and Pending (debug).
+- Filters editor: AND/OR/NOT linear editor for many predicates (video/channel/tag/source/topic); Save as “Preset” (backed by Group). Not all predicates are scrape-checkable — UI disables scrape toggle when unsupported.
+- Tags sidebar: Tag CRUD, Tag Groups CRUD, assign tags to groups; tag pickers grouped by Tag Group.
