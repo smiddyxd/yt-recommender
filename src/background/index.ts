@@ -18,6 +18,14 @@ chrome.action?.onClicked.addListener((tab) => {
   }
 });
 
+// --- Utils ---
+function utf8ToB64(s: string): string {
+  const bytes = new TextEncoder().encode(s);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 // --- Google Drive backup wiring ---
 registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
   const [tags, tagGroups, groups] = await Promise.all([
@@ -745,7 +753,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           if (!cid) { sendResponse?.({ ok: false, error: 'Missing commitId' }); return; }
           const events = await getHistoryCommitEvents(cid);
           const text = events.map(ev => JSON.stringify({ ts: ev.ts, kind: ev.kind, payload: ev.payload, impact: ev.impact })).join('\n') + '\n';
-          const b64 = btoa(text);
+          const b64 = utf8ToB64(text);
           sendResponse?.({ ok: true, contentB64: b64, name: `commit-${cid}.jsonl`, mimeType: 'text/plain' });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
@@ -923,7 +931,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                   }
                 }
                 const partial = keep.join('\n') + '\n';
-                const b64 = btoa(partial);
+                const b64 = utf8ToB64(partial);
                 out.push({ name: `${name.replace(/\.jsonl$/, '')}-upTo-${cid}.jsonl`, contentB64: b64 });
               }
             } else if (name.startsWith('snapshots/')) {
