@@ -1131,18 +1131,14 @@ const channelsFiltered = useMemo(() => {
               value={q}
               onChange={e => setQ(e.target.value)}
             />
-            <button id="refresh" onClick={refresh} disabled={loading}>
-              {loading ? 'Loading…' : 'Refresh'}
-            </button>
+            <button id="refresh" onClick={refresh} disabled={loading} title="Reload list from local database">{loading ? 'Loading…' : 'Refresh DB'}</button>
             {/* Entity toggle (Videos ↔ Channels, aware of trash) */}
             <button
               type="button"
               className="btn-ghost"
               aria-pressed={inChannels || inChannelsTrash}
               title={(inChannels || inChannelsTrash) ? 'Show videos' : 'Show channels'}
-              onClick={() => setView((inChannels || inChannelsTrash)
-                ? ((inChannelsTrash || inTrash) ? 'trash' : 'videos')
-                : ((inTrash || inChannelsTrash) ? 'channelsTrash' : 'channels'))}
+              onClick={() => setView((inChannels || inChannelsTrash) ? ((inChannelsTrash || inTrash) ? 'trash' : 'videos') : ((inTrash || inChannelsTrash) ? 'channelsTrash' : 'channels'))}
             >
               {(inChannels || inChannelsTrash) ? 'Videos' : 'Channels'}
             </button>
@@ -1158,22 +1154,21 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-ghost"
-              title="Fetch metadata for all videos via YouTube API"
+              title="Fetch video metadata via YouTube API for missing/stale videos"
               onClick={refreshData}
               disabled={refreshing}
             >
-              {refreshing ? 'Refreshing…' : 'Refresh data'}
+              {refreshing ? 'Refreshing…' : 'Fetch video data'}
             </button>
-            {!refreshing && (
-              <span className="muted" title="Videos without API data">{stubCount} stubs</span>
-            )}
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginLeft: 8 }} title="Show only videos that have not been fetched via API">
-              <input type="checkbox" checked={showStubsOnly} onChange={(e)=> setShowStubsOnly(e.target.checked)} />
-              <span className="muted">Stubs only</span>
+            <label style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginLeft: 8 }} title="Show only items without fetched metadata">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={showStubsOnly} onChange={(e)=> setShowStubsOnly(e.target.checked)} />
+                <span className="muted">{stubCount} stubs</span>
+              </span>
+              <span className="muted" style={{ fontSize: 11 }}>
+                {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => !Number.isFinite((ch as any).fetchedAt || undefined)).length : filtered.filter(v => !Number.isFinite(v.fetchedAt || undefined)).length} in view
+              </span>
             </label>
-            <span className="muted" style={{ display: 'block', fontSize: 11, marginLeft: 8 }}>
-              {stubCount} stubs total (in view: {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => !Number.isFinite((ch as any).fetchedAt || undefined)).length : filtered.filter(v => !Number.isFinite(v.fetchedAt || undefined)).length})
-            </span>
             <button
               type="button"
               className="btn-ghost"
@@ -1187,18 +1182,20 @@ const channelsFiltered = useMemo(() => {
                 {refreshProcessed}/{refreshTotal}{refreshFailed ? ` (${refreshFailed} failed)` : ''}
               </span>
             )}
-            {!refreshing && (
-              <span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>
-            )}
-            {backupInProgress ? (
-              <span className="muted" aria-live="polite" title="Backup in progress" style={{ marginLeft: 8 }}>Backing up…</span>
-            ) : unsyncedCount > 0 ? (
-              <span className="badge" style={{ marginLeft: 8 }} title={`${unsyncedCount} commit(s) pending upload to Drive`}>
-                Drive backlog: {unsyncedCount}
-              </span>
-            ) : (
-              <span className="muted" aria-live="polite" title="Last backup time" style={{ marginLeft: 8 }}>B: {fmtTime(lastBackupAt)}</span>
-            )}
+            <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', marginLeft: 8 }}>
+              {!refreshing && (
+                <span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>
+              )}
+              {backupInProgress ? (
+                <span className="muted" aria-live="polite" title="Backup in progress">Backing up…</span>
+              ) : unsyncedCount > 0 ? (
+                <span className="badge" title={`${unsyncedCount} commit(s) pending upload to Drive`}>
+                  Drive backlog: {unsyncedCount}
+                </span>
+              ) : (
+                <span className="muted" aria-live="polite" title="Last backup time">B: {fmtTime(lastBackupAt)}</span>
+              )}
+            </span>
             {backupLastError && (
               <span className="muted" style={{ color: 'salmon' }} title="Backup error">{String(backupLastError).slice(0, 120)}</span>
             )}
