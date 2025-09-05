@@ -37,6 +37,8 @@ type Props = {
   onSetDriveClientId?: () => void;
   onBackupNow?: () => void;
   onOpenHistory?: () => void;
+  // Current view label (e.g., Videos, Videos Trash, Channels, Channels Trash, Pending)
+  viewLabel?: string;
 };
 
 export default function Sidebar(props: Props) {
@@ -70,6 +72,7 @@ export default function Sidebar(props: Props) {
   onSetDriveClientId,
   onBackupNow,
   onOpenHistory,
+  viewLabel,
 } = props;
 
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -80,6 +83,11 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside className="sidebar">
+        {viewLabel && (
+          <div className="side-section">
+            <div className="side-title">{viewLabel}</div>
+          </div>
+        )}
         <div className="side-section">
           <div className="side-title" style={{ display: 'flex', gap: 8 }}>
             <button className="btn-ghost" aria-pressed={tab==='tags'} onClick={()=>setTab('tags')}>Tags</button>

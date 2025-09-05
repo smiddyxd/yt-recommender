@@ -95,6 +95,13 @@ export default function App() {
   const inTrash = view === 'trash';
   const inChannels = view === 'channels';
   const inChannelsTrash = view === 'channelsTrash';
+  const viewLabel = (() => {
+    if (view === 'pending') return 'Pending (debug)';
+    if (inChannelsTrash) return 'Channels Trash';
+    if (inChannels) return 'Channels';
+    const inTrashLabel = view === 'trash';
+    return inTrashLabel ? 'Videos Trash' : 'Videos';
+  })();
   // Selection
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const selectedCount = selected.size;
@@ -1022,45 +1029,40 @@ const channelsFiltered = useMemo(() => {
   onSetDriveClientId={setDriveClientIdInteractive}
   onBackupNow={backupSettingsInteractive}
   onOpenHistory={openHistory}
+  viewLabel={viewLabel}
 />
       <div className="content">
         <header>
-          <h1>{inTrash ? 'Trash' : 'All collected videos'}</h1>
 
           <div className="controls">
-            {/* View toggle */}
+            {/* View toggle (single button) */}
             <div className="view-toggle" role="group" aria-label="View mode">
               <button
                 type="button"
                 className="icon-btn"
-                aria-pressed={isList}
-                title="List view"
-                onClick={() => setLayout('list')}
+                aria-pressed={true}
+                title={isList ? 'Switch to grid view' : 'Switch to list view'}
+                onClick={() => setLayout(isList ? 'grid' : 'list')}
               >
-                <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-pressed={isGrid}
-                title="Grid view"
-                onClick={() => setLayout('grid')}
-              >
-                <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
-                </svg>
+                {isList ? (
+                  <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+                  </svg>
+                ) : (
+                  <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>
+                  </svg>
+                )}
               </button>
             </div>
 
-            {/* Trash toggle */}
+            {/* Trash toggle (single) */}
             <button
               type="button"
               className="icon-btn"
-              aria-pressed={inTrash}
-              title={inTrash ? 'Show videos' : 'Show trash'}
-              onClick={() => setView(inTrash ? 'videos' : 'trash')}
+              aria-pressed={inTrash || inChannelsTrash}
+              title={(inTrash || inChannelsTrash) ? 'Show non-trash' : 'Show trash'}
+              onClick={() => setView((inChannels || inChannelsTrash) ? (inChannelsTrash ? 'channels' : 'channelsTrash') : (inTrash ? 'videos' : 'trash'))}
             >
               <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M9 3h6a1 1 0 0 1 1 1v1h4v2H4V5h4V4a1 1 0 0 1 1-1Zm-3 6h12l-1 10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9Zm4 2v8h2v-8H10Zm4 0v8h2v-8h-2Z" />
@@ -1069,15 +1071,6 @@ const channelsFiltered = useMemo(() => {
 
             {/* Selection controls */}
             <div className="sel-controls">
-              <button
-                type="button"
-                className="btn-ghost"
-                title="Select page (visible)"
-                onClick={() => selectAllVisible(inChannelLike ? channelsPageItems.map(ch => ch.id) : pageItems.map(v => v.id))}
-              >
-                Select page
-              </button>
-
               <button
                 type="button"
                 className="btn-ghost"
@@ -1141,23 +1134,17 @@ const channelsFiltered = useMemo(() => {
             <button id="refresh" onClick={refresh} disabled={loading}>
               {loading ? 'Loading…' : 'Refresh'}
             </button>
+            {/* Entity toggle (Videos ↔ Channels, aware of trash) */}
             <button
               type="button"
               className="btn-ghost"
-              aria-pressed={inChannels}
-              title={inChannels ? 'Show videos' : 'Show channels directory'}
-              onClick={() => setView(inChannels ? 'videos' : 'channels')}
+              aria-pressed={inChannels || inChannelsTrash}
+              title={(inChannels || inChannelsTrash) ? 'Show videos' : 'Show channels'}
+              onClick={() => setView((inChannels || inChannelsTrash)
+                ? ((inChannelsTrash || inTrash) ? 'trash' : 'videos')
+                : ((inTrash || inChannelsTrash) ? 'channelsTrash' : 'channels'))}
             >
-              Channels
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              aria-pressed={inChannelsTrash}
-              title={inChannelsTrash ? 'Show channels directory' : 'Show channels trash'}
-              onClick={() => setView(inChannelsTrash ? 'channels' : 'channelsTrash')}
-            >
-              Channel trash
+              {(inChannels || inChannelsTrash) ? 'Videos' : 'Channels'}
             </button>
             <button
               type="button"
@@ -1184,6 +1171,9 @@ const channelsFiltered = useMemo(() => {
               <input type="checkbox" checked={showStubsOnly} onChange={(e)=> setShowStubsOnly(e.target.checked)} />
               <span className="muted">Stubs only</span>
             </label>
+            <span className="muted" style={{ display: 'block', fontSize: 11, marginLeft: 8 }}>
+              {stubCount} stubs total (in view: {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => !Number.isFinite((ch as any).fetchedAt || undefined)).length : filtered.filter(v => !Number.isFinite(v.fetchedAt || undefined)).length})
+            </span>
             <button
               type="button"
               className="btn-ghost"
@@ -1198,7 +1188,7 @@ const channelsFiltered = useMemo(() => {
               </span>
             )}
             {!refreshing && (
-              <span className="muted" aria-live="polite" title="Last refresh time">{fmtTime(lastRefreshAt)}</span>
+              <span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>
             )}
             {backupInProgress ? (
               <span className="muted" aria-live="polite" title="Backup in progress" style={{ marginLeft: 8 }}>Backing up…</span>
@@ -1207,7 +1197,7 @@ const channelsFiltered = useMemo(() => {
                 Drive backlog: {unsyncedCount}
               </span>
             ) : (
-              <span className="muted" aria-live="polite" title="Last backup time" style={{ marginLeft: 8 }}>{fmtTime(lastBackupAt)}</span>
+              <span className="muted" aria-live="polite" title="Last backup time" style={{ marginLeft: 8 }}>B: {fmtTime(lastBackupAt)}</span>
             )}
             {backupLastError && (
               <span className="muted" style={{ color: 'salmon' }} title="Backup error">{String(backupLastError).slice(0, 120)}</span>
@@ -1215,15 +1205,7 @@ const channelsFiltered = useMemo(() => {
             {refreshLastError && (
               <span className="muted" style={{ color: 'salmon' }} title="Last error">{String(refreshLastError).slice(0, 140)}</span>
             )}
-            <button
-              type="button"
-              className="btn-ghost"
-              title="Remove duplicate source entries across all videos"
-              onClick={() => sendBg('videos/wipeSources', {}).then(() => refresh())}
-              disabled={loading}
-            >
-              Wipe sources
-            </button>
+            {/* Wipe sources removed per UX */}
           </div>
         </header>
         {showTagger && selectedCount > 0 && (
