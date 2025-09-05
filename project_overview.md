@@ -291,19 +291,4 @@ Housekeeping
 
 ONLY UPDATES FROM HERE ON OUT ------------------------------------------------------------------
 
-Recent Updates (2025-09-05)
-- Google Drive backup API standardized: all operations plaintext; functions accept `{ interactive? }`; manual “Backup settings” finalizes pending commit and replays backlog after saving.
-- History downloads now UTF‑8-safe (base64) for both single-commit and “up to” bundles; slicing respects commit boundaries.
-- New `channels/stubsCount` route; UI stubs indicator shows total across videos+channels plus “in view”.
-- Options top bar refactor: single toggles (List/Grid, Videos/Channels, Trash); labels clarified (“Refresh DB”, “Fetch video data”, “Fetch channels (unfetched)”).
-- Version History modal: widened; added “Revert to here” and “Snapshot now”; delete-up-to warns if no baseline snapshot exists before target.
-
-Recent Updates (2025-09-02)
-- Name: project branding updated to "YT Manager".
-- Drive backups: encryption/passphrase removed — all snapshots/history stored as plaintext JSON/JSONL.
-- History export slicing: "Download up to here" and "Delete up to here" now include/remove entire commits (all lines sharing the commitId), fixing missed fast-follow events.
-- Restore (merge mode): tag-name dedupe (case/trim) and tag-group remap by name to avoid duplicates; incoming references mapped to local canonical names/groups.
-- Revert to Here: new route `backup/history/revertTo { commitId, dryRun? }` (snapshot + forward replay), with UI buttons in the History modal.
-- Baseline bootstrap: background creates an initial snapshot if none exists (on startup silently; and after setting Drive Client ID interactively).
-- Snapshot now: new route `backup/history/snapshotNow { interactive?, name? }` and button in History modal.
-- UI: History modal widened; delete-up-to preflight warns if no baseline snapshot exists before the target commit.
+Use this section as an “inbox” for future patch notes. After integrating updates into the sections above and the Changelog, clear the notes here.
