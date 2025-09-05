@@ -613,9 +613,10 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       }
       // --- Backup routes ---
       else if ((raw as any)?.type === 'backup/saveSettings') {
-        
+        // Manually triggered settings backup. Also attempt to flush/replay history backlog.
         try {
           try { chrome.runtime.sendMessage({ type: 'backup/progress', payload: {} }); } catch {}
+          try { await finalizeCommitAndFlushIfAny(); } catch {}
           const snapshot = await (async (): Promise<SettingsSnapshot> => {
             const [tags, tagGroups, groups] = await Promise.all([
               listTags().catch(() => []),
@@ -681,7 +682,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
             });
             return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any, videoIndex, channelIndex, pendingChannels };
           })();
-          await saveSettingsNow(snapshot);
+          await saveSettingsNow(snapshot, { interactive: true });
+          try { void replayUnsyncedCommitsToDrive(); } catch {}
           try { const now = Date.now(); chrome.storage?.local?.set({ lastBackupAt: now }); chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } }); } catch {}
           sendResponse?.({ ok: true });
         } catch (e: any) {
@@ -765,6 +767,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           const ts = new Date().toISOString().replace(/[:.]/g, '').replace('T','-').slice(0, 15);
           const name = customName && customName.trim() ? customName.trim() : `snapshots/settings-${ts}.json`;
           await saveSnapshotWithName(name, snap, { interactive });
+          try { void replayUnsyncedCommitsToDrive(); } catch {}
           try { const now = Date.now(); chrome.storage?.local?.set({ lastBackupAt: now }); chrome.runtime.sendMessage({ type: 'backup/done', payload: { at: now } }); } catch {}
           sendResponse?.({ ok: true, name });
         } catch (e: any) {

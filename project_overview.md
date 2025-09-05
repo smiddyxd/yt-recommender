@@ -11,7 +11,7 @@ Meta: Always-Update Contract
 - How to update (checklist):
   1) Bump “Verified As Of” date below. 2) Add/remove items in Architecture and Storage Model. 3) Reflect new/changed messages under Messaging Protocol. 4) Note any new user-visible flows in UI. 5) Record notable behavior changes in Changelog.
 
-Verified As Of: 2025-09-02
+Verified As Of: 2025-09-05
 
 TL;DR
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -276,3 +276,4 @@ Recent Updates (2025-09-02)
 - Baseline bootstrap: background creates an initial snapshot if none exists (on startup silently; and after setting Drive Client ID interactively).
 - Snapshot now: new route `backup/history/snapshotNow { interactive?, name? }` and button in History modal.
 - UI: History modal widened; delete-up-to preflight warns if no baseline snapshot exists before the target commit.
+

@@ -266,7 +266,7 @@ export default function Sidebar(props: Props) {
             <button className="btn-ghost" onClick={onOpenHistory}>Version History</button>
           </div>
           <div className="muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
-            Uses Google Drive appDataFolder. During backup you’ll be asked to sign in. Optional passphrase encrypts data locally.
+            Uses Google Drive appDataFolder. During backup you may be asked to sign in.
           </div>
         </div>
       </aside>

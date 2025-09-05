@@ -53,10 +53,10 @@ export type Msg =
   | { type: 'rules/runAll';  payload: { onlyEnabled?: boolean } }
   | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } }
   // BACKUP (Google Drive)
-  | { type: 'backup/saveSettings'; payload: { passphrase?: string } }
+  | { type: 'backup/saveSettings'; payload: {} }
   | { type: 'backup/getClientId'; payload: {} }
   | { type: 'backup/setClientId'; payload: { clientId: string } }
-  | { type: 'backup/restoreSettings'; payload: { passphrase?: string } }
+  | { type: 'backup/restoreSettings'; payload: {} }
   | { type: 'backup/listFiles'; payload: {} }
   | { type: 'backup/downloadFile'; payload: { id: string } }
   | { type: 'backup/history/list'; payload: { limit?: number } }

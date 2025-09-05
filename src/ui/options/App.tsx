@@ -427,8 +427,7 @@ function startEditFromGroup(g: GroupRec) {
 
   async function backupSettingsInteractive() {
     try {
-      const pass = window.prompt('Optional: enter passphrase to encrypt (AES-GCM). Leave blank for no encryption.');
-      const r: any = await sendBg('backup/saveSettings', pass ? ({ passphrase: pass } as any) : ({} as any));
+      const r: any = await sendBg('backup/saveSettings', {} as any);
       if (r?.ok) alert('Settings backed up to Google Drive (appDataFolder) as settings.json');
       else alert(`Backup failed: ${r?.error || 'unknown error'}`);
     } catch (e: any) {

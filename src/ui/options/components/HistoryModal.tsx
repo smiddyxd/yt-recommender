@@ -88,9 +88,6 @@ export default function HistoryModal({ open, onClose }: Props) {
 
   async function revertTo(commitId: string, mode: 'dryRun' | 'apply') {
     try {
-      let passphrase: string | undefined;
-      // Optional passphrase for encrypted snapshots
-      
       const r: any = await sendBg('backup/history/revertTo', { commitId, dryRun: mode === 'dryRun' } as any);
       if (!r?.ok) { alert(`Revert failed: ${r?.error || 'unknown'}`); return; }
       const summary = r?.summary || r;
