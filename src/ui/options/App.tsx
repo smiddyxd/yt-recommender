@@ -1170,7 +1170,7 @@ const channelsFiltered = useMemo(() => {
                 <input type="checkbox" checked={showStubsOnly} onChange={(e)=> setShowStubsOnly(e.target.checked)} />
                 <span className="muted">{stubCount} stubs</span>
               </span>
-              <span className="muted" style={{ fontSize: 11 }}>
+              <span className="muted" style={{ fontSize: 11, paddingLeft: 27 }}>
                 {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => !Number.isFinite((ch as any).fetchedAt || undefined)).length : filtered.filter(v => !Number.isFinite(v.fetchedAt || undefined)).length} in view
               </span>
             </label>
