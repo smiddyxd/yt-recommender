@@ -57,7 +57,9 @@ export default function HistoryModal({ open, onClose }: Props) {
         .map(f => ({ name: f.name, data: b64ToBytes(f.contentB64) }));
       const zip = buildZip(files);
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([zip], { type: 'application/zip' }));
+      // Ensure ArrayBuffer to satisfy BlobPart typing under TS 5.9
+      const ab = new ArrayBuffer(zip.byteLength); new Uint8Array(ab).set(zip);
+      a.href = URL.createObjectURL(new Blob([ab], { type: 'application/zip' }));
       a.download = `history-up-to-${commitId}.zip`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 500);

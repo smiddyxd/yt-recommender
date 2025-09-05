@@ -9,7 +9,7 @@ function q1(selList: string[]): HTMLElement | null {
   return null;
 }
 
-function tileToSeed(el: HTMLElement, source: { type: string; id?: string | null }): VideoSeed | null {
+function tileToSeed(el: HTMLElement, source: VideoSeed['sources'][number]): VideoSeed | null {
   const a = el.querySelector(SELECTORS.tileLink) as HTMLAnchorElement | null;
   if (!a) return null;
   const id = parseVideoIdFromHref(a.href);
@@ -173,7 +173,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
       return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
     } else {
       // Videos or Live: scan document-wide anchors, filter by tile roots, de-dupe by video id
-      const sourceType = pageTab === 'live' ? 'ChannelLivestreamsTab' : 'ChannelVideosTab';
+      const sourceType: VideoSeed['sources'][number]['type'] = pageTab === 'live' ? 'ChannelLivestreamsTab' : 'ChannelVideosTab';
       const anchors = Array.from(document.querySelectorAll(
         'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
       )) as HTMLAnchorElement[];

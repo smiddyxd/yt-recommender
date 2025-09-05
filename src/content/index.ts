@@ -200,8 +200,8 @@ function candidateFromAnchor(a: HTMLAnchorElement): Cand | null {
 function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string, GroupRec>): boolean {
   function isCheckable(node: any, seen: Set<string>): boolean {
     if (!node) return true;
-    if ('all' in node) return (Array.isArray(node.all) ? node.all : []).every(n => isCheckable(n, seen));
-    if ('any' in node) return (Array.isArray(node.any) ? node.any : []).every(n => isCheckable(n, seen));
+    if ('all' in node) return (Array.isArray(node.all) ? node.all : []).every((n: any) => isCheckable(n, seen));
+    if ('any' in node) return (Array.isArray(node.any) ? node.any : []).every((n: any) => isCheckable(n, seen));
     if ('not' in node) return isCheckable(node.not, seen);
     const p = node as any;
     if (p.kind === 'groupRef') {
@@ -232,7 +232,7 @@ function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string,
         const items = Array.isArray(p.items) ? p.items : [];
         if (!items.length) return false;
         const src = Array.isArray(c.sources) ? c.sources : [];
-        return src.some(s => items.some(it => (s?.type || '') === (it?.type || '') && ((s?.id ?? null) === (it?.id ?? null))));
+        return src.some(s => items.some((it: any) => (s?.type || '') === (it?.type || '') && ((s?.id ?? null) === (it?.id ?? null))));
       }
       case 'sourcePlaylistAny': {
         const ids = new Set((p.ids || []).map(String));
@@ -245,7 +245,7 @@ function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string,
         const name = (c.channelName || '').trim().toLowerCase();
         const set = new Set((Array.isArray(p.ids) ? p.ids : []).map((s: any) => String(s || '').trim().toLowerCase()));
         const handleBare = handle.startsWith('@') ? handle.slice(1) : handle;
-        return (id && set.has(id)) || (handle && (set.has(handle) || set.has(handleBare))) || (name && set.has(name));
+        return (!!id && set.has(id)) || (!!handle && (set.has(handle) || set.has(handleBare))) || (!!name && set.has(name));
       }
       case 'titleRegex': {
         const pat = String(p.pattern || '');

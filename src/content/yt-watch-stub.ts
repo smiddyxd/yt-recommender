@@ -34,32 +34,41 @@ export async function scrapeWatchStub(): Promise<number> {
     }
 
     // Title (robust: wait briefly if not yet rendered), scoped to flexy when available
-    const titleEl = await waitFor<HTMLElement>(() => (
-      (flexy ? (flexy.querySelector('ytd-watch-metadata h1 yt-formatted-string') as HTMLElement | null) : null)
-      || (flexy ? (flexy.querySelector('h1.ytd-watch-metadata yt-formatted-string') as HTMLElement | null) : null)
-      || (document.querySelector('ytd-watch-metadata h1 yt-formatted-string') as HTMLElement | null)
-      || (document.querySelector('h1.ytd-watch-metadata yt-formatted-string') as HTMLElement | null)
-    ));
+    const titleEl = await waitFor<HTMLElement>(() => {
+      const fromFlexy = flexy
+        ? ((flexy.querySelector('ytd-watch-metadata h1 yt-formatted-string') as HTMLElement | null)
+          || (flexy.querySelector('h1.ytd-watch-metadata yt-formatted-string') as HTMLElement | null))
+        : null;
+      return fromFlexy
+        || (document.querySelector('ytd-watch-metadata h1 yt-formatted-string') as HTMLElement | null)
+        || (document.querySelector('h1.ytd-watch-metadata yt-formatted-string') as HTMLElement | null);
+    });
     const title = titleEl ? (titleEl.textContent || '').trim() || null : null;
 
     // Channel name (robust)
     let channelName: string | null = null;
     try {
-      const chTxt = await waitFor<HTMLElement>(() => (
-        flexy ? (flexy.querySelector('ytd-channel-name #text a, #channel-name #text a') as HTMLElement | null) : null
-        || (document.querySelector('ytd-channel-name #text a, #channel-name #text a') as HTMLElement | null)
-      ));
+      const chTxt = await waitFor<HTMLElement>(() => {
+        const fromFlexy = flexy
+          ? (flexy.querySelector('ytd-channel-name #text a, #channel-name #text a') as HTMLElement | null)
+          : null;
+        return fromFlexy
+          || (document.querySelector('ytd-channel-name #text a, #channel-name #text a') as HTMLElement | null);
+      });
       channelName = chTxt?.textContent?.trim() || null;
     } catch { channelName = null; }
 
     // Channel ID via owner link or subscribe renderer (has data-channel-external-id)
     let channelId: string | null = null;
     try {
-      const a = await waitFor<HTMLAnchorElement>(() => (
-        flexy ? (flexy.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null) : null
-        || (document.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null)
-        || (document.querySelector('#owner a[href^="/channel/"]') as HTMLAnchorElement | null)
-      ));
+      const a = await waitFor<HTMLAnchorElement>(() => {
+        const fromFlexy = flexy
+          ? (flexy.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null)
+          : null;
+        return fromFlexy
+          || (document.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null)
+          || (document.querySelector('#owner a[href^="/channel/"]') as HTMLAnchorElement | null);
+      });
       if (a?.href) {
         const u = new URL(a.href, location.origin);
         const seg = u.pathname.split('/');
@@ -68,10 +77,13 @@ export async function scrapeWatchStub(): Promise<number> {
     } catch {}
     if (!channelId) {
       try {
-        const el = await waitFor<HTMLElement>(() => (
-          flexy ? (flexy.querySelector('[data-channel-external-id]') as HTMLElement | null) : null
-          || (document.querySelector('[data-channel-external-id]') as HTMLElement | null)
-        ));
+        const el = await waitFor<HTMLElement>(() => {
+          const fromFlexy = flexy
+            ? (flexy.querySelector('[data-channel-external-id]') as HTMLElement | null)
+            : null;
+          return fromFlexy
+            || (document.querySelector('[data-channel-external-id]') as HTMLElement | null);
+        });
         const val = el?.getAttribute('data-channel-external-id');
         if (val) channelId = val;
       } catch {}

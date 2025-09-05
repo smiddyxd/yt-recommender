@@ -1,6 +1,6 @@
 // Google Drive backup for settings & snapshots tailored to this extension.
 // Scope: drive.appdata (hidden app folder). Auth via chrome.identity.launchWebAuthFlow.
-// Optional AES-GCM encryption with a user-provided passphrase.
+// Plaintext storage only (no encryption).
 
 import type { Group as GroupRec } from '../shared/conditions';
 import type { TagRec, TagGroupRec } from '../types/messages';
@@ -36,7 +36,6 @@ type TokenCache = { access_token: string; expires_at: number };
 // Client ID is stored in chrome.storage.local under KEY.clientId
 const KEY = {
   token: 'drive.token',
-  encSalt: 'drive.encSalt',
   clientId: 'drive.clientId',
 };
 
@@ -51,7 +50,8 @@ const OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const REDIRECT_URI = `https://${chrome.runtime.id}.chromiumapp.org/`;
 
 // -------------------- Token --------------------
-async function getAccessToken(interactive: boolean = true): Promise<string> {
+// Silent by default; callers pass interactive:true for user prompts.
+async function getAccessToken(interactive: boolean = false): Promise<string> {
   const cached = await chrome.storage.local.get(KEY.token);
   const tok: TokenCache | undefined = cached[KEY.token];
   const now = Date.now();
@@ -153,58 +153,7 @@ async function uploadToSession(sessionUrl: string, data: Blob | ArrayBuffer, tok
   }).then(r => { if (!r.ok) throw new Error(`${r.status} ${r.statusText}`); });
 }
 
-// -------------------- Optional encryption --------------------
-async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
-  return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 120_000, hash: 'SHA-256' },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
-}
-
-function b64(a: ArrayBuffer | Uint8Array) {
-  const bytes = a instanceof Uint8Array ? a : new Uint8Array(a);
-  let s = '';
-  bytes.forEach(b => (s += String.fromCharCode(b)));
-  return btoa(s);
-}
-function b64dec(s: string) {
-  const bin = atob(s);
-  const arr = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-  return arr;
-}
-
-async function encryptJSON(obj: unknown, passphrase: string) {
-  const enc = new TextEncoder();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  let salt: Uint8Array;
-  const stored = await chrome.storage.local.get(KEY.encSalt);
-  if (stored[KEY.encSalt]) salt = new Uint8Array(stored[KEY.encSalt]);
-  else {
-    salt = crypto.getRandomValues(new Uint8Array(16));
-    await chrome.storage.local.set({ [KEY.encSalt]: Array.from(salt) });
-  }
-  const key = await deriveKey(passphrase, salt);
-  const data = enc.encode(JSON.stringify(obj));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
-  return { encrypted: true, alg: 'AES-GCM', iv: b64(iv), salt: b64(salt), ct: b64(ct) };
-}
-
-async function decryptJSON(payload: any, passphrase: string) {
-  if (!payload?.encrypted) return payload;
-  const iv = b64dec(payload.iv);
-  const salt = b64dec(payload.salt);
-  const key = await deriveKey(passphrase, salt);
-  const ct = b64dec(payload.ct);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-  const dec = new TextDecoder().decode(pt);
-  return JSON.parse(dec);
-}
+// (No encryption helpers — plaintext storage only)
 
 // -------------------- Public API --------------------
 let settingsProducer: null | (() => Promise<SettingsSnapshot>) = null;
@@ -220,24 +169,29 @@ export async function getCurrentSettingsSnapshot(): Promise<SettingsSnapshot> {
   return await settingsProducer();
 }
 
-export async function saveSettingsNow(snapshot: SettingsSnapshot, opts?: { passphrase?: string }) {
-  const token = await getAccessToken(true);
+export async function saveSettingsNow(
+  snapshot: SettingsSnapshot,
+  opts?: { interactive?: boolean }
+) {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const name = 'settings.json';
 
   const fileId = await findAppDataFileId(name, token);
-  const body = opts?.passphrase ? await encryptJSON(snapshot, opts.passphrase) : snapshot;
-  await uploadJSONAppData(name, body, token, fileId || undefined);
+  await uploadJSONAppData(name, snapshot, token, fileId || undefined);
 }
 
 // Save a snapshot under a custom name (e.g., snapshots/settings-<ts>.json)
-export async function saveSnapshotWithName(name: string, snapshot: SettingsSnapshot, opts?: { passphrase?: string }) {
-  const token = await getAccessToken(true);
+export async function saveSnapshotWithName(
+  name: string,
+  snapshot: SettingsSnapshot,
+  opts?: { interactive?: boolean }
+) {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const fileId = await findAppDataFileId(name, token);
-  const body = opts?.passphrase ? await encryptJSON(snapshot, opts.passphrase) : snapshot;
-  await uploadJSONAppData(name, body, token, fileId || undefined);
+  await uploadJSONAppData(name, snapshot, token, fileId || undefined);
 }
 
-export function queueSettingsBackup(opts?: { passphrase?: string }) {
+export function queueSettingsBackup(opts?: { interactive?: boolean }) {
   if (!settingsProducer) return;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(async () => {
@@ -257,31 +211,25 @@ export function queueSettingsBackup(opts?: { passphrase?: string }) {
   }, 3000) as unknown as number;
 }
 
-export async function restoreSettings(opts?: { passphrase?: string }): Promise<SettingsSnapshot | null> {
-  const token = await getAccessToken(true);
+export async function restoreSettings(opts?: { interactive?: boolean }): Promise<SettingsSnapshot | null> {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const name = 'settings.json';
   const id = await findAppDataFileId(name, token);
   if (!id) return null;
   const resp = await driveFetch(`/drive/v3/files/${id}?alt=media`, { method: 'GET', token });
   const raw = await resp.json();
-  const dec = opts?.passphrase ? await decryptJSON(raw, opts.passphrase) : raw;
-  return dec as SettingsSnapshot;
+  return raw as SettingsSnapshot;
 }
 
 // Optional: large snapshot (array -> JSONL)
-export async function saveDataSnapshotNow(baseName: string, rows: unknown[], opts?: { passphrase?: string }) {
-  const token = await getAccessToken(true);
+export async function saveDataSnapshotNow(baseName: string, rows: unknown[], opts?: { interactive?: boolean }) {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const name = baseName.endsWith('.jsonl') ? baseName : `${baseName}.jsonl`;
   let payload = rows.map(r => JSON.stringify(r)).join('\n');
 
-  if (opts?.passphrase) {
-    // Encrypt text as a single JSON object {lines: base64(string)}
-    const encObj = await encryptJSON({ lines: payload }, opts.passphrase);
-    payload = JSON.stringify(encObj);
-  }
-
   const session = await startResumable(name, 'application/json', token);
-  await uploadToSession(session, new TextEncoder().encode(payload), token);
+  // Pass ArrayBuffer to satisfy uploadToSession signature
+  await uploadToSession(session, new TextEncoder().encode(payload).buffer, token);
 }
 
 // Daily alarm (optional)
@@ -314,8 +262,8 @@ export async function getClientIdState(): Promise<string | null> {
 }
 
 // -------------------- File listing and download (appDataFolder) --------------------
-export async function listAppDataFiles(): Promise<Array<{ id: string; name: string; size?: number | null; modifiedTime?: string | null; createdTime?: string | null }>> {
-  const token = await getAccessToken(true);
+export async function listAppDataFiles(opts?: { interactive?: boolean }): Promise<Array<{ id: string; name: string; size?: number | null; modifiedTime?: string | null; createdTime?: string | null }>> {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const fields = encodeURIComponent('files(id,name,size,modifiedTime,createdTime)');
   const resp = await driveFetch(`/drive/v3/files?spaces=appDataFolder&fields=${fields}&orderBy=modifiedTime%20desc`, { method: 'GET', token });
   const json = await resp.json();
@@ -323,8 +271,11 @@ export async function listAppDataFiles(): Promise<Array<{ id: string; name: stri
   return files.map((f: any) => ({ id: String(f.id), name: String(f.name || ''), size: f.size != null ? Number(f.size) : null, modifiedTime: f.modifiedTime || null, createdTime: f.createdTime || null }));
 }
 
-export async function downloadAppDataFileBase64(id: string): Promise<{ contentB64: string; name?: string | null; mimeType?: string | null }> {
-  const token = await getAccessToken(true);
+export async function downloadAppDataFileBase64(
+  id: string,
+  opts?: { interactive?: boolean }
+): Promise<{ contentB64: string; name?: string | null; mimeType?: string | null }> {
+  const token = await getAccessToken(opts?.interactive ?? false);
   // Get minimal metadata for name and mimeType
   const metaResp = await driveFetch(`/drive/v3/files/${encodeURIComponent(id)}?fields=name,mimeType`, { method: 'GET', token });
   const meta = await metaResp.json();
@@ -339,8 +290,12 @@ export async function downloadAppDataFileBase64(id: string): Promise<{ contentB6
 }
 
 // Upsert arbitrary text file (used for events JSONL). Creates or replaces content.
-export async function upsertAppDataTextFile(name: string, text: string): Promise<void> {
-  const token = await getAccessToken(true);
+export async function upsertAppDataTextFile(
+  name: string,
+  text: string,
+  opts?: { interactive?: boolean }
+): Promise<void> {
+  const token = await getAccessToken(opts?.interactive ?? false);
   const fileId = await findAppDataFileId(name, token);
   if (!fileId) {
     const meta = { name, parents: ['appDataFolder'] };
@@ -365,7 +320,20 @@ export async function upsertAppDataTextFile(name: string, text: string): Promise
   }
 }
 
-export async function deleteAppDataFile(id: string): Promise<void> {
-  const token = await getAccessToken(true);
+export async function deleteAppDataFile(id: string, opts?: { interactive?: boolean }): Promise<void> {
+  const token = await getAccessToken(opts?.interactive ?? false);
   await driveFetch(`/drive/v3/files/${encodeURIComponent(id)}`, { method: 'DELETE', token });
+}
+
+// Load a JSON snapshot by Drive appData name (e.g., 'snapshots/settings-20250101.json')
+export async function downloadSnapshotByName(
+  name: string,
+  opts?: { interactive?: boolean }
+): Promise<SettingsSnapshot | null> {
+  const token = await getAccessToken(opts?.interactive ?? false);
+  const id = await findAppDataFileId(name, token);
+  if (!id) return null;
+  const resp = await driveFetch(`/drive/v3/files/${encodeURIComponent(id)}?alt=media`, { method: 'GET', token });
+  const raw = await resp.json();
+  return raw as SettingsSnapshot;
 }
