@@ -1,15 +1,15 @@
 Ultimate Project Overview — YT Manager
 
-Meta: Always-Update Contract
-- Purpose: This document is the ground truth primer for new Codex chats. If code changes alter architecture, data schema, message contracts, or UI flows, update this file in the same PR.
-- When to update: Any change to one of the following:
-  - IndexedDB schema or `DB_VERSION`
-  - Message types in `src/types/messages.ts` or routes in `src/background/index.ts`
-  - Content auto-scrape behavior or gating rules
-  - Backup/history/restore behavior
-  - Options/Popup UI features or flows
-- How to update (checklist):
-  1) Bump “Verified As Of” date below. 2) Add/remove items in Architecture and Storage Model. 3) Reflect new/changed messages under Messaging Protocol. 4) Note any new user-visible flows in UI. 5) Record notable behavior changes in Changelog.
+**Meta: Always-Update Contract**
+
+* **Purpose:** This document is the ground truth primer for new Codex chats. It must always reflect the current behavior, structures, and flows of the system.
+* **When to update:** Whenever changes affect how the project works, what data it stores, how components communicate, or what the user can see or do. Ignore minor refactors, type fixes, or debug notes unless they alter semantics.
+* **How to update (checklist):**
+
+  1. Bump the “Verified As Of” date.
+  2. Adjust Architecture and Storage Model to match reality.
+  3. Reflect new or changed message contracts under Messaging Protocol.
+  4. Capture any user-visible changes in UI sections.
 
 Verified As Of: 2025-09-05
 
