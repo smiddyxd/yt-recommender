@@ -856,8 +856,13 @@ const channelsFiltered = useMemo(() => {
 
   async function refreshStubCount() {
     try {
-      const resp: any = await sendBg('videos/stubsCount', {});
-      if (resp?.ok && Number.isFinite(resp?.count)) setStubCount(resp.count | 0);
+      const [v, c] = await Promise.all([
+        sendBg('videos/stubsCount', {} as any).catch(() => ({ ok: false, count: 0 })),
+        sendBg('channels/stubsCount', {} as any).catch(() => ({ ok: false, count: 0 })),
+      ]);
+      const vCount = (v && v.ok && Number.isFinite((v as any).count)) ? ((v as any).count | 0) : 0;
+      const cCount = (c && c.ok && Number.isFinite((c as any).count)) ? ((c as any).count | 0) : 0;
+      setStubCount(vCount + cCount);
     } catch {}
   }
 

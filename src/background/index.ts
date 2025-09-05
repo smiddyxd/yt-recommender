@@ -584,6 +584,27 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e), count: 0 });
         }
+      } else if ((raw as any)?.type === 'channels/stubsCount') {
+        try {
+          const db = await openDB();
+          const tx = db.transaction('channels', 'readonly');
+          const os = tx.objectStore('channels');
+          const cur = os.openCursor();
+          let count = 0;
+          await new Promise<void>((resolve, reject) => {
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(); return; }
+              const row: any = c.value;
+              if (!Number.isFinite(row?.fetchedAt)) count += 1;
+              c.continue();
+            };
+            cur.onerror = () => reject(cur.error);
+          });
+          sendResponse?.({ ok: true, count });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e), count: 0 });
+        }
       } else if ((raw as any)?.type === 'channels/pending/list') {
         try {
           const items = await listPendingChannels();
