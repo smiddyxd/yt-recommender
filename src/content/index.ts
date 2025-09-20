@@ -20,6 +20,39 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         }
       })();
       return true; // keep channel open for async
+    } else if (msg?.type === 'scrape/SCROLL') {
+      // Simple incremental scroll; options: { times?: number, delayMs?: number }
+      (async () => {
+        try {
+          const times = Math.max(1, Math.min(50, Number(msg?.payload?.times ?? 1)));
+          const delay = Math.max(50, Math.min(2000, Number(msg?.payload?.delayMs ?? 400)));
+          for (let i = 0; i < times; i++) {
+            try { window.scrollBy({ top: Math.floor(window.innerHeight * 0.9), behavior: 'instant' as any }); } catch {}
+            await new Promise(res => setTimeout(res, delay));
+          }
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      })();
+      return true;
+    } else if (msg?.type === 'scrape/LIST_SUBSCRIPTIONS') {
+      // On https://www.youtube.com/feed/channels, extract channel ids from /channel/ links
+      try {
+        const anchors = Array.from(document.querySelectorAll('a[href^="/channel/"]')) as HTMLAnchorElement[];
+        const set = new Set<string>();
+        for (const a of anchors) {
+          try {
+            const u = new URL(a.href, location.origin);
+            const seg = u.pathname.split('/');
+            if (seg[1] === 'channel' && seg[2]) set.add(seg[2]);
+          } catch {}
+        }
+        sendResponse?.({ ok: true, ids: Array.from(set.values()) });
+      } catch (e: any) {
+        sendResponse?.({ ok: false, error: e?.message || String(e) });
+      }
+      return true;
     } else if (msg?.type === 'page/GET_CONTEXT') {
       const ctx = detectPageContext();
       sendResponse?.(ctx);

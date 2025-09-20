@@ -7,6 +7,13 @@ export type Msg =
   | { type: 'cache/VIDEO_PROGRESS_PCT'; payload: { id: string; pct: number; started?: boolean; completed?: boolean } }
   | { type: 'cache/VIDEO_STUB'; payload: { id: string; title?: string | null; channelName?: string | null; channelId?: string | null; sources?: VideoSeed['sources'] } }
   | { type: 'scrape/NOW'; payload: {} }
+  // Scrape panel (Options)
+  | { type: 'scrape/status'; payload: {} }
+  | { type: 'scrape/stop'; payload: {} }
+  | { type: 'scrape/resolveIds'; payload: { limit?: number } }
+  | { type: 'scrape/subFeed'; payload: { max?: number } }
+  | { type: 'scrape/subscriptionsManager'; payload: {} }
+  | { type: 'scrape/history'; payload: { max?: number } }
   | { type: 'page/GET_CONTEXT'; payload: {} }
   | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' } } // optional push event
   | { type: 'videos/delete';  payload: { ids: string[] } }
@@ -79,7 +86,10 @@ export interface VideoSeed {
       | 'WatchPage'
       | 'ChannelVideosTab'
       | 'ChannelShortsTab'
-      | 'ChannelLivestreamsTab';
+      | 'ChannelLivestreamsTab'
+      // Scrape Panel routines
+      | 'SubscriptionsFeed'
+      | 'WatchHistory';
     id?: string | null;
   }>;
 }

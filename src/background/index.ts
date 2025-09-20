@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels } from './db';
+import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -137,17 +137,52 @@ async function ensureBaselineSnapshot(opts?: { interactive?: boolean }) {
 
 const autoResolveTabIds = new Set<number>();
 
+// ---- Scrape session (for Subscriptions Feed / Watch History) ----
+type ScrapeMode = 'subFeed' | 'history' | 'subscriptions' | 'runAll';
+type SourceOverride = 'SubscriptionsFeed' | 'WatchHistory';
+let currentScrape: {
+  id: number;
+  mode: ScrapeMode;
+  tabIds: Set<number>;
+  sourceOverride?: SourceOverride;
+  limit?: number;
+  seen: Set<string>;
+  stopOnKnown?: boolean;
+  stopRequested?: boolean;
+} | null = null;
+
+async function setLastRun(name: 'resolveIds' | 'subFeed' | 'subscriptionsManager' | 'history' | 'any') {
+  try {
+    const key = `scrape.lastRun.${name}`;
+    const at = Date.now();
+    chrome.storage?.local?.set({ [key]: at, 'scrape.lastRun.any': at });
+  } catch {}
+}
+
+async function getLastRuns(): Promise<Record<string, number | null>> {
+  return new Promise((resolve) => {
+    try {
+      const keys = ['scrape.lastRun.any','scrape.lastRun.resolveIds','scrape.lastRun.subFeed','scrape.lastRun.subscriptionsManager','scrape.lastRun.history'];
+      chrome.storage?.local?.get(keys, (o) => {
+        const out: any = {};
+        for (const k of keys) out[k] = Number.isFinite(o?.[k]) ? Number(o[k]) : null;
+        resolve(out);
+      });
+    } catch { resolve({}); }
+  });
+}
+
 chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
   (async () => {
     dlog('onMessage:', raw?.type, raw?.payload ? Object.keys(raw.payload) : null);
     try {
       if (raw.type === 'cache/VIDEO_SEEN') {
-        await upsertVideo(raw.payload);
+        await handleVideoUpsert('SEEN', (raw as any).payload, sender);
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_STUB') {
-        await upsertVideo(raw.payload);
+        await handleVideoUpsert('STUB', (raw as any).payload, sender);
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         scheduleBackup();
         sendResponse?.({ ok: true });
@@ -175,6 +210,68 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       } else if (raw.type === 'groups/list') {
         const items = await listGroups();
         sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'scrape/status') {
+        const runs = await getLastRuns();
+        const running = !!currentScrape;
+        const mode = currentScrape?.mode || null;
+        const seen = currentScrape ? currentScrape.seen.size : 0;
+        sendResponse?.({ ok: true, running, mode, seen, runs });
+      } else if (raw.type === 'scrape/stop') {
+        try {
+          if (currentScrape) {
+            currentScrape.stopRequested = true;
+            for (const id of Array.from(currentScrape.tabIds.values())) {
+              try { chrome.tabs?.remove?.(id); } catch {}
+            }
+            currentScrape = null;
+          }
+        } catch {}
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'scrape/resolveIds') {
+        // Delegate to existing pending/resolveBatch; update last run
+        try {
+          const limit = Math.max(1, Math.min(20, Number(((raw as any)?.payload?.limit) ?? 5)));
+          const r: any = await new Promise((res) => {
+            try { chrome.runtime.sendMessage({ type: 'channels/pending/resolveBatch', payload: { limit } } as any, (x: any) => res(x)); }
+            catch { res({ ok: false }); }
+          });
+          await setLastRun('resolveIds');
+          await setLastRun('any');
+          sendResponse?.({ ok: !!r?.ok, opened: r?.opened ?? 0, remaining: r?.remaining ?? 0 });
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if (raw.type === 'scrape/subFeed') {
+        try {
+          const max = Math.max(1, Math.min(2000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('subFeed')))));
+          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: true });
+          await setLastRun('subFeed'); await setLastRun('any');
+          sendResponse?.({ ok: true, ...r });
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if (raw.type === 'scrape/history') {
+        try {
+          const max = Math.max(1, Math.min(5000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('history')))));
+          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: true, historyHints: true });
+          await setLastRun('history'); await setLastRun('any');
+          sendResponse?.({ ok: true, ...r });
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if ((raw as any)?.type === 'scrape/subscriptionsManager') {
+        try {
+          const r = await runSubscriptionsManagerOnce();
+          await setLastRun('subscriptionsManager'); await setLastRun('any');
+          sendResponse?.({ ok: true, ...r });
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if ((raw as any)?.type === 'scrape/runAll') {
+        try {
+          const out: any = { ok: true };
+          // resolve ids
+          try { await setLastRun('resolveIds'); await setLastRun('any'); await new Promise((res) => chrome.runtime.sendMessage({ type: 'channels/pending/resolveBatch', payload: { limit: 5 } } as any, () => res(undefined))); } catch {}
+          // sub feed
+          try { await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', await getDefaultMax('subFeed'), { stopOnKnown: true }); await setLastRun('subFeed'); await setLastRun('any'); } catch {}
+          // subscriptions manager
+          try { await runSubscriptionsManagerOnce(); await setLastRun('subscriptionsManager'); await setLastRun('any'); } catch {}
+          // history
+          try { await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', await getDefaultMax('history'), { stopOnKnown: true, historyHints: true }); await setLastRun('history'); await setLastRun('any'); } catch {}
+          sendResponse?.(out);
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'channels/list') {
         const items = await listChannels();
         sendResponse?.({ ok: true, items });
@@ -1165,6 +1262,125 @@ async function listVideoIds(opts: { skipFetched: boolean }): Promise<string[]> {
 }
 
 function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+
+// ---- Scrape helpers ----
+async function getDefaultMax(kind: 'subFeed' | 'history'): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      const key = kind === 'subFeed' ? 'scrape.max.subFeed' : 'scrape.max.history';
+      chrome.storage?.local?.get(key, (o) => {
+        const def = kind === 'subFeed' ? 120 : 250;
+        const n = Number(o?.[key]);
+        resolve(Number.isFinite(n) && n > 0 ? Math.floor(n) : def);
+      });
+    } catch { resolve(kind === 'subFeed' ? 120 : 250); }
+  });
+}
+
+async function hasSourceType(id: string, type: SourceOverride): Promise<boolean> {
+  try {
+    const db = await openDB();
+    return await new Promise<boolean>((resolve, reject) => {
+      const tx = db.transaction('videos', 'readonly');
+      const os = tx.objectStore('videos');
+      const g = os.get(id);
+      g.onsuccess = () => {
+        const row: any = g.result || null;
+        const list = Array.isArray(row?.sources) ? row.sources : [];
+        const ok = list.some((s: any) => String(s?.type || '') === type);
+        resolve(ok);
+      };
+      g.onerror = () => reject(g.error);
+    });
+  } catch { return false; }
+}
+
+async function handleVideoUpsert(kind: 'SEEN'|'STUB', payload: any, sender?: chrome.runtime.MessageSender) {
+  const tabId = sender?.tab?.id;
+  const now = Date.now();
+  const session = currentScrape && tabId && currentScrape.tabIds.has(tabId) ? currentScrape : null;
+  const override = (session?.sourceOverride || null) as SourceOverride | null;
+  const incoming: any = { ...(payload || {}), lastSeenAt: now };
+  if (override) {
+    const base = Array.isArray(incoming.sources) ? incoming.sources.slice() : [];
+    base.push({ type: override, id: null });
+    incoming.sources = base;
+  }
+  // History hints: if scanning WatchHistory, mark started=true (progress will be refined by watch-page or pct later)
+  if (session?.mode === 'history') {
+    incoming.flags = { ...(incoming.flags || {}), started: true };
+  }
+  // Early stop condition: if this id already has override source recorded
+  if (override && session?.stopOnKnown && incoming?.id) {
+    try {
+      const already = await hasSourceType(String(incoming.id), override);
+      if (already) session.stopRequested = true;
+    } catch {}
+  }
+  await upsertVideo(incoming);
+  try { if (session && incoming?.id) session.seen.add(String(incoming.id)); } catch {}
+}
+
+async function runScrollingScrape(url: string, override: SourceOverride, max: number, opts?: { stopOnKnown?: boolean; historyHints?: boolean }): Promise<{ count: number; stopped: boolean }> {
+  // Close any running session first
+  try { if (currentScrape) { currentScrape.stopRequested = true; for (const id of Array.from(currentScrape.tabIds.values())) { try { chrome.tabs?.remove?.(id); } catch {} } currentScrape = null; } } catch {}
+  const tab = await chrome.tabs?.create?.({ url, active: false });
+  const tabId = tab?.id as number | undefined;
+  if (typeof tabId !== 'number') throw new Error('Failed to open tab');
+  currentScrape = { id: Math.floor(Math.random()*1e9), mode: override === 'WatchHistory' ? 'history' : 'subFeed', tabIds: new Set([tabId]), sourceOverride: override, limit: max, seen: new Set<string>(), stopOnKnown: !!opts?.stopOnKnown, stopRequested: false };
+  // Give the page time to render initial list
+  await sleep(1200);
+  try {
+    for (;;) {
+      if (!currentScrape || currentScrape.stopRequested) break;
+      if ((currentScrape.seen.size || 0) >= max) break;
+      // Trigger scrape pass
+      await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/NOW', payload: {} }, () => resolve(undefined)); } catch { resolve(undefined); } });
+      if (!currentScrape || currentScrape.stopRequested) break;
+      if ((currentScrape.seen.size || 0) >= max) break;
+      // Scroll a bit and wait
+      await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL', payload: { times: 1, delayMs: 400 } }, () => resolve(undefined)); } catch { resolve(undefined); } });
+      await sleep(300);
+    }
+  } finally {
+    try { chrome.tabs?.remove?.(tabId); } catch {}
+    const stopped = !!currentScrape?.stopRequested;
+    const count = currentScrape ? currentScrape.seen.size : 0;
+    currentScrape = null;
+    return { count, stopped };
+  }
+}
+
+async function runSubscriptionsManagerOnce(): Promise<{ subscribedCount: number; created: number; unsubscribed: number }> {
+  // Close existing session but do not set override
+  try { if (currentScrape) { currentScrape.stopRequested = true; for (const id of Array.from(currentScrape.tabIds.values())) { try { chrome.tabs?.remove?.(id); } catch {} } currentScrape = null; } } catch {}
+  const tab = await chrome.tabs?.create?.({ url: 'https://www.youtube.com/feed/channels', active: false });
+  const tabId = tab?.id as number | undefined;
+  if (typeof tabId !== 'number') throw new Error('Failed to open tab');
+  currentScrape = { id: Math.floor(Math.random()*1e9), mode: 'subscriptions', tabIds: new Set([tabId]), seen: new Set<string>(), stopRequested: false } as any;
+  await sleep(1200);
+  let ids: string[] = [];
+  try {
+    // Try a few times to allow content to load
+    for (let i = 0; i < 3; i++) {
+      const resp: any = await new Promise((resolve) => {
+        try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); }
+      });
+      const list: string[] = Array.isArray(resp?.ids) ? resp.ids : [];
+      if (list.length > ids.length) ids = list;
+      if (ids.length >= 10) break; // likely loaded
+      await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL', payload: { times: 2, delayMs: 350 } }, () => resolve(undefined)); } catch { resolve(undefined); } });
+      await sleep(500);
+    }
+  } finally {
+    try { chrome.tabs?.remove?.(tabId); } catch {}
+  }
+  const res = await applySubscribedSet(ids);
+  // Push channel change to refresh UI
+  try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
+  try { await scheduleBackup(); } catch {}
+  return { subscribedCount: ids.length, created: res.created, unsubscribed: res.unsubscribed };
+}
 
 function bestThumb(thumbs: any): string | null {
   try {

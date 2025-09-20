@@ -1,3 +1,5 @@
+tell me when you're ready to work on my project, here's my project_ovierview.md: 
+
 Ultimate Project Overview — YT Manager
 
 **Meta: Always-Update Contract**
@@ -11,7 +13,7 @@ Ultimate Project Overview — YT Manager
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-Verified As Of: 2025-09-05
+Verified As Of: 2025-09-06
 
 TL;DR
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -28,13 +30,14 @@ Architecture
   - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
   - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
 - Content
-  - `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle.
+  - `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll) and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`).
   - `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
   - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
   - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
   - `src/content/yt-navigation.ts`: navigation hooks (yt-navigate-finish + URL polling fallback).
 - UI
   - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
+    - Pending (debug): includes a Scrape Panel with one‑click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per‑routine and global "Last run" timestamps, and max limits for feed/history.
   - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch).
 - Shared/Types
   - `src/shared/conditions.ts`: Condition AST, evaluation for videos/channels; “Group” type (called “Preset” in UI).
@@ -68,13 +71,14 @@ Storage Model (IndexedDB)
   - `meta` (keyPath: `key`) — holds aggregated lists like `{ key: 'videoTopics', list: string[] }`.
   - `events_commits` (keyPath: `commitId`) — index: `byTs`.
   - `events` (keyPath: `id`) — index: `byCommit`.
-- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`.
-- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `keywords`, `topics[]`, `description`, `bannerUrl`, `fetchedAt`, `scrapedAt*` and per-tab counts.
+- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`.
+- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `keywords`, `topics[]`, `description`, `bannerUrl`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
 
 Messaging Protocol (truth: `src/types/messages.ts`; router: background)
 - Content → Background
   - `cache/VIDEO_SEEN`, `cache/VIDEO_STUB`
   - `cache/VIDEO_PROGRESS`, `cache/VIDEO_PROGRESS_PCT`
+  - Scrape helpers (used by background routines): `scrape/SCROLL`, `scrape/LIST_SUBSCRIPTIONS`
 - UI → Background (selected)
   - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
   - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`, `channels/stubsCount`
@@ -83,6 +87,7 @@ Messaging Protocol (truth: `src/types/messages.ts`; router: background)
   - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
   - Topics: `topics/list`
   - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`
+  - Scrape Panel: `scrape/status`, `scrape/stop`, `scrape/resolveIds`, `scrape/subFeed`, `scrape/subscriptionsManager`, `scrape/history`, `scrape/runAll`
   - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings`, `backup/restoreSettings`, `backup/listFiles`, `backup/downloadFile`
   - History: `backup/history/list`, `backup/history/getCommit`, `backup/history/getUpTo`, `backup/history/deleteUpTo`, `backup/history/usage`, `backup/history/import`, `backup/history/revertTo`, `backup/history/snapshotNow`
   - Restore & Apply: `backup/restore/dryRun`, `backup/restore/apply`
@@ -153,6 +158,10 @@ Adding Features Safely (playbook)
 - Backup/Restore: update `driveBackup.ts`/`events.ts`/`restore.ts` and document any new thresholds/flows.
 
 Changelog (concise)
+- 2025-09-06
+  - Scrape Panel v1 integrated into Pending (debug): Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop. Shows last-run timestamps and supports max limits.
+  - Sub Feed/History scrapers merge into existing videos, append sources (`SubscriptionsFeed`/`WatchHistory`), and bump `lastSeenAt`. History marks `flags.started=true`; explicit watch progress still wins.
+  - Subscriptions Manager scrapes `/feed/channels` and updates channel `subscribed`/`unsubscribed` flags.
 - 2025-09-05
   - Drive backups: encryption/passphrase removed; all snapshots/history stored as plaintext JSON/JSONL. Silent auth by default; manual “Backup settings” finalizes pending commit and replays backlog.
   - History downloads: commit JSONL and “up to” bundles use UTF‑8-safe base64 downloads; slicing operates on full commits.
@@ -220,7 +229,7 @@ Predicates & Filters (end‑to‑end)
 
 Auto‑Scrape & Sources Field
 - Candidates carry `sources: Array<{ type: string; id?: string | null }>` so you can filter by where a video was seen.
-- Known types: `playlist`, `panel`, `WatchPage`, `ChannelVideosTab`, `ChannelShortsTab`, `ChannelLivestreamsTab`.
+- Known types: `playlist`, `panel`, `WatchPage`, `ChannelVideosTab`, `ChannelShortsTab`, `ChannelLivestreamsTab`, `SubscriptionsFeed`, `WatchHistory`.
 - If you add new source types, update:
   - Content emitters (where candidates are created)
   - Filters UI sources chip (`v_sources_any`)
@@ -246,6 +255,7 @@ UI Patterns & UX
 - Lazy debug loads: “Show info” toggles fetch full rows for display to reduce baseline payload.
 - Accessibility basics: list items are keyboard-toggleable; badges for flags; counts and progress surfaced.
 - Channel directory: shows derived `videoTags[]` from videos; kept in sync by recompute functions after tag updates.
+- Pending → Scrape Panel: stores limits in `chrome.storage.local` (`scrape.max.subFeed`, `scrape.max.history`) and reports running state via `scrape/status`.
 
 YouTube API Refresh Tips
 - API key is stored in `chrome.storage.local.ytApiKey`.

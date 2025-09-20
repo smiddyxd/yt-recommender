@@ -999,6 +999,57 @@ export async function listChannelsTrash(): Promise<any[]> {
   });
 }
 
+// Update channels subscribed/unsubscribed flags based on the current subscribed set.
+// - For ids present in `currentIds`: set subscribed=true and clear unsubscribed.
+// - For channels previously marked subscribed but not in `currentIds`: set unsubscribed=true (keep historical truth of having been subscribed).
+export async function applySubscribedSet(currentIds: string[]): Promise<{ updated: number; created: number; unsubscribed: number }> {
+  const set = new Set((currentIds || []).map(s => String(s || '').trim()).filter(Boolean));
+  const db = await openDB();
+  let updated = 0, created = 0, unsub = 0;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    (async () => {
+      // First, ensure present ids are marked subscribed
+      for (const id of set.values()) {
+        await new Promise<void>((res, rej) => {
+          const g = os.get(id);
+          g.onsuccess = () => {
+            const prev = (g.result as any) || null;
+            const row: any = prev ? { ...prev } : { id };
+            if (!prev) created++;
+            row.subscribed = true;
+            row.unsubscribed = false;
+            os.put(row);
+            updated++;
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+      // Second, mark unsubscribed when previously subscribed and now missing
+      await new Promise<void>((res, rej) => {
+        const cur = os.openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result as IDBCursorWithValue | null;
+          if (!c) { res(); return; }
+          const row: any = c.value || {};
+          if (row?.subscribed === true && row?.id && !set.has(String(row.id))) {
+            row.unsubscribed = true;
+            c.update(row);
+            unsub++;
+          }
+          c.continue();
+        };
+        cur.onerror = () => rej(cur.error);
+      });
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return { updated, created, unsubscribed: unsub };
+}
+
 // Set scrapedAt and optional scrapedVideoCount on a channel record
 export async function markChannelScraped(id: string, at: number, opts?: { tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null }) {
   const chId = (id || '').trim();
