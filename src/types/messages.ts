@@ -1,8 +1,9 @@
-// add near top
+﻿// add near top
 import type { Condition, Group } from '../shared/conditions';
 
 export type Msg =
   | { type: 'cache/VIDEO_SEEN'; payload: VideoSeed }
+  | { type: 'cache/VIDEO_SEEN_BATCH'; payload: { items: VideoSeed[] } }
   | { type: 'cache/VIDEO_PROGRESS'; payload: { id: string; current: number; duration: number; started?: boolean; completed?: boolean } }
   | { type: 'cache/VIDEO_PROGRESS_PCT'; payload: { id: string; pct: number; started?: boolean; completed?: boolean } }
   | { type: 'cache/VIDEO_STUB'; payload: { id: string; title?: string | null; channelName?: string | null; channelId?: string | null; sources?: VideoSeed['sources'] } }
@@ -100,3 +101,4 @@ export type ChannelUpsertStubMsg = { type: 'channels/upsertStub'; payload: { id:
 
 export interface TagRec { name: string; color?: string; createdAt?: number; groupId?: string | null }
 export interface TagGroupRec { id: string; name: string; createdAt?: number }
+

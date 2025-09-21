@@ -42,6 +42,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         const seen = Number(msg?.payload?.seen || 0);
         const max = Number(msg?.payload?.max || 0);
         const stall = Number(msg?.payload?.stall || 0);
+        const pending = Number(msg?.payload?.pending || 0);
         // Detailed scan like the manual snippet
         const stats = scanCurrentAnchors(what);
         // Reset cumulative tracker when switching modes
@@ -56,6 +57,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
                     'noRoot:', stats.noRoot.length,
                     'noId:', stats.noId.length,
                     'seen(upserts):', seen,
+                    'pending(upserts):', pending,
                     'cumulative(dom):', domUniqueSeen.size,
                     'max:', max,
                     'stall:', stall);
@@ -64,7 +66,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         // eslint-disable-next-line no-console
         console.log(`${prefix} duplicates (id:count):`, stats.dups.slice(0, 10));
         // Keep a handle for DevTools inspection
-        (window as any).YTM_SCRAPE_PASS = { what, seen, max, stall, cumulativeUnique: domUniqueSeen.size, ...stats };
+        (window as any).YTM_SCRAPE_PASS = { what, seen, pending, max, stall, cumulativeUnique: domUniqueSeen.size, ...stats };
         // Visual highlight each iteration using the already-collected anchors
         try {
           if (what === 'SubscriptionsFeed') highlightFromAnchors(stats.anchors, 'sf');

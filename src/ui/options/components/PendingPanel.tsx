@@ -18,6 +18,7 @@ export default function PendingPanel() {
   const [subFeedMaxInput, setSubFeedMaxInput] = useState<string>('120');
   const [historyMaxInput, setHistoryMaxInput] = useState<string>('250');
   const [resolving, setResolving] = useState(false);
+  const [noStubs, setNoStubs] = useState<boolean>(false);
   const resolvingRef = useRef(false);
 
   async function load() {
@@ -38,13 +39,14 @@ export default function PendingPanel() {
       setLastRun(runs);
     } catch {}
     try {
-      chrome.storage?.local?.get(['scrape.max.subFeed','scrape.max.history'], (o) => {
+      chrome.storage?.local?.get(['scrape.max.subFeed','scrape.max.history','debug.noStubs'], (o) => {
         const sf = Number(o?.['scrape.max.subFeed']);
         const hi = Number(o?.['scrape.max.history']);
         const sfx = (Number.isFinite(sf) && sf > 0 ? sf : 120);
         const hix = (Number.isFinite(hi) && hi > 0 ? hi : 250);
         setSubFeedMax(sfx); setSubFeedMaxInput(String(sfx));
         setHistoryMax(hix); setHistoryMaxInput(String(hix));
+        setNoStubs(!!o?.['debug.noStubs']);
       });
     } catch {}
   }
@@ -88,10 +90,10 @@ export default function PendingPanel() {
 
   useEffect(() => { void load(); void loadScrapeStatus(); }, []);
 
-  function tsLabel(ts?: number | null) { return ts ? new Date(ts).toLocaleString() : '—'; }
+  function tsLabel(ts?: number | null) { return ts ? new Date(ts).toLocaleString() : 'N/A'; }
+  function toggleNoStubs() { const v = !noStubs; setNoStubs(v); try { chrome.storage?.local?.set({ 'debug.noStubs': v }); } catch {} }
 
   async function runSubFeed() {
-    // Parse lazily from input, without enforcing a lower bound here
     const n = parseInt(subFeedMaxInput, 10);
     const val = Number.isFinite(n) ? n : subFeedMax; // fallback to last known
     setSubFeedMax(val);
@@ -138,7 +140,7 @@ export default function PendingPanel() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <h3 style={{ margin: 0 }}>Scrape Panel</h3>
           <button className="btn-ghost" onClick={loadScrapeStatus}>Refresh</button>
-          {running ? <span className="muted">Running: {mode || '…'} · Seen: {seen}</span> : <span className="muted">Idle</span>}
+          {running ? <span className="muted">Running: {mode || '–'} • Seen: {seen}</span> : <span className="muted">Idle</span>}
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
           <button onClick={runAll} disabled={running}>Run all</button>
@@ -152,10 +154,12 @@ export default function PendingPanel() {
           <input className="side-input" type="number" value={subFeedMaxInput} onChange={(e)=> setSubFeedMaxInput(e.currentTarget.value)} style={{ width: '4ch' }} />
           <label className="muted">Max History items</label>
           <input className="side-input" type="number" value={historyMaxInput} onChange={(e)=> setHistoryMaxInput(e.currentTarget.value)} style={{ width: '5ch' }} />
+          <label className="muted" title="When enabled, VIDEO_STUB upserts are treated as VIDEO_SEEN (no stub rows)." style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={noStubs} onChange={toggleNoStubs} /> Debug: No stubs
+          </label>
         </div>
         <div className="muted" style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
           <span>Last run (any): {tsLabel(lastRun['scrape.lastRun.any'])}</span>
-          {/* Removed redundant 'Resolve ids' button; keep lastRun entries concise */}
           <span>Sub Feed: {tsLabel(lastRun['scrape.lastRun.subFeed'])}</span>
           <span>Subscriptions Manager: {tsLabel(lastRun['scrape.lastRun.subscriptionsManager'])}</span>
           <span>History: {tsLabel(lastRun['scrape.lastRun.history'])}</span>

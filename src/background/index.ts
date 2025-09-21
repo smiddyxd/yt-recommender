@@ -1,4 +1,4 @@
-import { upsertVideo, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
+﻿import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -9,15 +9,8 @@ import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCom
 import { applyRestore, dryRunRestoreApply } from './restore';
 
 // Click the extension icon to trigger scrape in active tab
-chrome.action?.onClicked.addListener((tab) => {
-  try {
-    if (!tab?.id) return;
-    chrome.tabs.sendMessage(tab.id, { type: 'scrape/NOW', payload: {} }, () => void 0);
-  } catch (e) {
-    // ignore
-  }
-});
-
+// Track pending upserts to surface queue depth
+let pendingUpserts = 0;
 // --- Utils ---
 function utf8ToB64(s: string): string {
   const bytes = new TextEncoder().encode(s);
@@ -181,6 +174,27 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'cache/VIDEO_SEEN_BATCH') {
+        const items = Array.isArray((raw as any)?.payload?.items) ? (raw as any).payload.items : [];
+        const tabId = sender?.tab?.id;
+        const session = currentScrape && tabId && currentScrape.tabIds.has(tabId) ? currentScrape : null;
+        const override = (session?.sourceOverride || null) as SourceOverride | null;
+        const now = Date.now();
+        const normalized = items.map((p: any) => {
+          const base = Array.isArray(p?.sources) ? p.sources.slice() : [];
+          if (override) base.push({ type: override, id: null });
+          const obj = { ...(p || {}), sources: base, lastSeenAt: now };
+          // History hints
+          if (session?.mode === 'history') (obj as any).flags = { ...((obj as any).flags || {}), started: true };
+          return obj;
+        });
+        try { pendingUpserts += normalized.length; } catch {}
+        await upsertVideosBulk(normalized);
+        try { if (session) { for (const it of normalized) if (it?.id) session.seen.add(String(it.id)); } } catch {}
+        try { pendingUpserts = Math.max(0, pendingUpserts - normalized.length); } catch {}
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true, count: normalized.length });
       } else if (raw.type === 'cache/VIDEO_STUB') {
         const noStubs = await getNoStubsFlag();
         await handleVideoUpsert(noStubs ? 'SEEN' : 'STUB', (raw as any).payload, sender);
@@ -243,16 +257,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       } else if (raw.type === 'scrape/subFeed') {
         try {
           const max = Math.max(1, Math.min(2000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('subFeed')))));
-          // Do not stop on already-known items; keep tab open for inspection
-          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: false, keepOpen: true });
+          // Do not stop on already-known items; close tab when finished
+          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: false, keepOpen: false });
           await setLastRun('subFeed'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'scrape/history') {
         try {
           const max = Math.max(1, Math.min(5000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('history')))));
-          // Keep the tab open for debugging; we'll close it again once you confirm
-          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: false, historyHints: true, keepOpen: true });
+          // Close tab when finished; logs are in the background console
+          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: false, historyHints: true, keepOpen: false });
           await setLastRun('history'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
@@ -1320,7 +1334,9 @@ async function handleVideoUpsert(kind: 'SEEN'|'STUB', payload: any, sender?: chr
       if (already) session.stopRequested = true;
     } catch {}
   }
+  try { pendingUpserts++; } catch {}
   await upsertVideo(incoming);
+  try { pendingUpserts = Math.max(0, pendingUpserts - 1); } catch {}
   try { if (session && incoming?.id) session.seen.add(String(incoming.id)); } catch {}
 }
 
@@ -1341,6 +1357,8 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   currentScrape = { id: Math.floor(Math.random()*1e9), mode: override === 'WatchHistory' ? 'history' : 'subFeed', tabIds: new Set([tabId]), sourceOverride: override, limit: max, seen: new Set<string>(), stopOnKnown: !!opts?.stopOnKnown, stopRequested: false };
   // Give the page time to render initial list (a bit longer on heavy feeds)
   await sleep((override === 'SubscriptionsFeed' || override === 'WatchHistory') ? 1800 : 1200);
+  // Track last known DOM-unique count across passes so finally{} can wait for DB to catch up
+  let domUniqueLatest: number | null = null;
   try {
     let prev = 0;
     let noProgress = 0;
@@ -1359,7 +1377,7 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
           try {
             chrome.tabs?.sendMessage?.(
               tabId,
-              { type: 'scrape/LOG', payload: { what: override, seen: currentScrape.seen.size, max, stall: noProgress } },
+              { type: 'scrape/LOG', payload: { what: override, seen: (currentScrape ? currentScrape.seen.size : 0), max, stall: noProgress, pending: pendingUpserts } },
               (resp: any) => {
                 try {
                   const n = Number(resp?.dom?.cumulativeUnique ?? resp?.cumulativeUnique ?? NaN);
@@ -1370,6 +1388,7 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
           } catch { resolve(null); }
         });
       } catch { domUnique = null; }
+      domUniqueLatest = (domUnique != null ? domUnique : domUniqueLatest);
       // Stop if DOM cumulative unique meets/exceeds max, even if upsert trail lags
       try { if (domUnique != null && domUnique >= max) break; } catch {}
       // Track progress
@@ -1386,6 +1405,16 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
     }
   } finally {
     try {
+      // Wait until all pending upserts are flushed and the upserted set reaches DOM cumulative
+      for (;;) {
+        const target = domUniqueLatest;
+        const upserts = currentScrape ? currentScrape.seen.size : 0;
+        if (pendingUpserts <= 0 && (target == null || upserts >= target)) break;
+        await sleep(200);
+      }
+      const finalDom = domUniqueLatest ?? (currentScrape ? currentScrape.seen.size : 0);
+      const finalUpserts = currentScrape ? currentScrape.seen.size : 0;
+      try { dlog(`[scrape] FINAL ${override}: domUnique=${finalDom} upserts=${finalUpserts} max=${max} pending=${pendingUpserts}`); } catch {}
       // Finalize in-page: send the discovered ids and max to content for highlighting/logging
       const ids = currentScrape ? Array.from(currentScrape.seen.values()) : [];
       try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/FINAL', payload: { what: override, ids, max } }, () => void 0); } catch {}
@@ -1451,7 +1480,7 @@ function bestThumb(thumbs: any): string | null {
     return (thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null) as (string | null);
   } catch { return null; }
 }
-function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + '…' : (s || ''); }
+function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + 'â€¦' : (s || ''); }
 
 async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
@@ -1551,3 +1580,5 @@ async function channelIdsForVideos(ids: string[]): Promise<string[]> {
   });
   return Array.from(set);
 }
+
+

@@ -1002,6 +1002,34 @@ export async function listChannelsTrash(): Promise<any[]> {
   });
 }
 
+// Bulk upsert videos in a single transaction for performance
+export async function upsertVideosBulk(objs: any[]) {
+  if (!Array.isArray(objs) || objs.length === 0) return;
+  const db = await openDB();
+  await new Promise<void>((res, rej) => {
+    const tx = db.transaction('videos', 'readwrite');
+    const os = tx.objectStore('videos');
+    (async () => {
+      for (const obj of objs) {
+        await new Promise<void>((r, j) => {
+          const g = os.get(obj.id);
+          g.onsuccess = () => {
+            try {
+              const prev = g.result || {};
+              const merged = merge(prev, obj);
+              os.put(merged);
+              r();
+            } catch (e) { j(e); }
+          };
+          g.onerror = () => j(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => res();
+    tx.onerror = () => rej(tx.error);
+  });
+}
+
 // Update channels subscribed/unsubscribed flags based on the current subscribed set.
 // - For ids present in `currentIds`: set subscribed=true and clear unsubscribed.
 // - For channels previously marked subscribed but not in `currentIds`: set unsubscribed=true (keep historical truth of having been subscribed).

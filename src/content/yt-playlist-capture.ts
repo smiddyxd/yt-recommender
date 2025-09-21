@@ -27,6 +27,23 @@ function send(type: 'cache/VIDEO_SEEN', payload: VideoSeed) {
   chrome.runtime.sendMessage({ type, payload });
 }
 
+async function sendBatch(type: 'cache/VIDEO_SEEN_BATCH', items: VideoSeed[]): Promise<void> {
+  if (!Array.isArray(items) || items.length === 0) return;
+  await new Promise<void>((resolve) => {
+    try { chrome.runtime.sendMessage({ type, payload: { items } } as any, () => resolve()); }
+    catch { resolve(); }
+  });
+}
+
+async function sendInChunks(items: VideoSeed[], chunkSize = 50, delayMs = 120): Promise<void> {
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const batch = items.slice(i, i + chunkSize);
+    if (batch.length === 0) continue;
+    await sendBatch('cache/VIDEO_SEEN_BATCH', batch);
+    if (delayMs > 0) await sleep(delayMs);
+  }
+}
+
 function sendProgressPct(id: string, pct: number, started?: boolean, completed?: boolean) {
   try {
     chrome.runtime.sendMessage({ type: 'cache/VIDEO_PROGRESS_PCT', payload: { id, pct, started: !!started, completed: !!completed } });
@@ -120,7 +137,7 @@ function getActiveChannelTab(): 'videos' | 'shorts' | 'live' | 'other' {
 }
 
 // Click-to-scrape: returns details for popup to record per-tab counts
-export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'other'; pageTab?: 'videos'|'shorts'|'live'|'other'; channelId?: string | null } {
+export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch'|'channel'|'other'; pageTab?: 'videos'|'shorts'|'live'|'other'; channelId?: string | null }> {
   let sent = 0;
   const added = new Set<string>();
   const ctx = detectPageContext();
@@ -135,15 +152,16 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         'ytd-rich-item-renderer a[href^="/watch"]'
       )) as HTMLAnchorElement[];
       const seen = new Set<string>();
+      const seeds: VideoSeed[] = [];
       for (const a of anchors) {
         const vid = parseVideoIdFromHref(a.href);
         if (!vid || seen.has(vid) || added.has(vid)) continue;
         seen.add(vid); added.add(vid);
         const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
-        send('cache/VIDEO_SEEN', seed);
-        sent++;
+        seeds.push(seed);
         try { scrapeProgressForTile(a, vid); } catch {}
       }
+      if (seeds.length) { await sendInChunks(seeds); sent += seeds.length; }
       return { count: sent, page: 'other' } as any;
     }
     // Special handling: Watch History
@@ -152,15 +170,16 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]'
       )) as HTMLAnchorElement[];
       const seen = new Set<string>();
+      const seeds: VideoSeed[] = [];
       for (const a of anchors) {
         const vid = parseVideoIdFromHref(a.href);
         if (!vid || seen.has(vid) || added.has(vid)) continue;
         seen.add(vid); added.add(vid);
         const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
-        send('cache/VIDEO_SEEN', seed);
-        sent++;
+        seeds.push(seed);
         try { scrapeProgressForTile(a, vid); } catch {}
       }
+      if (seeds.length) { await sendInChunks(seeds); sent += seeds.length; }
       return { count: sent, page: 'other' } as any;
     }
   } catch { /* ignore */ }
@@ -169,13 +188,14 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
   if (container) {
     const tiles = container.querySelectorAll(SELECTORS.playlistTiles);
     if (tiles.length > 0) {
+      const seeds: VideoSeed[] = [];
       tiles.forEach(el => {
         const node = el as HTMLElement;
         const seed = tileToSeed(node, { type: 'playlist', id: listId });
         if (seed) {
           if (!added.has(seed.id)) {
             added.add(seed.id);
-            send('cache/VIDEO_SEEN', seed);
+            seeds.push(seed);
             sent++;
           }
           const a = node.querySelector(SELECTORS.tileLink) as HTMLAnchorElement | null;
@@ -185,6 +205,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
           }
         }
       });
+      if (seeds.length) await sendInChunks(seeds);
       return { count: sent, page: ctx.page || 'other' } as any;
     }
   }
@@ -196,6 +217,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
       try {
         const anchors = Array.from(document.querySelectorAll('a[href^="/shorts/"]')) as HTMLAnchorElement[];
         const seen = new Set<string>();
+        const seeds: VideoSeed[] = [];
         for (const a of anchors) {
           try {
             const u = new URL(a.href, location.origin);
@@ -203,10 +225,11 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
             if (!id || seen.has(id)) continue;
             seen.add(id);
             const seed: VideoSeed = { id, sources: [{ type: 'ChannelShortsTab' }] };
-            send('cache/VIDEO_SEEN', seed);
+            seeds.push(seed);
             sent++;
           } catch { /* ignore */ }
         }
+        if (seeds.length) await sendInChunks(seeds);
       } catch { /* ignore */ }
       return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
     } else {
@@ -216,6 +239,7 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
       )) as HTMLAnchorElement[];
       const seen = new Set<string>();
+      const seeds: VideoSeed[] = [];
       for (const a of anchors) {
         const root = findTileRootFromAnchor(a);
         if (!root) continue;
@@ -224,12 +248,12 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
         seen.add(id);
         const seed = tileToSeed(root, { type: sourceType });
         if (seed) {
-          send('cache/VIDEO_SEEN', seed);
-          sent++;
+          seeds.push(seed);
           // Try progress
           scrapeProgressForTile(a, id);
         }
       }
+      if (seeds.length) { await sendInChunks(seeds); sent += seeds.length; }
       return { count: sent, page: 'channel', pageTab, channelId: ctx.channelId || null };
     }
   }
@@ -302,16 +326,17 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
   try {
     const anchors = Array.from(document.querySelectorAll('a#thumbnail[href], a#video-title[href], a#video-title-link[href]')) as HTMLAnchorElement[];
     const seen = new Set<string>();
+    const seeds: VideoSeed[] = [];
     for (const a of anchors) {
       const vid = parseVideoIdFromHref(a.href);
       if (!vid || seen.has(vid) || added.has(vid)) continue;
       seen.add(vid);
       const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
       added.add(vid);
-      send('cache/VIDEO_SEEN', seed);
-      sent++;
+      seeds.push(seed);
       scrapeProgressForTile(a, vid);
     }
+    if (seeds.length) { await sendInChunks(seeds); sent += seeds.length; }
   } catch { /* ignore */ }
   return { count: sent, page: ctx.page || 'other' } as any;
 }
@@ -320,11 +345,11 @@ function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
 
 // Async wrapper with brief retries to avoid racing render on channel pages
 export async function scrapeNowDetailedAsync(): Promise<{ count: number; page: 'watch'|'channel'|'other'; pageTab?: 'videos'|'shorts'|'live'|'other'; channelId?: string | null }> {
-  const first = scrapeNowDetailed();
+  const first = await scrapeNowDetailed();
   if (first.page === 'channel' && first.count === 0) {
     for (let i = 0; i < 2; i++) { // two quick retries
       await sleep(180);
-      const again = scrapeNowDetailed();
+      const again = await scrapeNowDetailed();
       if (again.count > 0) return again;
     }
   }
