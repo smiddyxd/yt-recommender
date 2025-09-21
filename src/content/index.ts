@@ -1,4 +1,4 @@
-import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
+﻿import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
 import { onNavigate } from './yt-navigation';
 import { parseVideoIdFromHref } from '../types/util';
 import { scrapeWatchStub } from './yt-watch-stub';
@@ -38,15 +38,39 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
       return true;
     } else if (msg?.type === 'scrape/LOG') {
       try {
-        const what = (msg?.payload?.what || 'scrape') as string;
+        const what = (msg?.payload?.what || 'scrape') as ('SubscriptionsFeed' | 'WatchHistory' | string);
         const seen = Number(msg?.payload?.seen || 0);
         const max = Number(msg?.payload?.max || 0);
-        // Surface in page console to aid debugging
+        const stall = Number(msg?.payload?.stall || 0);
+        // Detailed scan like the manual snippet
+        const stats = scanCurrentAnchors(what);
+        // Reset cumulative tracker when switching modes
+        if (domUniqueWhat !== what) { domUniqueWhat = what; try { domUniqueSeen.clear(); } catch {} }
+        // Merge pass uniques into cumulative
+        try { for (const id of stats.uniques) domUniqueSeen.add(id); } catch {}
+        const prefix = what === 'SubscriptionsFeed' ? '[subs]' : (what === 'WatchHistory' ? '[history]' : '[scrape]');
         // eslint-disable-next-line no-console
-        console.log(`[YT-Manager] ${what}: seen=${seen} / max=${max}`);
-        // Continuously mark elements considered during scraping loops
-        try { applyScrapeHighlightsFor(what as any); } catch {}
-        sendResponse?.({ ok: true });
+        console.log(`${prefix} anchors:`, stats.anchors.length,
+                    'withId:', stats.withId.length,
+                    'uniqueIds:', stats.uniques.length,
+                    'noRoot:', stats.noRoot.length,
+                    'noId:', stats.noId.length,
+                    'seen(upserts):', seen,
+                    'cumulative(dom):', domUniqueSeen.size,
+                    'max:', max,
+                    'stall:', stall);
+        // eslint-disable-next-line no-console
+        console.log(`${prefix} sample ids:`, stats.uniques.slice(0, 10));
+        // eslint-disable-next-line no-console
+        console.log(`${prefix} duplicates (id:count):`, stats.dups.slice(0, 10));
+        // Keep a handle for DevTools inspection
+        (window as any).YTM_SCRAPE_PASS = { what, seen, max, stall, cumulativeUnique: domUniqueSeen.size, ...stats };
+        // Visual highlight each iteration using the already-collected anchors
+        try {
+          if (what === 'SubscriptionsFeed') highlightFromAnchors(stats.anchors, 'sf');
+          else if (what === 'WatchHistory') highlightFromAnchors(stats.anchors, 'wh');
+        } catch {}
+        sendResponse?.({ ok: true, dom: { passUnique: stats.uniques.length, cumulativeUnique: domUniqueSeen.size } });
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }
@@ -78,17 +102,19 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
     } else if (msg?.type === 'scrape/FINAL') {
       try {
         const what = (msg?.payload?.what || 'scrape') as string;
-        const ids = Array.isArray(msg?.payload?.ids) ? (msg.payload.ids as any[]).map(String) : [];
+        const idsFromBg = Array.isArray(msg?.payload?.ids) ? (msg.payload.ids as any[]).map(String) : [];
         const max = Number(msg?.payload?.max || 0);
-        const info = finalizeScrapeHighlights(what as any, ids);
+        // Prefer DOM cumulative uniques for final highlight/logging
+        const allIds = Array.from(domUniqueSeen.values());
+        const info = finalizeScrapeHighlights(what as any, allIds);
         // eslint-disable-next-line no-console
-        console.log(`[YT-Manager] FINAL ${what}: uniqueIds=${ids.length} max=${max}`);
+        console.log(`[YT-Manager] FINAL ${what}: uniqueIds(dom)=${allIds.length} uniqueIds(upserts)=${idsFromBg.length} max=${max}`);
         // eslint-disable-next-line no-console
         console.log('[YT-Manager] Final anchors (first 40):', info.anchors.slice(0, 40));
-        (window as any).YTM_SCRAPE_FINAL = { what, ids, ...info };
+        (window as any).YTM_SCRAPE_FINAL = { what, idsDom: allIds, idsUpsert: idsFromBg, ...info };
         // Pause auto-scan ticker to avoid further background noise
         try { if (ticker != null) { clearInterval(ticker as any); ticker = null; } } catch {}
-        sendResponse?.({ ok: true, count: ids.length });
+        sendResponse?.({ ok: true, count: allIds.length });
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }
@@ -127,6 +153,7 @@ try {
   onNavigate(() => {
     // Clear per-page pending dedupe on navigation
     try { pendingKeysSubmitted.clear(); } catch {}
+    try { domUniqueSeen.clear(); domUniqueWhat = null; } catch {}
     const ctx = detectPageContext();
     dlog('[content] navigate', ctx?.page, location.pathname);
     // Always track progress on watch pages
@@ -159,6 +186,9 @@ try {
 let ticker: number | null = null;
 let scrapeGroups: GroupRec[] = [];
 let lastActivityAt = Date.now();
+// Track cumulative DOM-unique ids for the current scraping mode (Sub Feed or History)
+let domUniqueWhat: 'SubscriptionsFeed' | 'WatchHistory' | string | null = null;
+const domUniqueSeen: Set<string> = new Set();
 
 function markActive() { lastActivityAt = Date.now(); }
 try {
@@ -323,6 +353,38 @@ function finalizeScrapeHighlights(what: 'SubscriptionsFeed' | 'WatchHistory' | s
     }
   }
   return { anchors: matched };
+}
+
+// Build detailed per-pass stats similar to the manual console snippets
+function scanCurrentAnchors(what: 'SubscriptionsFeed' | 'WatchHistory' | string): {
+  anchors: HTMLAnchorElement[];
+  withId: HTMLAnchorElement[];
+  noId: HTMLAnchorElement[];
+  noRoot: HTMLAnchorElement[];
+  uniques: string[];
+  dups: Array<{ id: string; count: number }>;
+} {
+  const sel = (what === 'SubscriptionsFeed')
+    ? 'ytd-rich-item-renderer a[href^="/watch"]'
+    : 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]';
+  const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
+  const idTo = new Map<string, { count: number; root: Element | null }>();
+  const withId: HTMLAnchorElement[] = [];
+  const noId: HTMLAnchorElement[] = [];
+  const noRoot: HTMLAnchorElement[] = [];
+  for (const a of anchors) {
+    let id: string | null = null;
+    try { id = parseVideoIdFromHref(a.href); } catch { id = null; }
+    if (!id) { noId.push(a); continue; }
+    withId.push(a);
+    const root = tileRoot(a);
+    if (!root) { noRoot.push(a); continue; }
+    const r = idTo.get(id);
+    if (r) r.count += 1; else idTo.set(id, { count: 1, root });
+  }
+  const uniques = Array.from(idTo.keys());
+  const dups = Array.from(idTo.entries()).filter(([, v]) => v.count > 1).map(([k, v]) => ({ id: k, count: v.count }));
+  return { anchors, withId, noId, noRoot, uniques, dups };
 }
 
 // Track pending-channel keys we have already submitted on this page to avoid repeated upserts

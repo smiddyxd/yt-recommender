@@ -1352,7 +1352,26 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
       if (!currentScrape || currentScrape.stopRequested) break;
       if ((currentScrape.seen.size || 0) >= max) break;
       // Log progress in page console for visibility (include stall cycles)
-      try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LOG', payload: { what: override, seen: currentScrape.seen.size, max, stall: noProgress } }, () => void 0); } catch {}
+      // Also capture DOM-based cumulative unique count to drive early stop
+      let domUnique: number | null = null;
+      try {
+        domUnique = await new Promise<number | null>((resolve) => {
+          try {
+            chrome.tabs?.sendMessage?.(
+              tabId,
+              { type: 'scrape/LOG', payload: { what: override, seen: currentScrape.seen.size, max, stall: noProgress } },
+              (resp: any) => {
+                try {
+                  const n = Number(resp?.dom?.cumulativeUnique ?? resp?.cumulativeUnique ?? NaN);
+                  resolve(Number.isFinite(n) ? n : null);
+                } catch { resolve(null); }
+              }
+            );
+          } catch { resolve(null); }
+        });
+      } catch { domUnique = null; }
+      // Stop if DOM cumulative unique meets/exceeds max, even if upsert trail lags
+      try { if (domUnique != null && domUnique >= max) break; } catch {}
       // Track progress
       if (currentScrape.seen.size <= prev) noProgress++; else noProgress = 0;
       prev = currentScrape.seen.size;
