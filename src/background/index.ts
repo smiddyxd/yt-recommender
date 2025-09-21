@@ -1362,6 +1362,9 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   try {
     let prev = 0;
     let noProgress = 0;
+    // DOM stall tracking
+    let domPrev: number | null = null;
+    let domStall = 0;
     for (;;) {
       if (!currentScrape || currentScrape.stopRequested) break;
       if ((currentScrape.seen.size || 0) >= max) break;
@@ -1391,6 +1394,18 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
       domUniqueLatest = (domUnique != null ? domUnique : domUniqueLatest);
       // Stop if DOM cumulative unique meets/exceeds max, even if upsert trail lags
       try { if (domUnique != null && domUnique >= max) break; } catch {}
+      // If DOM cumulative hasn't increased across 2 passes, force a scroll-to-bottom to trigger lazy load
+      try {
+        if (domUnique != null) {
+          if (domPrev != null && domUnique <= domPrev) domStall += 1; else domStall = 0;
+          domPrev = domUnique;
+          if (domStall >= 2) {
+            try { await new Promise((resolve) => { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 2, delayMs: 700 } }, () => resolve(undefined)); }); } catch {}
+            await sleep(500);
+            domStall = 0;
+          }
+        }
+      } catch {}
       // Track progress
       if (currentScrape.seen.size <= prev) noProgress++; else noProgress = 0;
       prev = currentScrape.seen.size;
@@ -1406,11 +1421,22 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   } finally {
     try {
       // Wait until all pending upserts are flushed and the upserted set reaches DOM cumulative
+      let attempts = 0;
       for (;;) {
         const target = domUniqueLatest;
         const upserts = currentScrape ? currentScrape.seen.size : 0;
         if (pendingUpserts <= 0 && (target == null || upserts >= target)) break;
-        await sleep(200);
+        // Kick one more content pass to resend any missed seeds
+        try { await new Promise((resolve) => { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/NOW', payload: {} }, () => resolve(undefined)); }); } catch {}
+        // Wait briefly for any batch to finish and upserts to settle
+        let settle = 0;
+        while (settle < 12) {
+          if (pendingUpserts <= 0) break;
+          await sleep(200);
+          settle++;
+        }
+        attempts++;
+        if (attempts >= 5) break; // do not spin forever
       }
       const finalDom = domUniqueLatest ?? (currentScrape ? currentScrape.seen.size : 0);
       const finalUpserts = currentScrape ? currentScrape.seen.size : 0;

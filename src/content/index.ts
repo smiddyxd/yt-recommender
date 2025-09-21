@@ -8,6 +8,13 @@ import { getPlaylistIdFromURL } from '../types/util';
 import { dlog, dwarn } from '../types/debug';
 
 // Only act when background asks us to scrape
+// ---- Globals used by message handlers (declared early) ----
+let ticker: number | null = null;
+let scrapeGroups: GroupRec[] = [];
+let lastActivityAt = Date.now();
+let domUniqueWhat: 'SubscriptionsFeed' | 'WatchHistory' | string | null = null;
+const domUniqueSeen: Set<string> = new Set();
+
 chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   try {
     if (msg?.type === 'scrape/NOW') {
@@ -20,8 +27,38 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         }
       })();
       return true; // keep channel open for async
-  } else if (msg?.type === 'scrape/SCROLL') {
+    } else if (msg?.type === 'scrape/SCROLL') {
       // Simple incremental scroll; options: { times?: number, delayMs?: number }
+      (async () => {
+        try {
+          const times = Math.max(1, Math.min(50, Number(msg?.payload?.times ?? 1)));
+          const delay = Math.max(50, Math.min(2000, Number(msg?.payload?.delayMs ?? 400)));
+          for (let i = 0; i < times; i++) {
+            try { window.scrollBy({ top: Math.floor(window.innerHeight * 0.9), behavior: 'instant' as any }); } catch {}
+            await new Promise(res => setTimeout(res, delay));
+          }
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      })();
+      return true;
+    } else if (msg?.type === 'scrape/SCROLL_BOTTOM') {
+      // Force scroll to the bottom to nudge infinite loader
+      (async () => {
+        try {
+          const delay = Math.max(100, Math.min(4000, Number(msg?.payload?.delayMs ?? 600)));
+          const times = Math.max(1, Math.min(10, Number(msg?.payload?.times ?? 2)));
+          for (let i = 0; i < times; i++) {
+            try { window.scrollTo({ top: (document.documentElement?.scrollHeight || document.body?.scrollHeight || 9999999), behavior: 'instant' as any }); } catch {}
+            await new Promise(res => setTimeout(res, delay));
+          }
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      })();
+      return true;
       (async () => {
         try {
           const times = Math.max(1, Math.min(50, Number(msg?.payload?.times ?? 1)));
@@ -185,12 +222,7 @@ try {
 } catch {}
 
 // ---- Universal auto-scrape (preset-gated) ----
-let ticker: number | null = null;
-let scrapeGroups: GroupRec[] = [];
-let lastActivityAt = Date.now();
 // Track cumulative DOM-unique ids for the current scraping mode (Sub Feed or History)
-let domUniqueWhat: 'SubscriptionsFeed' | 'WatchHistory' | string | null = null;
-const domUniqueSeen: Set<string> = new Set();
 
 function markActive() { lastActivityAt = Date.now(); }
 try {
