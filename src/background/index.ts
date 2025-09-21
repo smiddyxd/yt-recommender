@@ -182,7 +182,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'cache/VIDEO_STUB') {
-        await handleVideoUpsert('STUB', (raw as any).payload, sender);
+        const noStubs = await getNoStubsFlag();
+        await handleVideoUpsert(noStubs ? 'SEEN' : 'STUB', (raw as any).payload, sender);
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
         scheduleBackup();
         sendResponse?.({ ok: true });
@@ -242,14 +243,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       } else if (raw.type === 'scrape/subFeed') {
         try {
           const max = Math.max(1, Math.min(2000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('subFeed')))));
-          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: true });
+          // Do not stop on already-known items; keep tab open for inspection
+          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: false, keepOpen: true });
           await setLastRun('subFeed'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'scrape/history') {
         try {
           const max = Math.max(1, Math.min(5000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('history')))));
-          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: true, historyHints: true });
+          // Keep the tab open for debugging; we'll close it again once you confirm
+          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: false, historyHints: true, keepOpen: true });
           await setLastRun('history'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
@@ -265,11 +268,11 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           // resolve ids
           try { await setLastRun('resolveIds'); await setLastRun('any'); await new Promise((res) => chrome.runtime.sendMessage({ type: 'channels/pending/resolveBatch', payload: { limit: 5 } } as any, () => res(undefined))); } catch {}
           // sub feed
-          try { await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', await getDefaultMax('subFeed'), { stopOnKnown: true }); await setLastRun('subFeed'); await setLastRun('any'); } catch {}
+          try { await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', await getDefaultMax('subFeed'), { stopOnKnown: false }); await setLastRun('subFeed'); await setLastRun('any'); } catch {}
           // subscriptions manager
           try { await runSubscriptionsManagerOnce(); await setLastRun('subscriptionsManager'); await setLastRun('any'); } catch {}
           // history
-          try { await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', await getDefaultMax('history'), { stopOnKnown: true, historyHints: true }); await setLastRun('history'); await setLastRun('any'); } catch {}
+          try { await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', await getDefaultMax('history'), { stopOnKnown: false, historyHints: true }); await setLastRun('history'); await setLastRun('any'); } catch {}
           sendResponse?.(out);
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'channels/list') {
@@ -1321,16 +1324,26 @@ async function handleVideoUpsert(kind: 'SEEN'|'STUB', payload: any, sender?: chr
   try { if (session && incoming?.id) session.seen.add(String(incoming.id)); } catch {}
 }
 
-async function runScrollingScrape(url: string, override: SourceOverride, max: number, opts?: { stopOnKnown?: boolean; historyHints?: boolean }): Promise<{ count: number; stopped: boolean }> {
+async function getNoStubsFlag(): Promise<boolean> {
+  return new Promise((resolve) => {
+    try { chrome.storage?.local?.get('debug.noStubs', (o) => resolve(!!o?.['debug.noStubs'])); }
+    catch { resolve(false); }
+  });
+}
+
+async function runScrollingScrape(url: string, override: SourceOverride, max: number, opts?: { stopOnKnown?: boolean; historyHints?: boolean; keepOpen?: boolean }): Promise<{ count: number; stopped: boolean }> {
   // Close any running session first
   try { if (currentScrape) { currentScrape.stopRequested = true; for (const id of Array.from(currentScrape.tabIds.values())) { try { chrome.tabs?.remove?.(id); } catch {} } currentScrape = null; } } catch {}
-  const tab = await chrome.tabs?.create?.({ url, active: false });
+  // Create as active to ensure content renders and scripts run reliably
+  const tab = await chrome.tabs?.create?.({ url, active: true });
   const tabId = tab?.id as number | undefined;
   if (typeof tabId !== 'number') throw new Error('Failed to open tab');
   currentScrape = { id: Math.floor(Math.random()*1e9), mode: override === 'WatchHistory' ? 'history' : 'subFeed', tabIds: new Set([tabId]), sourceOverride: override, limit: max, seen: new Set<string>(), stopOnKnown: !!opts?.stopOnKnown, stopRequested: false };
-  // Give the page time to render initial list
-  await sleep(1200);
+  // Give the page time to render initial list (a bit longer on heavy feeds)
+  await sleep((override === 'SubscriptionsFeed' || override === 'WatchHistory') ? 1800 : 1200);
   try {
+    let prev = 0;
+    let noProgress = 0;
     for (;;) {
       if (!currentScrape || currentScrape.stopRequested) break;
       if ((currentScrape.seen.size || 0) >= max) break;
@@ -1338,12 +1351,28 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
       await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/NOW', payload: {} }, () => resolve(undefined)); } catch { resolve(undefined); } });
       if (!currentScrape || currentScrape.stopRequested) break;
       if ((currentScrape.seen.size || 0) >= max) break;
-      // Scroll a bit and wait
-      await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL', payload: { times: 1, delayMs: 400 } }, () => resolve(undefined)); } catch { resolve(undefined); } });
-      await sleep(300);
+      // Log progress in page console for visibility (include stall cycles)
+      try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LOG', payload: { what: override, seen: currentScrape.seen.size, max, stall: noProgress } }, () => void 0); } catch {}
+      // Track progress
+      if (currentScrape.seen.size <= prev) noProgress++; else noProgress = 0;
+      prev = currentScrape.seen.size;
+      // Scroll a bit and wait (more aggressively on history; stretch on no-progress)
+      const baseTimes = override === 'WatchHistory' ? 2 : 1;
+      const stretch = Math.min(8, noProgress); // add up to +8 extra scrolls when stalled
+      const times = baseTimes + stretch;
+      const delay = override === 'WatchHistory' ? 600 : 450;
+      await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL', payload: { times, delayMs: delay } }, () => resolve(undefined)); } catch { resolve(undefined); } });
+      await sleep(delay + 150);
+      // Continue looping even on extended stalls; user can stop or loop ends at max
     }
   } finally {
-    try { chrome.tabs?.remove?.(tabId); } catch {}
+    try {
+      // Finalize in-page: send the discovered ids and max to content for highlighting/logging
+      const ids = currentScrape ? Array.from(currentScrape.seen.values()) : [];
+      try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/FINAL', payload: { what: override, ids, max } }, () => void 0); } catch {}
+      // Keep tab open if requested for debugging
+      if (!(opts?.keepOpen)) chrome.tabs?.remove?.(tabId);
+    } catch {}
     const stopped = !!currentScrape?.stopRequested;
     const count = currentScrape ? currentScrape.seen.size : 0;
     currentScrape = null;
@@ -1354,12 +1383,14 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
 async function runSubscriptionsManagerOnce(): Promise<{ subscribedCount: number; created: number; unsubscribed: number }> {
   // Close existing session but do not set override
   try { if (currentScrape) { currentScrape.stopRequested = true; for (const id of Array.from(currentScrape.tabIds.values())) { try { chrome.tabs?.remove?.(id); } catch {} } currentScrape = null; } } catch {}
-  const tab = await chrome.tabs?.create?.({ url: 'https://www.youtube.com/feed/channels', active: false });
+  // Create as active to ensure DOM loads
+  const tab = await chrome.tabs?.create?.({ url: 'https://www.youtube.com/feed/channels', active: true });
   const tabId = tab?.id as number | undefined;
   if (typeof tabId !== 'number') throw new Error('Failed to open tab');
   currentScrape = { id: Math.floor(Math.random()*1e9), mode: 'subscriptions', tabIds: new Set([tabId]), seen: new Set<string>(), stopRequested: false } as any;
   await sleep(1200);
   let ids: string[] = [];
+  let handles: string[] = [];
   try {
     // Try a few times to allow content to load
     for (let i = 0; i < 3; i++) {
@@ -1367,13 +1398,27 @@ async function runSubscriptionsManagerOnce(): Promise<{ subscribedCount: number;
         try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); }
       });
       const list: string[] = Array.isArray(resp?.ids) ? resp.ids : [];
+      const listHandles: string[] = Array.isArray(resp?.handles) ? resp.handles : [];
       if (list.length > ids.length) ids = list;
+      if (listHandles.length > handles.length) handles = listHandles;
       if (ids.length >= 10) break; // likely loaded
       await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL', payload: { times: 2, delayMs: 350 } }, () => resolve(undefined)); } catch { resolve(undefined); } });
       await sleep(500);
     }
   } finally {
     try { chrome.tabs?.remove?.(tabId); } catch {}
+  }
+  // Add discovered handles to Pending for manual batch resolution later
+  if (handles.length) {
+    for (const raw of handles) {
+      try {
+        const h = typeof raw === 'string' ? raw.trim() : '';
+        if (!h) continue;
+        const withAt = h.startsWith('@') ? h : ('@' + h);
+        const key = `handle:${withAt}`;
+        try { await upsertPendingChannel(key, { handle: withAt, subscribedPending: true }); } catch {}
+      } catch { /* ignore per-entry */ }
+    }
   }
   const res = await applySubscribedSet(ids);
   // Push channel change to refresh UI

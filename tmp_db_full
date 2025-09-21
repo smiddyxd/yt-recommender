@@ -1,7 +1,7 @@
-import { dlog, derr } from '../types/debug';
+﻿import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 12;
+const DB_VERSION = 11;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -44,9 +44,6 @@ export async function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('channels_pending')) {
         const p = db.createObjectStore('channels_pending', { keyPath: 'key' });
         p.createIndex('byCreatedAt', 'createdAt', { unique: false });
-      } else {
-        // No index changes; rows may now include `subscribedPending?: boolean` starting v12
-        // Keep upgrade resilient: nothing to migrate.
       }
       if (!db.objectStoreNames.contains('rules')) {
         const r = db.createObjectStore('rules', { keyPath: 'id' });
@@ -216,7 +213,7 @@ export async function applyTags(ids: string[], addIds: string[] = [], removeIds:
               vs.put(row);
               return res();
             }
-            // Not in 'videos' — try 'trash'
+            // Not in 'videos' â€” try 'trash'
             const g2 = ts.get(id);
             g2.onsuccess = () => {
               const trow = g2.result;
@@ -1088,7 +1085,7 @@ export async function markChannelScraped(id: string, at: number, opts?: { tab?: 
 }
 
 // ---- Pending channels (handle/name without id) ----
-export async function upsertPendingChannel(key: string, data: { name?: string | null; handle?: string | null; subscribedPending?: boolean }): Promise<boolean> {
+export async function upsertPendingChannel(key: string, data: { name?: string | null; handle?: string | null }): Promise<boolean> {
   const k = (key || '').trim(); if (!k) return false;
   // normalize handle to always include leading '@' if present
   const incomingHandle = data?.handle ? (String(data.handle).startsWith('@') ? String(data.handle) : '@' + String(data.handle)) : null;
@@ -1103,7 +1100,6 @@ export async function upsertPendingChannel(key: string, data: { name?: string | 
       const prevName = prev?.name ?? null;
       const prevHandle = prev?.handle ?? null;
       const next = { key: k, createdAt: prev?.createdAt || Date.now(), name: data?.name ?? prevName ?? null, handle: incomingHandle ?? prevHandle ?? null, updatedAt: Date.now() } as any;
-      if (data?.subscribedPending) next.subscribedPending = true; else if (typeof prev?.subscribedPending === 'boolean') next.subscribedPending = !!prev.subscribedPending;
       const changed = created || (String(prevName || '') !== String(next.name || '')) || (String(prevHandle || '') !== String(next.handle || ''));
       if (changed) os.put(next);
       else {
@@ -1124,44 +1120,24 @@ export async function resolvePendingChannel(channelId: string, hint?: { handle?:
   // Upsert channel stub with resolved id
   await upsertChannelStub(id, hint?.name || null, hint?.handle || null);
   // Clear any matching pending
-  let hadPendingSubscribed = false;
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('channels_pending', 'readwrite');
     const os = tx.objectStore('channels_pending');
     const cur = os.openCursor();
     cur.onsuccess = () => {
       const c = cur.result as IDBCursorWithValue | null;
-      if (!c) { resolve(); return; }
+      if (!c) return resolve();
       const row: any = c.value;
       const matches = (hint?.handle && row?.handle && String(row.handle).toLowerCase() === String(hint!.handle).toLowerCase()) ||
                       (hint?.name && row?.name && String(row.name).toLowerCase() === String(hint!.name).toLowerCase());
-      if (matches) {
-        if (row?.subscribedPending) hadPendingSubscribed = true;
-        c.delete();
-      }
+      if (matches) c.delete();
       c.continue();
     };
     cur.onerror = () => reject(cur.error);
   });
-  // If any matching pending entry indicated subscribedPending, mark the channel subscribed now
-  if (hadPendingSubscribed) {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction('channels', 'readwrite');
-      const os = tx.objectStore('channels');
-      const g = os.get(id);
-      g.onsuccess = () => {
-        const prev = (g.result as any) || { id };
-        (prev as any).subscribed = true;
-        (prev as any).unsubscribed = false;
-        os.put(prev);
-        resolve();
-      };
-      g.onerror = () => reject(g.error);
-    });
-  }
 }
 
-export async function listPendingChannels(): Promise<Array<{ key: string; name?: string | null; handle?: string | null; subscribedPending?: boolean; createdAt?: number; updatedAt?: number }>> {
+export async function listPendingChannels(): Promise<Array<{ key: string; name?: string | null; handle?: string | null; createdAt?: number; updatedAt?: number }>> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('channels_pending', 'readonly');
@@ -1169,17 +1145,18 @@ export async function listPendingChannels(): Promise<Array<{ key: string; name?:
     const req = (os as any).getAll ? (os as any).getAll() : os.openCursor();
     const out: any[] = [];
     if ('getAll' in os) {
-      (req as IDBRequest).onsuccess = () => resolve((((req as any).result as any[]) || []).map((r:any)=>({ key:String(r.key), name:r.name??null, handle:r.handle??null, subscribedPending: !!r.subscribedPending, createdAt:r.createdAt, updatedAt:r.updatedAt })));
+      (req as IDBRequest).onsuccess = () => resolve((((req as any).result as any[]) || []).map((r:any)=>({ key:String(r.key), name:r.name??null, handle:r.handle??null, createdAt:r.createdAt, updatedAt:r.updatedAt })));
       (req as IDBRequest).onerror = () => reject((req as any).error);
     } else {
       (req as IDBRequest).onsuccess = () => {
         const c = (req as any).result as IDBCursorWithValue | null;
         if (!c) { resolve(out); return; }
         const r:any = c.value || {};
-        out.push({ key:String(r.key), name:r.name??null, handle:r.handle??null, subscribedPending: !!r.subscribedPending, createdAt:r.createdAt, updatedAt:r.updatedAt });
+        out.push({ key:String(r.key), name:r.name??null, handle:r.handle??null, createdAt:r.createdAt, updatedAt:r.updatedAt });
         c.continue();
       };
       (req as IDBRequest).onerror = () => reject((req as any).error);
     }
   });
 }
+

@@ -530,13 +530,14 @@ useEffect(() => {
             refreshTimerRef.current = null;
             refresh();
             loadTopicOptions();
+            void refreshStubCount();
           }, 200) as unknown as number;
         }
       }
       if (ent === 'tags')   loadTags();
       if (ent === 'tagGroups') loadTagGroups();
       if (ent === 'groups') loadGroups();
-      if (ent === 'channels') loadChannelsDir();
+      if (ent === 'channels') { loadChannelsDir(); void refreshStubCount(); }
       if (ent === 'topics') loadTopicOptions();
     } else if (msg?.type === 'refresh/progress') {
       const p = msg.payload || {};

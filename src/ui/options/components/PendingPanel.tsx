@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { send as sendBg } from '../../lib/messaging';
 
-type Pending = { key: string; name?: string | null; handle?: string | null; createdAt?: number; updatedAt?: number };
+type Pending = { key: string; name?: string | null; handle?: string | null; subscribedPending?: boolean; createdAt?: number; updatedAt?: number };
 
 export default function PendingPanel() {
   const [items, setItems] = useState<Pending[]>([]);
@@ -15,6 +15,10 @@ export default function PendingPanel() {
   const [lastRun, setLastRun] = useState<Record<string, number | null>>({});
   const [subFeedMax, setSubFeedMax] = useState<number>(120);
   const [historyMax, setHistoryMax] = useState<number>(250);
+  const [subFeedMaxInput, setSubFeedMaxInput] = useState<string>('120');
+  const [historyMaxInput, setHistoryMaxInput] = useState<string>('250');
+  const [resolving, setResolving] = useState(false);
+  const resolvingRef = useRef(false);
 
   async function load() {
     setLoading(true); setErr(null);
@@ -37,8 +41,10 @@ export default function PendingPanel() {
       chrome.storage?.local?.get(['scrape.max.subFeed','scrape.max.history'], (o) => {
         const sf = Number(o?.['scrape.max.subFeed']);
         const hi = Number(o?.['scrape.max.history']);
-        setSubFeedMax(Number.isFinite(sf) && sf > 0 ? sf : 120);
-        setHistoryMax(Number.isFinite(hi) && hi > 0 ? hi : 250);
+        const sfx = (Number.isFinite(sf) && sf > 0 ? sf : 120);
+        const hix = (Number.isFinite(hi) && hi > 0 ? hi : 250);
+        setSubFeedMax(sfx); setSubFeedMaxInput(String(sfx));
+        setHistoryMax(hix); setHistoryMaxInput(String(hix));
       });
     } catch {}
   }
@@ -56,36 +62,66 @@ export default function PendingPanel() {
     }
   }
 
+  async function resolveLoop() {
+    setResolving(true); resolvingRef.current = true;
+    try {
+      for (;;) {
+        if (!resolvingRef.current) break;
+        const limit = batch;
+        const r: any = await sendBg('channels/pending/resolveBatch', { limit });
+        const remaining = Number(r?.remaining || 0);
+        // Small pause to allow content/background to close tabs
+        await new Promise(res => setTimeout(res, 1500));
+        await load();
+        if (!resolvingRef.current) break;
+        if (!r?.ok || remaining <= 0) break; // done or failed once
+      }
+    } finally {
+      setResolving(false); resolvingRef.current = false;
+    }
+  }
+
+  function toggleResolveLoop() {
+    if (resolvingRef.current) { setResolving(false); resolvingRef.current = false; return; }
+    void resolveLoop();
+  }
+
   useEffect(() => { void load(); void loadScrapeStatus(); }, []);
 
   function tsLabel(ts?: number | null) { return ts ? new Date(ts).toLocaleString() : '—'; }
 
-  async function runResolveIds() {
-    const r: any = await sendBg('scrape/resolveIds', { limit: batch } as any);
-    if (!r?.ok) alert(r?.error || 'Failed');
-    await loadScrapeStatus();
-  }
   async function runSubFeed() {
-    try { chrome.storage?.local?.set({ 'scrape.max.subFeed': subFeedMax }); } catch {}
-    const r: any = await sendBg('scrape/subFeed', { max: subFeedMax } as any);
+    // Parse lazily from input, without enforcing a lower bound here
+    const n = parseInt(subFeedMaxInput, 10);
+    const val = Number.isFinite(n) ? n : subFeedMax; // fallback to last known
+    setSubFeedMax(val);
+    try { chrome.storage?.local?.set({ 'scrape.max.subFeed': val }); } catch {}
+    const r: any = await sendBg('scrape/subFeed', { max: val } as any);
     if (!r?.ok) alert(r?.error || 'Failed');
     await loadScrapeStatus();
+    await load();
   }
   async function runSubscriptionsManager() {
     const r: any = await sendBg('scrape/subscriptionsManager', {} as any);
     if (!r?.ok) alert(r?.error || 'Failed');
     await loadScrapeStatus();
+    await load();
   }
   async function runHistory() {
-    try { chrome.storage?.local?.set({ 'scrape.max.history': historyMax }); } catch {}
-    const r: any = await sendBg('scrape/history', { max: historyMax } as any);
+    const n = parseInt(historyMaxInput, 10);
+    const val = Number.isFinite(n) ? n : historyMax;
+    setHistoryMax(val);
+    try { chrome.storage?.local?.set({ 'scrape.max.history': val }); } catch {}
+    const r: any = await sendBg('scrape/history', { max: val } as any);
     if (!r?.ok) alert(r?.error || 'Failed');
     await loadScrapeStatus();
+    await load();
   }
   async function runAll() {
     const r: any = await sendBg('scrape/runAll', {} as any);
     if (!r?.ok) alert(r?.error || 'Failed');
     await loadScrapeStatus();
+    await load();
   }
   async function stopAll() {
     await sendBg('scrape/stop', {} as any);
@@ -106,7 +142,6 @@ export default function PendingPanel() {
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
           <button onClick={runAll} disabled={running}>Run all</button>
-          <button onClick={runResolveIds} disabled={running}>Resolve ids</button>
           <button onClick={runSubFeed} disabled={running}>Scrape Sub Feed</button>
           <button onClick={runSubscriptionsManager} disabled={running}>Scrape Subscriptions Manager</button>
           <button onClick={runHistory} disabled={running}>Scrape Watch History</button>
@@ -114,13 +149,13 @@ export default function PendingPanel() {
         </div>
         <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 8 }}>
           <label className="muted">Max Sub Feed videos</label>
-          <input className="side-input" type="number" min={10} max={5000} value={subFeedMax} onChange={(e)=> setSubFeedMax(Math.max(10, Math.min(5000, parseInt(e.currentTarget.value || '120', 10))))} style={{ width: 90 }} />
+          <input className="side-input" type="number" value={subFeedMaxInput} onChange={(e)=> setSubFeedMaxInput(e.currentTarget.value)} style={{ width: '4ch' }} />
           <label className="muted">Max History items</label>
-          <input className="side-input" type="number" min={10} max={10000} value={historyMax} onChange={(e)=> setHistoryMax(Math.max(10, Math.min(10000, parseInt(e.currentTarget.value || '250', 10))))} style={{ width: 90 }} />
+          <input className="side-input" type="number" value={historyMaxInput} onChange={(e)=> setHistoryMaxInput(e.currentTarget.value)} style={{ width: '5ch' }} />
         </div>
         <div className="muted" style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
           <span>Last run (any): {tsLabel(lastRun['scrape.lastRun.any'])}</span>
-          <span>Resolve ids: {tsLabel(lastRun['scrape.lastRun.resolveIds'])}</span>
+          {/* Removed redundant 'Resolve ids' button; keep lastRun entries concise */}
           <span>Sub Feed: {tsLabel(lastRun['scrape.lastRun.subFeed'])}</span>
           <span>Subscriptions Manager: {tsLabel(lastRun['scrape.lastRun.subscriptionsManager'])}</span>
           <span>History: {tsLabel(lastRun['scrape.lastRun.history'])}</span>
@@ -135,10 +170,10 @@ export default function PendingPanel() {
       <div className="muted" style={{ marginBottom: 8 }}>
         Total: {items.length} • With handles: {handles} • Name-only: {namesOnly}
       </div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <label className="muted">Batch size</label>
-        <input className="side-input" type="number" min={1} max={20} value={batch} onChange={(e)=> setBatch(Math.max(1, Math.min(20, parseInt(e.currentTarget.value || '5', 10))))} style={{ width: 64 }} />
-        <button className="btn-ghost" onClick={()=>resolveBatch()} disabled={handles === 0}>Resolve handles (open tabs)</button>
+        <input className="side-input" type="number" min={1} max={20} value={batch} onChange={(e)=> setBatch(Math.max(1, Math.min(20, parseInt(e.currentTarget.value || '5', 10))))} style={{ width: '3ch' }} />
+        <button className="btn-ghost" onClick={()=>toggleResolveLoop()} disabled={handles === 0}>{resolving ? 'Stop resolving' : 'Resolve handles (open tabs)'}</button>
       </div>
       <div style={{ maxHeight: 320, overflow: 'auto', border: '1px solid #333', borderRadius: 6 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>

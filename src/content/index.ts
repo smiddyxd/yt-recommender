@@ -20,7 +20,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         }
       })();
       return true; // keep channel open for async
-    } else if (msg?.type === 'scrape/SCROLL') {
+  } else if (msg?.type === 'scrape/SCROLL') {
       // Simple incremental scroll; options: { times?: number, delayMs?: number }
       (async () => {
         try {
@@ -36,19 +36,59 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         }
       })();
       return true;
-    } else if (msg?.type === 'scrape/LIST_SUBSCRIPTIONS') {
-      // On https://www.youtube.com/feed/channels, extract channel ids from /channel/ links
+    } else if (msg?.type === 'scrape/LOG') {
       try {
-        const anchors = Array.from(document.querySelectorAll('a[href^="/channel/"]')) as HTMLAnchorElement[];
-        const set = new Set<string>();
+        const what = (msg?.payload?.what || 'scrape') as string;
+        const seen = Number(msg?.payload?.seen || 0);
+        const max = Number(msg?.payload?.max || 0);
+        // Surface in page console to aid debugging
+        // eslint-disable-next-line no-console
+        console.log(`[YT-Manager] ${what}: seen=${seen} / max=${max}`);
+        // Continuously mark elements considered during scraping loops
+        try { applyScrapeHighlightsFor(what as any); } catch {}
+        sendResponse?.({ ok: true });
+      } catch (e: any) {
+        sendResponse?.({ ok: false, error: e?.message || String(e) });
+      }
+      return true;
+    } else if (msg?.type === 'scrape/LIST_SUBSCRIPTIONS') {
+      // On https://www.youtube.com/feed/channels, extract channel identifiers.
+      // Prefer concrete /channel/ IDs, but also capture @handles via #main-link or /@ links.
+      try {
+        const anchors = Array.from(document.querySelectorAll('a#main-link, a[href^="/channel/"], a[href^="/@"]')) as HTMLAnchorElement[];
+        const ids = new Set<string>();
+        const handles = new Set<string>();
         for (const a of anchors) {
           try {
             const u = new URL(a.href, location.origin);
             const seg = u.pathname.split('/');
-            if (seg[1] === 'channel' && seg[2]) set.add(seg[2]);
-          } catch {}
+            if (seg[1] === 'channel' && seg[2]) {
+              ids.add(seg[2]);
+            } else if (u.pathname.startsWith('/@')) {
+              const h = u.pathname.slice(1); // include leading @ in value
+              if (h) handles.add(h);
+            }
+          } catch { /* ignore */ }
         }
-        sendResponse?.({ ok: true, ids: Array.from(set.values()) });
+        sendResponse?.({ ok: true, ids: Array.from(ids.values()), handles: Array.from(handles.values()) });
+      } catch (e: any) {
+        sendResponse?.({ ok: false, error: e?.message || String(e) });
+      }
+      return true;
+    } else if (msg?.type === 'scrape/FINAL') {
+      try {
+        const what = (msg?.payload?.what || 'scrape') as string;
+        const ids = Array.isArray(msg?.payload?.ids) ? (msg.payload.ids as any[]).map(String) : [];
+        const max = Number(msg?.payload?.max || 0);
+        const info = finalizeScrapeHighlights(what as any, ids);
+        // eslint-disable-next-line no-console
+        console.log(`[YT-Manager] FINAL ${what}: uniqueIds=${ids.length} max=${max}`);
+        // eslint-disable-next-line no-console
+        console.log('[YT-Manager] Final anchors (first 40):', info.anchors.slice(0, 40));
+        (window as any).YTM_SCRAPE_FINAL = { what, ids, ...info };
+        // Pause auto-scan ticker to avoid further background noise
+        try { if (ticker != null) { clearInterval(ticker as any); ticker = null; } } catch {}
+        sendResponse?.({ ok: true, count: ids.length });
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }
@@ -198,6 +238,93 @@ function extractChannelIdFromTile(root: HTMLElement | null): { channelId?: strin
 
 type Cand = { id: string; sources: Array<{ type: string; id?: string | null }>; channelId?: string | null; handle?: string | null; channelName?: string | null; title?: string | null };
 
+// ---- Visual debug: highlight elements considered during scraping loops ----
+function ensureHighlightStyles() {
+  try {
+    if (document.getElementById('ytm-highlight-style')) return;
+    const style = document.createElement('style');
+    style.id = 'ytm-highlight-style';
+    style.textContent = `
+      .ytm-hl-sf { outline: 2px solid #42a5f5 !important; outline-offset: -2px !important; }
+      .ytm-hl-sf-ch { box-shadow: inset 0 0 0 2px #66bb6a !important; border-radius: 3px; }
+      .ytm-hl-wh { outline: 2px solid #ff9800 !important; outline-offset: -2px !important; }
+      .ytm-hl-wh-ch { box-shadow: inset 0 0 0 2px #66bb6a !important; border-radius: 3px; }
+      .ytm-hl-final { outline: 3px solid #e91e63 !important; outline-offset: -2px !important; }
+      .ytm-hl-final-ch { box-shadow: inset 0 0 0 3px #e91e63 !important; border-radius: 3px; }
+    `;
+    document.head?.appendChild(style);
+  } catch { /* ignore */ }
+}
+
+function clearHighlight(tag: 'sf' | 'wh') {
+  try {
+    document.querySelectorAll(`.ytm-hl-${tag}, .ytm-hl-${tag}-ch`).forEach(el => {
+      try { el.classList.remove(`ytm-hl-${tag}`); el.classList.remove(`ytm-hl-${tag}-ch`); } catch {}
+    });
+  } catch { /* ignore */ }
+}
+
+function highlightFromAnchors(anchors: HTMLAnchorElement[], tag: 'sf' | 'wh') {
+  ensureHighlightStyles();
+  clearHighlight(tag);
+  for (const a of anchors) {
+    try {
+      const root = tileRoot(a);
+      if (root) {
+        root.classList.add(`ytm-hl-${tag}`);
+        // Also mark channel anchors inside the tile
+        try {
+          const ch = (root.querySelector('ytd-channel-name a[href^="/channel/"]') as HTMLAnchorElement | null)
+                  || (root.querySelector('#byline a[href^="/channel/"]') as HTMLAnchorElement | null)
+                  || (root.querySelector('#channel-name a[href^="/channel/"]') as HTMLAnchorElement | null)
+                  || (root.querySelector('ytd-channel-name a[href^="/@"]') as HTMLAnchorElement | null);
+          if (ch) ch.classList.add(`ytm-hl-${tag}-ch`);
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+function applyScrapeHighlightsFor(what: 'SubscriptionsFeed' | 'WatchHistory' | string) {
+  try {
+    if (what === 'SubscriptionsFeed') {
+      const anchors = Array.from(document.querySelectorAll('ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
+      highlightFromAnchors(anchors, 'sf');
+    } else if (what === 'WatchHistory') {
+      const anchors = Array.from(document.querySelectorAll('a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
+      highlightFromAnchors(anchors, 'wh');
+    }
+  } catch { /* ignore */ }
+}
+
+function finalizeScrapeHighlights(what: 'SubscriptionsFeed' | 'WatchHistory' | string, ids: string[]): { anchors: HTMLAnchorElement[] } {
+  ensureHighlightStyles();
+  const sel = (what === 'SubscriptionsFeed')
+    ? 'ytd-rich-item-renderer a[href^="/watch"]'
+    : 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]';
+  const idsSet = new Set((ids || []).map(String));
+  const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
+  const matched: HTMLAnchorElement[] = [];
+  for (const a of anchors) {
+    let id: string | null = null;
+    try { id = parseVideoIdFromHref(a.href); } catch { id = null; }
+    if (!id || !idsSet.has(id)) continue;
+    matched.push(a);
+    const root = tileRoot(a);
+    if (root) {
+      root.classList.add('ytm-hl-final');
+      try {
+        const ch = (root.querySelector('ytd-channel-name a[href^="/channel/"]') as HTMLAnchorElement | null)
+                || (root.querySelector('#byline a[href^="/channel/"]') as HTMLAnchorElement | null)
+                || (root.querySelector('#channel-name a[href^="/channel/"]') as HTMLAnchorElement | null)
+                || (root.querySelector('ytd-channel-name a[href^="/@"]') as HTMLAnchorElement | null);
+        if (ch) ch.classList.add('ytm-hl-final-ch');
+      } catch { /* ignore */ }
+    }
+  }
+  return { anchors: matched };
+}
+
 // Track pending-channel keys we have already submitted on this page to avoid repeated upserts
 const pendingKeysSubmitted = new Set<string>();
 
@@ -327,8 +454,8 @@ async function autoScanOnce() {
   }
   // Collect anchors for watch + shorts
   const anchors = Array.from(document.querySelectorAll(
-    'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], a#thumbnail[href^="/shorts/"], a[href^="/shorts/"]'
-  )) as HTMLAnchorElement[];
+    'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
+  )) as HTMLAnchorElement[]; // exclude generic /shorts links from auto-scan
   dlog('[content] scan anchors', anchors.length);
   if (anchors.length === 0) return;
   const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));

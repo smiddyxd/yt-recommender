@@ -127,6 +127,44 @@ export function scrapeNowDetailed(): { count: number; page: 'watch'|'channel'|'o
   const listId = getPlaylistIdFromURL();
   const container = q1(SELECTORS.playlistContainer);
 
+  // Special handling: Subscriptions feed
+  try {
+    if (location.pathname === '/feed/subscriptions') {
+      // New rich grid uses yt-lockup anchors; include any watch links inside rich items
+      const anchors = Array.from(document.querySelectorAll(
+        'ytd-rich-item-renderer a[href^="/watch"]'
+      )) as HTMLAnchorElement[];
+      const seen = new Set<string>();
+      for (const a of anchors) {
+        const vid = parseVideoIdFromHref(a.href);
+        if (!vid || seen.has(vid) || added.has(vid)) continue;
+        seen.add(vid); added.add(vid);
+        const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
+        send('cache/VIDEO_SEEN', seed);
+        sent++;
+        try { scrapeProgressForTile(a, vid); } catch {}
+      }
+      return { count: sent, page: 'other' } as any;
+    }
+    // Special handling: Watch History
+    if (location.pathname === '/feed/history') {
+      const anchors = Array.from(document.querySelectorAll(
+        'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]'
+      )) as HTMLAnchorElement[];
+      const seen = new Set<string>();
+      for (const a of anchors) {
+        const vid = parseVideoIdFromHref(a.href);
+        if (!vid || seen.has(vid) || added.has(vid)) continue;
+        seen.add(vid); added.add(vid);
+        const seed: VideoSeed = { id: vid, sources: [{ type: 'panel', id: listId }] };
+        send('cache/VIDEO_SEEN', seed);
+        sent++;
+        try { scrapeProgressForTile(a, vid); } catch {}
+      }
+      return { count: sent, page: 'other' } as any;
+    }
+  } catch { /* ignore */ }
+
   // Playlist page scrape (distinct tiles renderers)
   if (container) {
     const tiles = container.querySelectorAll(SELECTORS.playlistTiles);

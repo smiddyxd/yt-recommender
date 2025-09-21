@@ -9,7 +9,7 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-20
+**Verified As Of:** 2025-09-21
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -69,7 +69,7 @@
 - Tiles with just a handle/name may upsert to `channels_pending` (gated by accepted presets, per-page de-duped). Channel pages resolve pending entries to real ids automatically; Options exposes a debug panel to open background tabs and auto-resolve handles in batches.
 
 ## Storage Model (IndexedDB)
-- DB: `yt-recommender`, `DB_VERSION = 11`.
+- DB: `yt-recommender`, `DB_VERSION = 12`.
 - Stores and key fields
   - `videos` (keyPath: `id`) - indexes: `byChannel` on `channelId`, `byTag` on `tags` (multiEntry).
   - `trash` (keyPath: `id`) - index: `byDeletedAt`.
@@ -78,7 +78,7 @@
   - `groups` (keyPath: `id`) - indexes: `byName`, `byUpdatedAt`; record includes `scrape?: boolean`.
   - `channels` (keyPath: `id`) - indexes: `byName`, `byFetchedAt`.
   - `channels_trash` (keyPath: `id`) - index: `byDeletedAt`.
-  - `channels_pending` (keyPath: `key`) - index: `byCreatedAt`; rows like `{ key: 'handle:@foo' | 'name:Some Name', name?, handle?, createdAt?, updatedAt? }`.
+  - `channels_pending` (keyPath: `key`) - index: `byCreatedAt`; rows like `{ key: 'handle:@foo' | 'name:Some Name', name?, handle?, subscribedPending?, createdAt?, updatedAt? }`.
   - `meta` (keyPath: `key`) - holds aggregated lists like `{ key: 'videoTopics', list: string[] }`.
   - `events_commits` (keyPath: `commitId`) - index: `byTs`.
   - `events` (keyPath: `id`) - index: `byCommit`.
@@ -251,6 +251,8 @@
   4) Document store schema in this file
 
 ## Changelog
+- 2025-09-21
+  - DB_VERSION bumped to 12. `channels_pending` rows may include `subscribedPending` to record a pending "subscribed" state captured from Subscriptions Manager before a concrete channel id exists. On resolve, background promotes `subscribed=true` on the resolved channel id and clears the pending entry.
 - 2025-09-06
   - Scrape Panel v1 integrated into Pending (debug): Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop. Shows last-run timestamps and supports max limits.
   - Sub Feed/History scrapers merge into existing videos, append sources (`SubscriptionsFeed`/`WatchHistory`), and bump `lastSeenAt`. History marks `flags.started=true`; explicit watch progress still wins.
