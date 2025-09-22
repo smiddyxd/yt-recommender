@@ -24,6 +24,7 @@ export type Msg =
   | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
   | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
   | { type: 'videos/stubsCount'; payload: {} }
+  | { type: 'channels/stubsCount'; payload: {} }
   | { type: 'videos/purge'; payload: { ids: string[] } }
   | { type: 'channels/list'; payload: {} }
   | { type: 'channels/trashList'; payload: {} }
@@ -33,6 +34,8 @@ export type Msg =
   | { type: 'channels/markScraped'; payload: { id: string; at: number; tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null } }
   | { type: 'channels/upsertPending'; payload: { key: string; name?: string | null; handle?: string | null } }
   | { type: 'channels/resolvePending'; payload: { id: string; name?: string | null; handle?: string | null; altHandle?: string | null } }
+  | { type: 'channels/pending/list'; payload: {} }
+  | { type: 'channels/pending/resolveBatch'; payload: { limit?: number } }
   | { type: 'channels/delete'; payload: { ids: string[] } }
   | { type: 'channels/restore'; payload: { ids: string[] } }
   | { type: 'channels/purge'; payload: { ids: string[] } }

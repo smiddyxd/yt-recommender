@@ -7,13 +7,13 @@ import { dlog, derr } from '../types/debug';
 
 type EventKind =
   | 'videos/applyTags'
-  | 'videos/delete' | 'videos/restore'
+  | 'videos/delete' | 'videos/restore' | 'videos/purge'
   | 'videos/progress'
   | 'videos/wipeSources'
   | 'groups/create' | 'groups/update' | 'groups/delete'
   | 'tags/create' | 'tags/rename' | 'tags/delete' | 'tags/assignGroup'
   | 'tagGroups/create' | 'tagGroups/rename' | 'tagGroups/delete'
-  | 'channels/applyTags' | 'channels/delete' | 'channels/restore' | 'channels/markScraped'
+  | 'channels/applyTags' | 'channels/delete' | 'channels/restore' | 'channels/purge' | 'channels/markScraped'
   | 'pending/upsert' | 'pending/resolve'
   | 'videos/attrChanged' | 'channels/attrChanged';
 
