@@ -1,5 +1,10 @@
-# AGENTS - YT Manager
+﻿# AGENTS - YT Manager
 
+- 2025-09-22
+  - Scrape loop stops on content-reported DOM-unique; added `scrape/SCROLL_BOTTOM` stall recovery; finalization waits until DB writes are flushed and closes tabs.
+  - Batch upserts: `cache/VIDEO_SEEN_BATCH` + bulk IDB upserts reduce overhead; per-iteration logs include `pending` upserts.
+  - Content: richer per-pass logs and continuous highlights; history scan includes rich-grid anchors.
+  - Options: Scrape Panel adds "Debug: No stubs" toggle.
 ## Meta Contract
 - **Purpose:** This document is the ground truth primer for new Codex chats. It must always reflect the current behavior, structures, and flows of the system.
 - **When to update:** Whenever changes affect how the project works, what data it stores, how components communicate, or what the user can see or do. Ignore minor refactors, type fixes, or debug notes unless they alter semantics.
@@ -9,11 +14,12 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-21
+**Verified As Of:** 2025-09-22
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
 - Build: `npm run build` -> `dist/`; load unpacked extension from `dist` in Chromium-based browser.
+- Scrape Panel: adds "Debug: No stubs" (persists chrome.storage.local[debug.noStubs]), which treats VIDEO_STUB as VIDEO_SEEN during runs to reduce overhead.
 - Dev watch (run each in separate terminals): `npm run watch:bg`, `watch:cs`, `watch:opt`, `watch:pop`.
 - First-use: Open Options, click "Fetch video data" and provide your YouTube API key (stored in `chrome.storage.local.ytApiKey`).
 
@@ -31,14 +37,14 @@
 - Manifest V3: background service worker, one content script, Options page (React), Popup (React).
 
 ### Background
-- `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes).
-- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 11`.
+- `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes). Scrape loop stops based on DOM-unique counts reported by content, supports batching, stall detection, and wait-until-flushed finalization.
+- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 12`.
 - `src/background/driveBackup.ts`: Google Drive appData auth + read/write (JSON, JSONL, snapshots). Plaintext storage only; pass `{ interactive: true }` when user prompts are needed.
 - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
 
 ### Content
-- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll) and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`).
+- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting.
 - `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
 - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
 - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
@@ -63,6 +69,13 @@
 5) On mutations, background records lightweight events -> commits; appends to `events-YYYY-MM.jsonl` in Drive and occasionally saves snapshots.
 
 ## Auto-Scrape & Presets
+## Scrape Panel (Sub Feed / Watch History)
+- Stop condition: background stops when content-reported cumulative DOM-unique IDs reach the configured max.
+- Batching: content sends seeds via `cache/VIDEO_SEEN_BATCH` (chunked) and background bulk-writes (`upsertVideosBulk`).
+- Stall detection: if DOM-unique does not increase across two iterations, background triggers `scrape/SCROLL_BOTTOM` to force a bottom scroll and nudge loaders.
+- Finalization: background waits until pending upserts are flushed and upserts >= last DOM cumulative, logs a final summary, then closes the tab.
+- Per-iteration page-console logs include anchors/withId/uniqueIds/noRoot/noId/seen(upserts)/pending(upserts)/cumulative(dom)/max/stall.
+
 - Auto-scrape runs every ~2s only if user was active within the last 10s. Disabled on channel pages and all playlist pages.
 - Current watch page is always captured; other tiles are captured only if accepted by at least one enabled "Preset".
 - A preset participates at scrape-time only if its condition tree is fully checkable from in-page data. Supported predicates: `sourceAny`, `sourcePlaylistAny`, `channelIdIn`, `titleRegex`, and `groupRef` (only if referenced presets are themselves checkable).
@@ -90,6 +103,10 @@
   - `cache/VIDEO_SEEN`, `cache/VIDEO_STUB`
   - `cache/VIDEO_PROGRESS`, `cache/VIDEO_PROGRESS_PCT`
   - Scrape helpers (used by background routines): `scrape/SCROLL`, `scrape/LIST_SUBSCRIPTIONS`
+  - `cache/VIDEO_SEEN_BATCH` (batched seeds for bulk DB write via single transaction)
+
+- Background -> Content (scrape loop)
+  - `scrape/NOW`, `scrape/LOG`, `scrape/SCROLL`, `scrape/SCROLL_BOTTOM`, `scrape/FINAL`
 - UI -> Background (selected)
   - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
   - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`, `channels/stubsCount`
@@ -275,3 +292,4 @@ Use this section as an "inbox" for future patch notes. After integrating updates
 
 ## Removed From Project Overview
 - Original preface line: "tell me when you're ready to work on my project, here's my project_ovierview.md:" (removed to keep this doc focused on actionable project context).
+
