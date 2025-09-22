@@ -1172,10 +1172,10 @@ const channelsFiltered = useMemo(() => {
               type="button"
               className="btn-ghost"
               aria-pressed={view==='pending'}
-              title={view==='pending' ? 'Show videos' : 'Show pending channels (debug)'}
+              title={view==='pending' ? 'Show videos' : 'Show scraping panel'}
               onClick={() => setView(view==='pending' ? 'videos' : 'pending')}
             >
-              Pending (debug)
+              Scraping
             </button>
             <button
               type="button"
