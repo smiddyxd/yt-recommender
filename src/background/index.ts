@@ -874,6 +874,32 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
+      } else if ((raw as any)?.type === 'backup/wipeAll') {
+        try {
+          // List all files in Drive appDataFolder and delete them
+          const items = await listAppDataFiles({ interactive: true });
+          let ok = 0; let fail = 0;
+          for (const it of items) {
+            try { await deleteAppDataFile(it.id, { interactive: false }); ok++; }
+            catch { fail++; }
+          }
+          // Clear local unsynced queue since history files may be gone
+          try { chrome.storage?.local?.remove?.('drive.unsyncedCommitIds'); } catch {}
+          sendResponse?.({ ok: true, deleted: ok, failed: fail });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/downloadFileRange') {
+        try {
+          const id = String((raw as any)?.payload?.id || '');
+          const start = Math.max(0, Number((raw as any)?.payload?.start || 0));
+          const length = (raw as any)?.payload?.length;
+          if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
+          const { contentB64, nextStart, total, done } = await (await import('./driveBackup')).downloadAppDataFileRangeBase64(id, start, Number.isFinite(length) ? Number(length) : undefined);
+          sendResponse?.({ ok: true, contentB64, nextStart, total, done });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
       } else if ((raw as any)?.type === 'backup/history/list') {
         try {
           const limit = Number((raw as any)?.payload?.limit || 100);

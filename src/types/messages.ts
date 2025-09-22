@@ -67,6 +67,8 @@ export type Msg =
   | { type: 'backup/restoreSettings'; payload: {} }
   | { type: 'backup/listFiles'; payload: {} }
   | { type: 'backup/downloadFile'; payload: { id: string } }
+  | { type: 'backup/downloadFileRange'; payload: { id: string; start: number; length?: number } }
+  | { type: 'backup/wipeAll'; payload: {} }
   | { type: 'backup/history/list'; payload: { limit?: number } }
   | { type: 'backup/history/getCommit'; payload: { commitId: string } }
   | { type: 'backup/history/getUpTo'; payload: { commitId: string } }

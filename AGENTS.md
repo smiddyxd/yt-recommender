@@ -116,7 +116,7 @@
   - Topics: `topics/list`
   - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`
   - Scrape Panel: `scrape/status`, `scrape/stop`, `scrape/resolveIds`, `scrape/subFeed`, `scrape/subscriptionsManager`, `scrape/history`, `scrape/runAll`
-  - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings`, `backup/restoreSettings`, `backup/listFiles`, `backup/downloadFile`
+  - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings`, `backup/restoreSettings`, `backup/listFiles`, `backup/downloadFile`, `backup/downloadFileRange`, `backup/wipeAll`
   - History: `backup/history/list`, `backup/history/getCommit`, `backup/history/getUpTo`, `backup/history/deleteUpTo`, `backup/history/usage`, `backup/history/import`, `backup/history/revertTo`, `backup/history/snapshotNow`
   - Restore & Apply: `backup/restore/dryRun`, `backup/restore/apply`
 - Background -> UI push
@@ -147,6 +147,7 @@
 - Backlog replay: if Drive append fails, commit ids queue in `chrome.storage.local['drive.unsyncedCommitIds']` and are replayed silently; Options header shows "Drive backlog: N" when pending.
 - New history routes: `backup/history/revertTo { commitId, dryRun? }` and `backup/history/snapshotNow { interactive?, name? }`.
 - Manual "Backup settings" flow finalizes pending commits, saves `settings.json`, then triggers backlog replay.
+- Wipe: `backup/wipeAll` deletes all files from Drive appDataFolder after confirmation in UI; intended for full reset. Use "Download All (zip)" first if you want a backup.
 - Import path: `backup/history/import` validates against the current cutoff marker, stitches imported month logs and snapshots, then clears the marker.
 - Importing earlier history also requires matching the Drive cutoff marker before data is merged locally.
 
@@ -169,7 +170,11 @@
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
 - Sidebar: Tag CRUD, Tag Groups CRUD, assign tags to groups; tag pickers grouped by Tag Group.
 - Bulk actions: selection + bulk tagging; delete/restore; wipe duplicate sources.
-- Backup/History: Version History modal lists commits with sizes/weights, shows Drive usage, can download a commit (UTF-8 base64), download a bundle up to a commit (zip, UTF-8 base64 parts), delete up to a commit (commit-bounded). "Revert to here" and "Snapshot now" buttons added. Delete-up-to preflight warns if no baseline snapshot exists before the target commit.
+  - Backup/History: Version History modal lists commits with sizes/weights, shows Drive usage, can download a commit (UTF-8 base64), download a bundle up to a commit (zip, UTF-8 base64 parts), delete up to a commit (commit-bounded). "Revert to here" and "Snapshot now" buttons added. Delete-up-to preflight warns if no baseline snapshot exists before the target commit.
+  - Version History modal header also includes:
+    - "Download All": triggers per-file downloads (OK for small data).
+    - "Download All (folder)": uses chunked ranges (`backup/downloadFileRange`) to write all files to a chosen folder via File System Access API, avoiding OOM for large datasets.
+    - "Wipe All": clears appDataFolder after confirmation.
 - Debug panels: per-video and per-channel raw record inspectors; channels list shows derived `videoTags`, `keywords`, `topics`.
 
 ## Popup Highlights
@@ -270,6 +275,8 @@
 ## Changelog
 - 2025-09-21
   - DB_VERSION bumped to 12. `channels_pending` rows may include `subscribedPending` to record a pending "subscribed" state captured from Subscriptions Manager before a concrete channel id exists. On resolve, background promotes `subscribed=true` on the resolved channel id and clears the pending entry.
+- 2025-09-22
+  - Added `backup/wipeAll`. Version History modal gained "Download All" and chunked "Download All (folder)" (uses new `backup/downloadFileRange`).
 - 2025-09-06
   - Scrape Panel v1 integrated into Pending (debug): Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop. Shows last-run timestamps and supports max limits.
   - Sub Feed/History scrapers merge into existing videos, append sources (`SubscriptionsFeed`/`WatchHistory`), and bump `lastSeenAt`. History marks `flags.started=true`; explicit watch progress still wins.

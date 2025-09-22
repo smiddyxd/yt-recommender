@@ -96,11 +96,12 @@ async function driveFetch(path: string, init: RequestInit & { token: string }) {
 async function findAppDataFileId(name: string, token: string): Promise<string | null> {
   const q = encodeURIComponent(`name='${name.replace(/'/g, "\\'")}' and trashed=false`);
   const resp = await driveFetch(
-    `/drive/v3/files?q=${q}&spaces=appDataFolder&fields=files(id,name)&pageSize=1`,
+    `/drive/v3/files?q=${q}&spaces=appDataFolder&orderBy=modifiedTime%20desc&fields=files(id,name,modifiedTime)&pageSize=10`,
     { method: 'GET', token }
   );
   const json = await resp.json();
-  return json.files?.[0]?.id ?? null;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  return files.length ? String(files[0].id) : null;
 }
 
 async function uploadJSONAppData(name: string, obj: unknown, token: string, fileId?: string) {
@@ -287,6 +288,42 @@ export async function downloadAppDataFileBase64(
   for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
   const contentB64 = btoa(s);
   return { contentB64, name: meta?.name || null, mimeType: meta?.mimeType || null };
+}
+
+// Read a Drive appData file in a byte range and return base64 content.
+// When length is omitted, reads from start to end of file (Drive returns 206 with Content-Range header).
+export async function downloadAppDataFileRangeBase64(
+  id: string,
+  start: number,
+  length?: number,
+  opts?: { interactive?: boolean }
+): Promise<{ contentB64: string; nextStart: number; total?: number | null; done: boolean }> {
+  const token = await getAccessToken(opts?.interactive ?? false);
+  const path = `/drive/v3/files/${encodeURIComponent(id)}?alt=media`;
+  const end = (Number.isFinite(length as number) && (length as number)! > 0) ? (start + (length as number) - 1) : undefined;
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` } as any;
+  headers['Range'] = end != null ? `bytes=${start}-${end}` : `bytes=${start}-`;
+  const resp = await fetch(`https://www.googleapis.com${path}`, { method: 'GET', headers });
+  // Accept 206 (partial content) and 200 (small files if no Range applied by server)
+  if (!(resp.status === 206 || resp.status === 200)) {
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`${resp.status} ${resp.statusText}: ${txt}`);
+  }
+  const buf = await resp.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  const contentB64 = btoa(s);
+  // Parse total size from Content-Range: e.g., "bytes 0-1048575/305678912"
+  const cr = resp.headers.get('Content-Range');
+  let total: number | null = null;
+  if (cr && /\//.test(cr)) {
+    const m = /\/(\d+)$/.exec(cr);
+    if (m) total = Number(m[1]);
+  }
+  const nextStart = start + bytes.length;
+  const done = (total != null) ? (nextStart >= total) : (bytes.length === 0);
+  return { contentB64, nextStart, total, done };
 }
 
 // Upsert arbitrary text file (used for events JSONL). Creates or replaces content.

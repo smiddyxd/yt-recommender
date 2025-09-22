@@ -16,6 +16,91 @@ export default function HistoryModal({ open, onClose }: Props) {
   const [showAllIds, setShowAllIds] = React.useState<Record<string, boolean>>({}); // key: `${commitId}:${idx}`
   const [fullDiffs, setFullDiffs] = React.useState<boolean>(false);
 
+  async function downloadAllSeparate() {
+    try {
+      setLoading(true); setError(null);
+      const filesResp: any = await sendBg('backup/listFiles', {} as any);
+      const list = Array.isArray(filesResp?.items) ? filesResp.items as Array<{ id: string; name: string }> : [];
+      if (!list.length) { alert('No files found in Drive appData.'); return; }
+      for (const f of list) {
+        try {
+          const r: any = await sendBg('backup/downloadFile', { id: f.id } as any);
+          if (!r?.ok || !r?.contentB64) continue;
+          const bytes = b64ToBytes(String(r.contentB64));
+          const blob = new Blob([bytes], { type: r?.mimeType || 'application/octet-stream' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = String(f.name || r?.name || f.id);
+          document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+          // small delay to allow GC between files
+          await new Promise(res => setTimeout(res, 50));
+        } catch {}
+      }
+    } catch (e: any) { alert(`Download all failed: ${e?.message || e}`); }
+    finally {
+      setLoading(false);
+    }
+  }
+
+  async function wipeAll() {
+    try {
+      const c1 = confirm('This deletes ALL files in Google Drive appDataFolder for this app. Download a backup first. Continue?');
+      if (!c1) return;
+      const c2 = confirm('Last warning: irreversible. Delete all now?');
+      if (!c2) return;
+      setLoading(true); setError(null);
+      const r: any = await sendBg('backup/wipeAll', {} as any);
+      if (!r?.ok) { alert(`Wipe failed: ${r?.error || 'unknown'}`); return; }
+      try { const u: any = await sendBg('backup/history/usage', {} as any); if (u?.ok) setUsage({ totalBytes: u.totalBytes | 0, files: u.files | 0 }); } catch {}
+    } catch (e: any) { alert(`Wipe failed: ${e?.message || e}`); }
+    finally { setLoading(false); }
+  }
+
+  // Download all Drive appData files to a chosen folder using chunked ranges to avoid OOM
+  async function downloadAllToFolderChunked() {
+    try {
+      // Ask user for folder
+      const picker: any = (window as any).showDirectoryPicker;
+      if (!picker) { alert('Your browser does not support directory picker.'); return; }
+      const dirHandle: any = await (window as any).showDirectoryPicker({ mode: 'readwrite' } as any);
+      setLoading(true); setError(null);
+      const filesResp: any = await sendBg('backup/listFiles', {} as any);
+      const list = Array.isArray(filesResp?.items) ? filesResp.items as Array<{ id: string; name: string; size?: number | null }> : [];
+      if (!list.length) { alert('No files found in Drive appData.'); return; }
+      const CHUNK = 4 * 1024 * 1024; // 4 MiB
+      for (const f of list) {
+        const name = String(f.name || f.id);
+        let fileHandle: any;
+        try { fileHandle = await dirHandle.getFileHandle(name, { create: true }); } catch { continue; }
+        const writable: any = await fileHandle.createWritable();
+        try {
+          let start = 0;
+          const total = Number(f.size || 0);
+          // Loop until done; if size unknown, rely on done flag
+          while (true) {
+            const r: any = await sendBg('backup/downloadFileRange', { id: (f as any).id, start, length: CHUNK } as any);
+            if (!r?.ok || !r?.contentB64) break;
+            const bytes = b64ToBytes(String(r.contentB64));
+            // position write to avoid buffering entire file
+            await writable.write({ type: 'write', position: start, data: bytes } as any);
+            start = Number(r.nextStart || (start + bytes.length));
+            if (r.done) break;
+          }
+        } finally {
+          try { await writable.close(); } catch {}
+        }
+        // small delay between files to yield UI
+        await new Promise(res => setTimeout(res, 20));
+      }
+      alert('All files downloaded to the chosen folder.');
+    } catch (e: any) {
+      alert(`Folder download failed: ${e?.message || e}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   React.useEffect(() => {
     if (!open) return;
     (async () => {
@@ -141,6 +226,9 @@ export default function HistoryModal({ open, onClose }: Props) {
           <h2 style={{ margin: 0, fontSize: 16 }}>Version History</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input id="history-import" type="file" multiple style={{ display: 'none' }} accept=".json,.jsonl" />
+            <button className="btn-ghost" onClick={downloadAllSeparate} disabled={loading} title="Triggers per-file browser downloads (may fail for very large files)">Download All</button>
+            <button className="btn-ghost" onClick={downloadAllToFolderChunked} disabled={loading} title="Best for large data; writes files directly to a folder using chunks">Download All (folder)</button>
+            <button className="btn-ghost" onClick={wipeAll} disabled={loading}>Wipe All</button>
             <button className="btn-ghost" onClick={async () => {
               const el = document.getElementById('history-import') as HTMLInputElement | null;
               if (!el) return;
