@@ -1,5 +1,4 @@
 import { dlog, derr } from '../types/debug';
-        }
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
 const DB_VERSION = 13;
