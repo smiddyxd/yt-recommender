@@ -1,5 +1,6 @@
 ﻿import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
 import type { Msg } from '../types/messages';
+import { purgeVideosFromTrash, purgeChannelsFromTrash } from './db';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
@@ -479,6 +480,11 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('channels/restore', { ids }, { impact: { channels: ids.length } });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'channels/purge') {
+        const ids: string[] = raw.payload?.ids || [];
+        const n = await purgeChannelsFromTrash(ids);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        sendResponse?.({ ok: true, deleted: n });
       } else if (raw.type === 'channels/markScraped') {
         const { id, at, tab, count, totalVideoCountOnScrapeTime } = raw.payload || {};
         if (!id || !at) { sendResponse?.({ ok: false }); return; }
@@ -527,6 +533,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('videos/restore', { ids }, { impact: { videos: ids.length } });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/purge') {
+        const ids = raw.payload.ids || [];
+        const n = await purgeVideosFromTrash(ids);
+        // No history event; trash-only change
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        sendResponse?.({ ok: true, deleted: n });
       } else if (raw.type === 'videos/wipeSources') {
         await wipeSourcesDuplicates();
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });

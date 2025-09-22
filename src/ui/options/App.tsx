@@ -441,6 +441,26 @@ function startEditFromGroup(g: GroupRec) {
       alert(`Backup failed: ${e?.message || e}`);
     }
   }
+
+  async function purgeSelected() {
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    const confirmMsg = (inChannelsTrash || inTrash)
+      ? `Permanently delete ${ids.length} item(s) from trash? This cannot be undone.`
+      : '';
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    if (inChannelsTrash) {
+      await sendBg('channels/purge', { ids });
+      await loadChannelsDir();
+      clearSelection();
+      return;
+    }
+    if (inTrash) {
+      await sendBg('videos/purge', { ids });
+      clearSelection();
+      await refresh();
+    }
+  }
   function openBackups() { try { console.log('[UI] openBackups'); } catch {} setShowBackups(true); }
   function closeBackups() { setShowBackups(false); }
   function openHistory() { setShowHistory(true); }
@@ -1103,9 +1123,9 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-danger"
-              title={(inTrash || inChannelsTrash) ? 'Delete is disabled in Trash view' : 'Delete selected (moves to Trash)'}
-              onClick={!(inTrash || inChannelsTrash) ? deleteSelected : undefined}
-              disabled={inTrash || inChannelsTrash || selectedCount === 0}
+              title={(inTrash || inChannelsTrash) ? 'Delete selected permanently' : 'Delete selected (moves to Trash)'}
+              onClick={(inTrash || inChannelsTrash) ? purgeSelected : deleteSelected}
+              disabled={selectedCount === 0}
             >
               Delete
             </button>

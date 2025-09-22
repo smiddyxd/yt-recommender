@@ -1211,3 +1211,31 @@ export async function listPendingChannels(): Promise<Array<{ key: string; name?:
     }
   });
 }
+
+// Permanently delete videos from trash
+export async function purgeVideosFromTrash(ids: string[]): Promise<number> {
+  if (!ids?.length) return 0;
+  const db = await openDB();
+  return new Promise<number>((resolve, reject) => {
+    const tx = db.transaction('trash', 'readwrite');
+    const ts = tx.objectStore('trash');
+    let n = 0;
+    for (const id of ids) { try { ts.delete(id); n++; } catch {} }
+    tx.oncomplete = () => resolve(n);
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Permanently delete channels from trash
+export async function purgeChannelsFromTrash(ids: string[]): Promise<number> {
+  if (!ids?.length) return 0;
+  const db = await openDB();
+  return new Promise<number>((resolve, reject) => {
+    const tx = db.transaction('channels_trash', 'readwrite');
+    const ts = tx.objectStore('channels_trash');
+    let n = 0;
+    for (const id of ids) { try { ts.delete(id); n++; } catch {} }
+    tx.oncomplete = () => resolve(n);
+    tx.onerror = () => reject(tx.error);
+  });
+}

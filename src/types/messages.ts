@@ -24,6 +24,7 @@ export type Msg =
   | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
   | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
   | { type: 'videos/stubsCount'; payload: {} }
+  | { type: 'videos/purge'; payload: { ids: string[] } }
   | { type: 'channels/list'; payload: {} }
   | { type: 'channels/trashList'; payload: {} }
   | { type: 'channels/refreshUnfetched'; payload: {} }
@@ -34,6 +35,7 @@ export type Msg =
   | { type: 'channels/resolvePending'; payload: { id: string; name?: string | null; handle?: string | null } }
   | { type: 'channels/delete'; payload: { ids: string[] } }
   | { type: 'channels/restore'; payload: { ids: string[] } }
+  | { type: 'channels/purge'; payload: { ids: string[] } }
   | { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
