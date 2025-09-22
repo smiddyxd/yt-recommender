@@ -1,4 +1,25 @@
-﻿import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
+import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
+
+function getChannelHandleNow(): string | null {
+  try {
+    const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/@"]') as HTMLAnchorElement | null;
+    if (a?.pathname && a.pathname.startsWith('/@')) return a.pathname.slice(1);
+  } catch {}
+  try {
+    const span = document.querySelector('yt-content-metadata-view-model span.yt-core-attributed-string--link-inherit-color');
+    const txt = (span as HTMLElement | null)?.textContent || '';
+    const m = /@\w[\w._-]*/i.exec(txt);
+    if (m) return m[0];
+  } catch {}
+  try {
+    const any = document.querySelector('a[href^="/@"]') as HTMLAnchorElement | null;
+    if (any?.pathname && any.pathname.startsWith('/@')) return any.pathname.slice(1);
+  } catch {}
+  return null;
+}
+
+try { setupAutoScrapeTicker(); } catch {}
+// Initial setup
 import { onNavigate } from './yt-navigation';
 import { parseVideoIdFromHref } from '../types/util';
 import { scrapeWatchStub } from './yt-watch-stub';
@@ -21,12 +42,61 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
       (async () => {
         try {
           const info = await scrapeNowDetailedAsync();
+          // Also upsert channels present on Watch History tiles for better coverage
+          try {
+            const path = location.pathname || '';
+            if (path.startsWith('/feed/history')) {
+              const anchors = Array.from(document.querySelectorAll(
+                'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]'
+              )) as HTMLAnchorElement[];
+              const seenChan = new Set<string>();
+              for (const a of anchors) {
+                const root = tileRoot(a);
+                const c = extractChannelIdFromTile(root);
+                const chanId = (c.channelId || '').trim();
+                const handle = (c.handle || '').trim();
+                const name = (c.name || '').trim();
+                if (!chanId && !handle && !name) continue;
+                const key = chanId ? `id:${chanId}` : (handle ? `handle:${handle.startsWith('@') ? handle : ('@'+handle)}` : `name:${name}`);
+                if (seenChan.has(key)) continue; seenChan.add(key);
+                try {
+                  if (chanId) {
+                    chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: chanId, name: name || null, handle: handle || null } });
+                  } else {
+                    const handleKey = handle ? (handle.startsWith('@') ? handle : ('@' + handle)) : null;
+                    const pendKey = handleKey ? `handle:${handleKey}` : (name ? `name:${name}` : null);
+                    if (pendKey && !pendingKeysSubmitted.has(pendKey)) {
+                      pendingKeysSubmitted.add(pendKey);
+                      chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key: pendKey, name: name || null, handle: handleKey || null } });
+                    }
+                  }
+                } catch {}
+              }
+            }
+          } catch {}
           sendResponse?.({ ok: true, ...info });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       })();
       return true; // keep channel open for async
+    } else if (msg?.type === 'channel/RESOLVE_ID_NOW') {
+      (async () => {
+        try {
+          const handle = getChannelHandleNow() || (location.pathname.startsWith('/@') ? location.pathname.slice(1) : null);
+          const result = await resolveChannelIdWithRetries(20, 250); // up to ~5s
+          if (result.id) {
+            try { dlog('[content] manual resolve channel id', { id: result.id, handle, from: result.from }); } catch {}
+            try { chrome.runtime.sendMessage({ type: 'channels/resolvePending', payload: { id: result.id, handle } }); } catch {}
+            sendResponse?.({ ok: true, id: result.id, from: result.from });
+          } else {
+            sendResponse?.({ ok: false, error: 'Not found', fromTried: result.from });
+          }
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      })();
+      return true;
     } else if (msg?.type === 'scrape/SCROLL') {
       // Simple incremental scroll; options: { times?: number, delayMs?: number }
       (async () => {
@@ -169,6 +239,46 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   return false;
 });
 
+function getChannelIdNow(): { id: string | null; from: string[] } {
+  const from: string[] = [];
+  // canonical link
+  try {
+    const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
+    if (link?.href) {
+      const u = new URL(link.href);
+      const seg = u.pathname.split('/');
+      if (seg[1] === 'channel' && seg[2]) { from.push('canonical'); return { id: seg[2], from }; }
+    }
+  } catch {}
+  // data-channel-external-id
+  try {
+    const el = document.querySelector('[data-channel-external-id]') as HTMLElement | null;
+    const val = el?.getAttribute('data-channel-external-id');
+    if (val) { from.push('external-id'); return { id: val, from }; }
+  } catch {}
+  // header link
+  try {
+    const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/channel/"]') as HTMLAnchorElement | null
+           || document.querySelector('a[href^="/channel/"]') as HTMLAnchorElement | null;
+    if (a?.href) {
+      const u = new URL(a.href, location.origin);
+      const seg = u.pathname.split('/');
+      if (seg[1] === 'channel' && seg[2]) { from.push('header-link'); return { id: seg[2], from }; }
+    }
+  } catch {}
+  return { id: null, from };
+}
+
+async function resolveChannelIdWithRetries(maxTries: number, delayMs: number): Promise<{ id: string | null; from: string[] }> {
+  for (let i = 0; i < maxTries; i++) {
+    const { id, from } = getChannelIdNow();
+    try { dlog('[content] resolve try', { n: i + 1, found: !!id, from }); } catch {}
+    if (id) return { id, from };
+    await new Promise(res => setTimeout(res, delayMs));
+  }
+  return { id: null, from: [] };
+}
+
 // Setting: auto-stub on watch pages
 let autoStubOnWatch = false;
 try {
@@ -205,16 +315,63 @@ try {
       // Stop tracker when leaving watch pages
       try { stopWatchProgressTracking(); } catch {}
     }
-    // On channel pages, resolve pending channel handle/name to id
-    if (ctx.page === 'channel' && ctx.channelId) {
-      try {
-        let handle: string | null = null;
+    // On channel pages, resolve pending channel handle/name to id (with retries for SPA renders)
+    if (ctx.page === 'channel') {
+      const getIdNow = (): { id: string | null; from: string[] } => {
+        const from: string[] = [];
+        // Prefer canonical link
         try {
-          if (location.pathname.startsWith('/@')) handle = location.pathname.slice(1);
+          const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
+          if (link?.href) {
+            const u = new URL(link.href);
+            const seg = u.pathname.split('/');
+            if (seg[1] === 'channel' && seg[2]) { from.push('canonical'); return { id: seg[2], from }; }
+          }
         } catch {}
-        dlog('[content] resolvePending channel', { id: ctx.channelId, handle });
-        chrome.runtime.sendMessage({ type: 'channels/resolvePending', payload: { id: ctx.channelId, handle } });
-      } catch {}
+        // data-channel-external-id
+        try {
+          const el = document.querySelector('[data-channel-external-id]') as HTMLElement | null;
+          const val = el?.getAttribute('data-channel-external-id');
+          if (val) { from.push('external-id'); return { id: val, from }; }
+        } catch {}
+        // Header link
+        try {
+          const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/channel/"]') as HTMLAnchorElement | null
+                 || document.querySelector('a[href^="/channel/"]') as HTMLAnchorElement | null;
+          if (a?.href) {
+            const u = new URL(a.href, location.origin);
+            const seg = u.pathname.split('/');
+            if (seg[1] === 'channel' && seg[2]) { from.push('header-link'); return { id: seg[2], from }; }
+          }
+        } catch {}
+        return { id: null, from };
+      };
+      const handle = getChannelHandleNow() || (location.pathname.startsWith('/@') ? location.pathname.slice(1) : null);
+      const initial = ctx.channelId || getIdNow().id;
+      if (initial) {
+        try {
+          dlog('[content] resolvePending channel', { id: initial, handle, mode: 'initial' });
+          chrome.runtime.sendMessage({ type: 'channels/resolvePending', payload: { id: initial, handle } });
+        } catch {}
+      } else if (handle) {
+        // Poll for a short period to allow SPA to render canonical/attrs
+        let tries = 0; const max = 30; const delay = 300; // ~9s max
+        try { dlog('[content] resolvePending channel', { handle, mode: 'start-poll', max, delay }); } catch {}
+        const timer = setInterval(() => {
+          try {
+            const { id, from } = getIdNow();
+            try { dlog('[content] resolvePending channel try', { n: tries + 1, from, found: !!id }); } catch {}
+            if (id) {
+              try { dlog('[content] resolvePending channel (delayed)', { id, handle, from }); } catch {}
+              try { chrome.runtime.sendMessage({ type: 'channels/resolvePending', payload: { id, handle } }); } catch {}
+              clearInterval(timer);
+            } else if (++tries >= max) {
+              try { dlog('[content] resolvePending channel timeout', { handle }); } catch {}
+              clearInterval(timer);
+            }
+          } catch { clearInterval(timer); }
+        }, delay);
+      }
     }
     // Start or stop auto-scrape ticker based on page
     try { setupAutoScrapeTicker(); } catch (e) { dwarn('ticker error', e); }

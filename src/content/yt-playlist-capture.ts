@@ -101,6 +101,7 @@ export function detectPageContext() {
     }
     return out;
   }
+  // (Reverted) no generic vanity path detection here
   return out;
 }
 

@@ -1,4 +1,4 @@
-﻿import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet } from './db';
 import type { Msg } from '../types/messages';
 import { purgeVideosFromTrash, purgeChannelsFromTrash } from './db';
 import { dlog, derr } from '../types/debug';
@@ -353,7 +353,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if ((raw as any)?.type === 'channels/upsertStub') {
-        const { id, name, handle } = (raw as any).payload || {};
+        const { id, name, handle, altHandle } = (raw as any).payload || {};
         if (!id) { sendResponse?.({ ok: false }); return; }
         try {
           await upsertChannelStub(id, name, handle);
@@ -503,9 +503,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         if (changed) recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handle ?? null }, { impact: {} });
         sendResponse?.({ ok: true, changed: !!changed });
       } else if ((raw as any)?.type === 'channels/resolvePending') {
-        const { id, name, handle } = (raw as any).payload || {};
-        await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null });
-        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        const { id, name, handle, altHandle } = (raw as any).payload || {};
+        await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null, altHandle: altHandle ?? null });
         recordEvent('pending/resolve', { id: String(id || ''), name: name ?? null, handle: handle ?? null }, { impact: { channels: 1 } });
         // If this came from a tab we opened to resolve, close it
         try {
@@ -747,18 +746,18 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           let opened = 0;
           for (const h of handles) {
             if (opened >= limit) break;
-            const url = `https://www.youtube.com/${h}`;
+            const url = `https://www.youtube.com/${h}/about`;
             const tab = await chrome.tabs?.create?.({ url, active: false });
             const tabId = tab?.id;
             if (typeof tabId === 'number') {
               autoResolveTabIds.add(tabId);
               opened++;
-              // Safety: auto-close after 25s if unresolved
+              // Safety: auto-close after 45s if unresolved
               setTimeout(() => {
                 try {
                   if (autoResolveTabIds.has(tabId)) { autoResolveTabIds.delete(tabId); chrome.tabs?.remove?.(tabId); }
                 } catch {}
-              }, 25000);
+              }, 45000);
             }
           }
           sendResponse?.({ ok: true, opened, remaining: Math.max(0, handles.length - opened) });
@@ -1544,7 +1543,7 @@ function bestThumb(thumbs: any): string | null {
     return (thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null) as (string | null);
   } catch { return null; }
 }
-function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + 'â€¦' : (s || ''); }
+function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + 'Ã¢â‚¬Â¦' : (s || ''); }
 
 async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');

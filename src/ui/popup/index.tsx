@@ -92,7 +92,7 @@ function TagChips(props: { labels: string[]; onRemove?: (name: string)=>void }) 
       {labels.map(t => (
         <span key={t} className="chip">
           <span>{t}</span>
-          {props.onRemove && <span className="x" title="Remove" onClick={() => props.onRemove?.(t)}>âœ•</span>}
+          {props.onRemove && <span className="x" title="Remove" onClick={() => props.onRemove?.(t)}>×</span>}
         </span>
       ))}
     </div>
@@ -103,7 +103,7 @@ function AddTagSelect(props: { all: string[]; onAdd: (name: string)=>void; disab
   const [val, setVal] = useState('');
   return (
     <select value={val} disabled={props.disabled} onChange={(e) => { const v = e.currentTarget.value; setVal(''); if (v) props.onAdd(v); }}>
-      <option value="">Add tagâ€¦</option>
+      <option value="">Add tag…</option>
       {props.all.map(n => <option key={n} value={n}>{n}</option>)}
     </select>
   );
@@ -117,6 +117,8 @@ function PopupApp() {
   const channel = useRowRefresh<any>('channels', ctx.channelId || null);
   const [scrapeCount, setScrapeCount] = useState<number | null>(null);
   const [autoStubOnWatch, setAutoStubOnWatch] = useState<boolean>(false);
+  const [resolveMsg, setResolveMsg] = useState<string | null>(null);
+  const [origHandle, setOrigHandle] = useState<string>('');
 
   const byGroup = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -201,6 +203,28 @@ function PopupApp() {
     try { chrome.storage?.local?.set({ autoStubOnWatch: next }); } catch {}
   };
 
+  async function scrapeChannelIdNow() {
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const t = tabs?.[0];
+      if (!t?.id) { setResolveMsg("No active tab"); return; }
+      chrome.tabs.sendMessage(t.id, { type: "channel/RESOLVE_ID_NOW", payload: {} }, async (resp: any) => {
+        const err = chrome.runtime.lastError;
+        if (err) { setResolveMsg("Content not available"); return; }
+        if (resp?.ok) {
+          setResolveMsg(`Found: ${resp.id}`);
+          try {
+            const alt = (origHandle || "").trim();
+            const altNorm = alt ? (alt.startsWith("@") ? alt : ("@" + alt)) : null;
+            await sendBg("channels/resolvePending", { id: String(resp.id), handle: (resp.handle || null), altHandle: altNorm } as any);
+          } catch {}
+        } else setResolveMsg(resp?.error || "Not found");
+        setTimeout(()=> setResolveMsg(null), 3000);
+      });
+    } catch (e: any) {
+      setResolveMsg(e?.message || String(e));
+    }
+  }
   return (
     <div className="wrap">
       <h1>YT Manager</h1>
@@ -217,7 +241,11 @@ function PopupApp() {
       <div className="row" style={{ marginTop: 6 }}>
         <span className="meta">{ctx.page === 'watch' ? `watch: ${ctx.videoId}` : ctx.page === 'channel' ? `channel: ${ctx.channelId || 'unknown'}` : 'Not on YouTube'}</span>
       </div>
-
+      <div className="row" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button onClick={scrapeChannelIdNow}>Scrape channel id</button>
+        <input type="text" className="side-input" placeholder="Original handle (from Pending)" value={origHandle} onChange={(e)=> setOrigHandle(e.currentTarget.value)} style={{ width: 240 }} />
+        {resolveMsg && <span className="meta">{resolveMsg}</span>}
+      </div>
       {ctx.videoId && (
         <div className="section">
           <h2>Video Tags</h2>
@@ -239,7 +267,6 @@ function PopupApp() {
           </div>
         </div>
       )}
-
       {ctx.channelId && (
         <div className="section">
           <h2>Channel Tags</h2>

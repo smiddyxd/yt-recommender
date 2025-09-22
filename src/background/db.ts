@@ -1,7 +1,8 @@
 import { dlog, derr } from '../types/debug';
+        }
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 12;
+const DB_VERSION = 13;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -216,7 +217,7 @@ export async function applyTags(ids: string[], addIds: string[] = [], removeIds:
               vs.put(row);
               return res();
             }
-            // Not in 'videos' — try 'trash'
+            // Not in 'videos' â€” try 'trash'
             const g2 = ts.get(id);
             g2.onsuccess = () => {
               const trow = g2.result;
@@ -1146,7 +1147,7 @@ export async function upsertPendingChannel(key: string, data: { name?: string | 
   });
 }
 
-export async function resolvePendingChannel(channelId: string, hint?: { handle?: string | null; name?: string | null }) {
+export async function resolvePendingChannel(channelId: string, hint?: { handle?: string | null; name?: string | null; altHandle?: string | null }) {
   const id = (channelId || '').trim(); if (!id) return;
   const db = await openDB();
   // Upsert channel stub with resolved id
@@ -1161,8 +1162,7 @@ export async function resolvePendingChannel(channelId: string, hint?: { handle?:
       const c = cur.result as IDBCursorWithValue | null;
       if (!c) { resolve(); return; }
       const row: any = c.value;
-      const matches = (hint?.handle && row?.handle && String(row.handle).toLowerCase() === String(hint!.handle).toLowerCase()) ||
-                      (hint?.name && row?.name && String(row.name).toLowerCase() === String(hint!.name).toLowerCase());
+      const matches = (hint?.handle && row?.handle && String(row.handle).toLowerCase() === String(hint!.handle).toLowerCase()) || (hint?.altHandle && row?.handle && String(row.handle).toLowerCase() === String(hint!.altHandle).toLowerCase()) || (hint?.name && row?.name && String(row.name).toLowerCase() === String(hint!.name).toLowerCase());
       if (matches) {
         if (row?.subscribedPending) hadPendingSubscribed = true;
         c.delete();
@@ -1172,7 +1172,7 @@ export async function resolvePendingChannel(channelId: string, hint?: { handle?:
     cur.onerror = () => reject(cur.error);
   });
   // If any matching pending entry indicated subscribedPending, mark the channel subscribed now
-  if (hadPendingSubscribed) {
+  if (hadPendingSubscribed || (hint?.altHandle)) {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction('channels', 'readwrite');
       const os = tx.objectStore('channels');
@@ -1181,6 +1181,13 @@ export async function resolvePendingChannel(channelId: string, hint?: { handle?:
         const prev = (g.result as any) || { id };
         (prev as any).subscribed = true;
         (prev as any).unsubscribed = false;
+        if (hint?.altHandle) {
+          const alt = String(hint.altHandle);
+          const norm = alt.startsWith("@") ? alt : ("@" + alt);
+          const arr = Array.isArray((prev as any).altHandles) ? ((prev as any).altHandles as string[]) : [];
+          if (!arr.find(x => String(x).toLowerCase() === norm.toLowerCase())) arr.push(norm);
+          (prev as any).altHandles = arr;
+        }
         os.put(prev);
         resolve();
       };
@@ -1239,3 +1246,4 @@ export async function purgeChannelsFromTrash(ids: string[]): Promise<number> {
     tx.onerror = () => reject(tx.error);
   });
 }
+
