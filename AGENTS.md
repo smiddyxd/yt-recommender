@@ -69,12 +69,19 @@
 5) On mutations, background records lightweight events -> commits; appends to `events-YYYY-MM.jsonl` in Drive and occasionally saves snapshots.
 
 ## Auto-Scrape & Presets
+- Passive scraping runs on Home (`/`), Sub Feed (`/feed/subscriptions`), and Watch pages (side suggestions) — disabled on channel and playlist pages.
+- Frequency: every ~2s; if the preset‑accepted result signature is unchanged 3 consecutive ticks, slow to every ~4s; if unchanged 3 more ticks at 4s, pause until user scrolls down past a page‑specific threshold: Home ≥50%, Sub Feed ≥80%, Watch ≥40% (reactivates at 4s).
+- Still gated by presets marked `scrape: true`; only checkable predicates are evaluated in‑page.
+- The current watch video is always upserted regardless of presets; side tiles are gated by presets.
 ## Scrape Panel (Sub Feed / Watch History)
 - Stop condition: background stops when content-reported cumulative DOM-unique IDs reach the configured max.
 - Batching: content sends seeds via `cache/VIDEO_SEEN_BATCH` (chunked) and background bulk-writes (`upsertVideosBulk`).
 - Stall detection: if DOM-unique does not increase across two iterations, background triggers `scrape/SCROLL_BOTTOM` to force a bottom scroll and nudge loaders.
 - Finalization: background waits until pending upserts are flushed and upserts >= last DOM cumulative, logs a final summary, then closes the tab.
 - Per-iteration page-console logs include anchors/withId/uniqueIds/noRoot/noId/seen(upserts)/pending(upserts)/cumulative(dom)/max/stall.
+
+- Sub Feed gating: Sub Feed scraping respects only presets with `scrape` enabled; content evaluates checkable predicates and only submits accepted tiles.
+- Sub Feed channels: for accepted Sub Feed tiles, content upserts channel stubs (`channels/upsertStub`) when an id is present, or pending entries (`channels/upsertPending`) when only a handle/name is available (per-page de‑duped).
 
 - Auto-scrape runs every ~2s only if user was active within the last 10s. Disabled on channel pages and all playlist pages.
 - Current watch page is always captured; other tiles are captured only if accepted by at least one enabled "Preset".
@@ -285,6 +292,7 @@
   - History: added dedup-on-append guard to monthly JSONL (skip appending a commit if the same `commitId` already exists).
   - Drive: implemented `backup/downloadFileRange` for chunked downloads (used by "Download All (folder)").
   - Wipe All: fixed route implementation; now deletes Drive appData files and clears local IndexedDB.
+  - Scrape: Sub Feed now respects enabled scrape presets (content-side gating) and upserts channel stubs/pending for accepted tiles.
 - 2025-09-21
   - DB_VERSION bumped to 12. `channels_pending` rows may include `subscribedPending` to record a pending "subscribed" state captured from Subscriptions Manager before a concrete channel id exists. On resolve, background promotes `subscribed=true` on the resolved channel id and clears the pending entry.
 - 2025-09-22

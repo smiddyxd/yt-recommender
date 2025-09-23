@@ -31,6 +31,13 @@ import { dlog, dwarn } from '../types/debug';
 // Only act when background asks us to scrape
 // ---- Globals used by message handlers (declared early) ----
 let ticker: number | null = null;
+let tickerTimeout: number | null = null;
+type AutoSpeed = 'fast' | 'slow';
+let autoSpeed: AutoSpeed = 'fast';
+let lastSignature: string | null = null;
+let sameSignatureCount = 0;
+let autoDisabled = false;
+let lastScrollY = 0;
 let scrapeGroups: GroupRec[] = [];
 let lastActivityAt = Date.now();
 let domUniqueWhat: 'SubscriptionsFeed' | 'WatchHistory' | string | null = null;
@@ -41,10 +48,63 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
     if (msg?.type === 'scrape/NOW') {
       (async () => {
         try {
+          const path = location.pathname || '';
+          // Subscriptions Feed: gate by enabled scrape presets and upsert missing channels
+          if (path === '/feed/subscriptions') {
+            await refreshScrapeGroups();
+            const anchors = Array.from(document.querySelectorAll('ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
+            if (anchors.length === 0) { sendResponse?.({ ok: true, count: 0, page: 'other' }); return; }
+            const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));
+            const seeds: Array<{ id: string; sources: Array<{ type: string; id?: string | null }> }> = [];
+            const seenIds = new Set<string>();
+            const seenChan = new Set<string>();
+            for (const a of anchors) {
+              const cand = candidateFromAnchor(a);
+              if (!cand) continue;
+              const ok = scrapeGroups.length > 0 && scrapeGroups.some(g => evalPresetOnCandidate(cand, g.condition, groupsById));
+              if (!ok) continue;
+              if (!seenIds.has(cand.id)) {
+                seenIds.add(cand.id);
+                seeds.push({ id: cand.id, sources: Array.isArray(cand.sources) ? cand.sources : [] });
+              }
+              // Upsert channel stub/pending for accepted tiles
+              try {
+                const chanId = (cand.channelId || '').trim();
+                const handle = (cand.handle || '').trim();
+                const name = (cand.channelName || '').trim();
+                if (chanId || handle || name) {
+                  const key = chanId ? `id:${chanId}` : (handle ? `handle:${handle.startsWith('@') ? handle : ('@' + handle)}` : `name:${name}`);
+                  if (!seenChan.has(key)) {
+                    seenChan.add(key);
+                    if (chanId) {
+                      chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: chanId, name: name || null, handle: handle || null } });
+                    } else {
+                      const handleKey = handle ? (handle.startsWith('@') ? handle : ('@' + handle)) : null;
+                      const pendKey = handleKey ? `handle:${handleKey}` : (name ? `name:${name}` : null);
+                      if (pendKey && !pendingKeysSubmitted.has(pendKey)) {
+                        pendingKeysSubmitted.add(pendKey);
+                        chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key: pendKey, name: name || null, handle: handleKey || null } });
+                      }
+                    }
+                  }
+                }
+              } catch {}
+            }
+            // Batch submit accepted seeds (background will append SubscriptionsFeed source override)
+            if (seeds.length) {
+              for (let i = 0; i < seeds.length; i += 50) {
+                const batch = seeds.slice(i, i + 50);
+                try { chrome.runtime.sendMessage({ type: 'cache/VIDEO_SEEN_BATCH', payload: { items: batch } } as any, () => void 0); } catch {}
+                await new Promise(res => setTimeout(res, 120));
+              }
+            }
+            sendResponse?.({ ok: true, count: seeds.length, page: 'other' });
+            return;
+          }
+
           const info = await scrapeNowDetailedAsync();
           // Also upsert channels present on Watch History tiles for better coverage
           try {
-            const path = location.pathname || '';
             if (path.startsWith('/feed/history')) {
               const anchors = Array.from(document.querySelectorAll(
                 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]'
@@ -410,6 +470,13 @@ async function refreshScrapeGroups() {
 function setupAutoScrapeTicker() {
   // stop existing
   if (ticker != null) { clearInterval(ticker as any); ticker = null; }
+  if (tickerTimeout != null) { clearTimeout(tickerTimeout as any); tickerTimeout = null; }
+  // Reset state
+  autoSpeed = 'fast';
+  lastSignature = null;
+  sameSignatureCount = 0;
+  autoDisabled = false;
+  lastScrollY = window.scrollY || 0;
   // Exclusions: do NOT auto-scan on channel pages or any playlist pages
   try {
     const ctx = detectPageContext();
@@ -420,15 +487,43 @@ function setupAutoScrapeTicker() {
       return;
     }
   } catch { /* ignore */ }
-  // Start ticker
+  // Start scheduler
   void refreshScrapeGroups();
-  ticker = setInterval(() => { void autoScanOnce(); }, 2000) as any; // run every 2s
-  dlog('[content] auto-scrape ticker started');
+  scheduleNextAutoScan(2000);
+  dlog('[content] auto-scrape scheduler started');
   // listen for group changes
   try {
     const h = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'groups') void refreshScrapeGroups(); };
     chrome.runtime.onMessage.addListener(h);
   } catch {}
+}
+
+function scheduleNextAutoScan(ms: number) {
+  if (tickerTimeout != null) { clearTimeout(tickerTimeout as any); }
+  tickerTimeout = setTimeout(async () => {
+    try {
+      if (!autoDisabled) {
+        const res = await autoScanOnce();
+        const sig = res?.signature || '';
+        if (lastSignature != null && sig === lastSignature) {
+          sameSignatureCount += 1;
+        } else {
+          sameSignatureCount = 0;
+        }
+        lastSignature = sig;
+        if (autoSpeed === 'fast' && sameSignatureCount >= 3) {
+          autoSpeed = 'slow';
+          sameSignatureCount = 0;
+        } else if (autoSpeed === 'slow' && sameSignatureCount >= 3) {
+          autoDisabled = true; // disable until scroll progress threshold
+          dlog('[content] auto-scrape disabled due to repeated identical results');
+        }
+      }
+    } catch {}
+    if (!autoDisabled) {
+      scheduleNextAutoScan(autoSpeed === 'fast' ? 2000 : 4000);
+    }
+  }, Math.max(250, ms)) as any;
 }
 
 function tileRoot(a: HTMLAnchorElement): HTMLElement | null {
@@ -685,17 +780,17 @@ function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string,
   return evalCond(cond as any);
 }
 
-async function autoScanOnce() {
-  if (scrapeGroups.length === 0) return; // nothing enabled
+async function autoScanOnce(): Promise<{ signature: string; accepted: number }> {
+  if (scrapeGroups.length === 0) return { signature: '', accepted: 0 }; // nothing enabled
   // Idle gating: only scrape within 10s of last user interaction
   const idleMs = Date.now() - lastActivityAt;
-  if (idleMs > 10_000) { dlog('[content] idle, skipping scan', idleMs); return; }
+  if (idleMs > 10_000) { dlog('[content] idle, skipping scan', idleMs); return { signature: '', accepted: 0 }; }
   const ctx = detectPageContext();
   // Exclude channel pages and all playlist pages
   try {
     const onChannel = ctx?.page === 'channel';
     const onPlaylist = !!getPlaylistIdFromURL();
-    if (onChannel || onPlaylist) return;
+    if (onChannel || onPlaylist) return { signature: '', accepted: 0 };
   } catch { /* ignore */ }
   const currentWatchId: string | null = ctx.page === 'watch' ? (ctx as any).videoId || null : null;
   // Always ensure current watch video is scraped as well (regardless of presets)
@@ -710,7 +805,7 @@ async function autoScanOnce() {
     'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
   )) as HTMLAnchorElement[]; // exclude generic /shorts links from auto-scan
   dlog('[content] scan anchors', anchors.length);
-  if (anchors.length === 0) return;
+  if (anchors.length === 0) return { signature: '', accepted: 0 };
   const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));
   const accepted: Cand[] = [];
   for (const a of anchors) {
@@ -749,7 +844,47 @@ async function autoScanOnce() {
     }
     dlog('[content] scraped accepted', seen.size);
   }
+  // Build signature from accepted ids (sorted, capped)
+  const sigIds = Array.from(new Set(accepted.map(c => c.id))).slice(0, 200).sort();
+  const signature = sigIds.join('|');
+  return { signature, accepted: sigIds.length };
 }
 
-// Initial setup
-try { setupAutoScrapeTicker(); } catch {}
+// Reactivate auto-scrape on scroll based on page-specific thresholds when disabled
+function getPageReactivateThresholdPct(): number {
+  try {
+    const path = location.pathname || '';
+    if (path === '/feed/subscriptions') return 0.80; // Sub Feed: 80%
+    if (path === '/' || path === '/feed/what_to_watch') return 0.50; // Home: 50%
+    const ctx = detectPageContext();
+    if (ctx?.page === 'watch') return 0.40; // Watch page: 40%
+  } catch {}
+  return 0.60; // default for other pages
+}
+function getScrollProgress(): number {
+  try {
+    const doc = document.documentElement;
+    const max = Math.max(1, (doc.scrollHeight || 0) - (window.innerHeight || 0));
+    const y = Math.max(0, window.scrollY || window.pageYOffset || 0);
+    return Math.max(0, Math.min(1, y / max));
+  } catch { return 0; }
+}
+try {
+  window.addEventListener('scroll', () => {
+    try { markActive(); } catch {}
+    const y = window.scrollY || 0;
+    const goingDown = y > lastScrollY;
+    lastScrollY = y;
+    if (autoDisabled && goingDown) {
+      const pct = getScrollProgress();
+      const need = getPageReactivateThresholdPct();
+      if (pct >= need) {
+        dlog('[content] auto-scrape reactivated at', Math.round(pct * 100), '%');
+        autoDisabled = false;
+        autoSpeed = 'slow';
+        sameSignatureCount = 0;
+        scheduleNextAutoScan(4000);
+      }
+    }
+  }, { passive: true });
+} catch {}

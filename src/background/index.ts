@@ -216,16 +216,51 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   if (typeof tabId !== 'number') return { count: 0, stopped: true };
   currentScrape = { id: Math.floor(Math.random()*1e9), mode: override === 'WatchHistory' ? 'history' : 'subFeed', tabIds: new Set([tabId]), sourceOverride: override, limit: max, seen: new Set<string>(), stopOnKnown: !!opts?.stopOnKnown, stopRequested: false };
   await sleep(1200);
+  let lastCum = 0;
+  let stall = 0;
   try {
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       if (!currentScrape || currentScrape.stopRequested) break;
-      if ((currentScrape.seen.size || 0) >= max) break;
+      // Trigger a scrape pass
       await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/NOW', payload: {} }, () => resolve(undefined)); } catch { resolve(undefined); } });
       await sleep(350);
-      if ((currentScrape.seen.size || 0) >= max) break;
-      if (i % 3 === 2) { try { await new Promise((resolve)=> chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 1, delayMs: 500 } }, () => resolve(undefined))); } catch {} }
+      // Ask content for DOM-unique stats (total, regardless of preset gating)
+      let cum = lastCum;
+      try {
+        const resp: any = await new Promise((resolve) => {
+          try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LOG', payload: { what: override, seen: currentScrape?.seen?.size || 0, max, stall, pending: pendingUpserts } }, (r: any) => resolve(r)); } catch { resolve(null); }
+        });
+        const dom = resp?.dom || {};
+        const v = Number(dom?.cumulativeUnique || 0);
+        if (Number.isFinite(v) && v >= 0) cum = v;
+      } catch {}
+      // Stop if DOM-unique count reached the limit
+      if (cum >= max) { lastCum = cum; break; }
+      // Stall detection: if cumulative did not grow, increment stall and nudge loader
+      if (cum <= lastCum) {
+        stall += 1;
+        if (stall >= 2) {
+          try { await new Promise((resolve)=> chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 1, delayMs: 500 } }, () => resolve(undefined))); } catch {}
+          stall = 0;
+        }
+      } else {
+        stall = 0;
+      }
+      lastCum = Math.max(lastCum, cum);
+      // Safety net: also exit if upserts greatly exceed max (shouldn't happen)
+      if ((currentScrape?.seen?.size || 0) >= max * 2) break;
     }
   } catch {}
+  // Final highlight/logging and wait for upserts to flush (best-effort)
+  try { await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/FINAL', payload: { what: override, ids: Array.from(currentScrape?.seen || []), max } }, () => resolve(undefined)); } catch { resolve(undefined); } }); } catch {}
+  // Wait until pending upserts drain or seen >= lastCum (whichever first), with timeout
+  const waitStart = Date.now();
+  for (;;) {
+    if (!currentScrape) break;
+    const done = (pendingUpserts <= 0) || ((currentScrape.seen.size || 0) >= lastCum) || (Date.now() - waitStart > 4000);
+    if (done) break;
+    await sleep(120);
+  }
   const count = currentScrape ? currentScrape.seen.size : 0;
   const stopped = !!currentScrape?.stopRequested;
   if (!(opts?.keepOpen)) { try { chrome.tabs?.remove?.(tabId); } catch {} }
