@@ -14,7 +14,7 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-22
+**Verified As Of:** 2025-09-23
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -38,7 +38,7 @@
 
 ### Background
 - `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes). Scrape loop stops based on DOM-unique counts reported by content, supports batching, stall detection, and wait-until-flushed finalization.
-- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 12`.
+- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 13`.
 - `src/background/driveBackup.ts`: Google Drive appData auth + read/write (JSON, JSONL, snapshots). Plaintext storage only; pass `{ interactive: true }` when user prompts are needed.
 - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
@@ -82,7 +82,7 @@
 - Tiles with just a handle/name may upsert to `channels_pending` (gated by accepted presets, per-page de-duped). Channel pages resolve pending entries to real ids automatically; Options exposes a debug panel to open background tabs and auto-resolve handles in batches.
 
 ## Storage Model (IndexedDB)
-- DB: `yt-recommender`, `DB_VERSION = 12`.
+- DB: `yt-recommender`, `DB_VERSION = 13`.
 - Stores and key fields
   - `videos` (keyPath: `id`) - indexes: `byChannel` on `channelId`, `byTag` on `tags` (multiEntry).
   - `trash` (keyPath: `id`) - index: `byDeletedAt`.
@@ -145,12 +145,18 @@
 - Event history: call `recordEvent` for meaningful mutations (tag ops, delete/restore, assign group, channel tag ops, etc.) and include an `impact` estimate for snapshot thresholds.
 - Commit flush: `queueCommitFlush(3000)` batches events; `finalizeCommitAndFlushIfAny()` runs during backup schedule.
 - JSONL month files are rewritten by appending full commits; export slicing operates on entire commits so follow-up events stay intact.
+- Deduplication: when appending a commit to a monthly JSONL, the background checks for an existing matching `commitId` in that file and skips appending duplicates. This protects against replay/import edge cases.
 - Backlog replay: if Drive append fails, commit ids queue in `chrome.storage.local['drive.unsyncedCommitIds']` and are replayed silently; Options header shows "Drive backlog: N" when pending.
 - New history routes: `backup/history/revertTo { commitId, dryRun? }` and `backup/history/snapshotNow { interactive?, name? }`.
 - Manual "Backup settings" flow finalizes pending commits, saves `settings.json`, then triggers backlog replay.
-- Wipe: `backup/wipeAll` deletes all files from Drive appDataFolder after confirmation in UI; intended for full reset. Use "Download All (zip)" first if you want a backup.
+- Wipe: `backup/wipeAll` deletes all files from Drive appDataFolder after confirmation in UI and clears the local IndexedDB (all stores). Intended for a full reset. Use "Download All (zip)" first if you want a backup.
 - Import path: `backup/history/import` validates against the current cutoff marker, stitches imported month logs and snapshots, then clears the marker.
 - Importing earlier history also requires matching the Drive cutoff marker before data is merged locally.
+
+### History Exports Behavior
+- Download commit: exports only that commit’s events from local IDB (no header; event lines omit `commitId`/`size`).
+- Download up to here: bundles monthly files from Drive, slicing the commit month from the file header through the target commit (inclusive), using raw JSONL lines (with `commitId` and `size`).
+- Slicing detail: the month slicer includes all lines up to the last occurrence of the target `commitId`. If a month file ever contained duplicate entries for the same commit (e.g., older replay/import), the bundle may include intervening commits and a repeated target commit. The dedup-on-append guard above prevents new duplicates.
 
 ## Restore (Dry Run + Apply)
 - Snapshot shape: `{ version:1, at, tags[], tagGroups[], groups[], videoIndex[], channelIndex[], pendingChannels[] }`.
@@ -274,6 +280,11 @@
   4) Document store schema in this file
 
 ## Changelog
+- 2025-09-23
+  - DB_VERSION bumped to 13. Removed legacy `videos.byLastSeen` index during upgrade; no data loss.
+  - History: added dedup-on-append guard to monthly JSONL (skip appending a commit if the same `commitId` already exists).
+  - Drive: implemented `backup/downloadFileRange` for chunked downloads (used by "Download All (folder)").
+  - Wipe All: fixed route implementation; now deletes Drive appData files and clears local IndexedDB.
 - 2025-09-21
   - DB_VERSION bumped to 12. `channels_pending` rows may include `subscribedPending` to record a pending "subscribed" state captured from Subscriptions Manager before a concrete channel id exists. On resolve, background promotes `subscribed=true` on the resolved channel id and clears the pending entry.
 - 2025-09-22

@@ -4,7 +4,7 @@ import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
 import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
 import { matches, type Group as GroupRec } from '../shared/conditions';
-import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
+import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
 import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
 import { applyRestore, dryRunRestoreApply } from './restore';
 
@@ -968,6 +968,54 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
           const res = await downloadAppDataFileBase64(id);
           sendResponse?.({ ok: true, ...res });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/downloadFileRange') {
+        try {
+          const id = String((raw as any)?.payload?.id || '');
+          const start = Number((raw as any)?.payload?.start ?? 0);
+          const lengthRaw = (raw as any)?.payload?.length;
+          const length = (lengthRaw == null) ? undefined : Number(lengthRaw);
+          if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
+          if (!Number.isFinite(start) || start < 0) { sendResponse?.({ ok: false, error: 'Invalid start' }); return; }
+          if (length != null && (!Number.isFinite(length) || length <= 0)) { sendResponse?.({ ok: false, error: 'Invalid length' }); return; }
+          const r = await downloadAppDataFileRangeBase64(id, start, length, { interactive: true });
+          sendResponse?.({ ok: true, contentB64: r.contentB64, nextStart: r.nextStart, total: r.total ?? null, done: !!r.done });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/wipeAll') {
+        try {
+          // Delete all Drive appData files
+          const items = await listAppDataFiles({ interactive: true });
+          let deleted = 0;
+          for (const f of items) {
+            try { await deleteAppDataFile(f.id, { interactive: true }); deleted++; } catch {}
+          }
+          // Clear local IndexedDB stores (full reset)
+          try {
+            const db = await openDB();
+            const names: string[] = Array.from(db.objectStoreNames as any);
+            if (names.length) {
+              await new Promise<void>((resolve, reject) => {
+                const tx = db.transaction(names as any, 'readwrite');
+                for (const n of names) {
+                  try { tx.objectStore(n).clear(); } catch {}
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+              });
+            }
+          } catch {}
+          // Clear local flags related to backup/history queue/state
+          try { chrome.storage?.local?.remove?.(['drive.unsyncedCommitIds','eventsWeightSinceSnap','eventsMonthSizeBytes','lastBackupAt']); } catch {}
+          // Notify UIs to refresh
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
+          sendResponse?.({ ok: true, deleted });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }

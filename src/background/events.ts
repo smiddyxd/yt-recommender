@@ -159,6 +159,26 @@ async function appendCommitToDrive(commit: CommitRecord, events: EventRecord[]) 
     } catch { current = ''; }
     if (!current) current = JSON.stringify(header) + '\n';
   }
+  // Dedup guard: if this commitId already exists in the month file, skip appending
+  try {
+    if (current) {
+      // Fast substring check first to avoid JSON.parse for every line
+      if (current.indexOf(commit.commitId) !== -1) {
+        const lines = current.split('\n');
+        for (let i = 1; i < lines.length; i++) {
+          const line = lines[i];
+          if (!line || !line.trim()) continue;
+          try {
+            const obj = JSON.parse(line);
+            if (obj && obj.commitId === commit.commitId) {
+              // Already present; do not append duplicate
+              return;
+            }
+          } catch { /* ignore parse errors on non-JSON or header */ }
+        }
+      }
+    }
+  } catch { /* best-effort dedup only */ }
   const lines = events.map(ev => JSON.stringify({ ts: ev.ts, kind: ev.kind, payload: ev.payload, impact: ev.impact, size: ev.size, commitId: commit.commitId }));
   current += lines.join('\n') + '\n';
 
