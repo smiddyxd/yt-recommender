@@ -1,4 +1,4 @@
-import { SELECTORS, parseVideoIdFromHref, getPlaylistIdFromURL, parseDurationToSec } from '../types/util';
+﻿import { SELECTORS, parseVideoIdFromHref, getPlaylistIdFromURL, parseDurationToSec } from '../types/util';
 import type { VideoSeed } from '../types/messages';
 import type { Group as GroupRec, Condition } from '../shared/conditions';
 
@@ -229,12 +229,21 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
           return !!g && isCheckable(g.condition as any, new Set(seen));
         });
       }
-      return (
-        p.kind === 'sourceAny' ||
-        p.kind === 'sourcePlaylistAny' ||
-        p.kind === 'channelIdIn' ||
-        p.kind === 'titleRegex'
-      );
+      switch (p.kind) {
+        case 'sourceAny':
+        case 'sourcePlaylistAny':
+          return true; // sources always present for evaluation
+        case 'channelIdIn': {
+          const hasChan = !!(c.channelId || c.handle || c.channelName);
+          return hasChan; // must have some channel identifier/name to apply this
+        }
+        case 'titleRegex': {
+          const hasTitle = !!(c.title && String(c.title).trim());
+          return hasTitle; // require a usable title for regex
+        }
+        default:
+          return false;
+      }
     }
     function evalCond(node: any): boolean {
       if (!node) return true;
@@ -516,3 +525,4 @@ export async function scrapeNowDetailedAsync(): Promise<{ count: number; page: '
   }
   return first;
 }
+

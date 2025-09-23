@@ -1,4 +1,4 @@
-import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
+﻿import { scrapeNowDetailedAsync, detectPageContext } from './yt-playlist-capture';
 
 function getChannelHandleNow(): string | null {
   try {
@@ -42,6 +42,9 @@ let scrapeGroups: GroupRec[] = [];
 let lastActivityAt = Date.now();
 let domUniqueWhat: 'SubscriptionsFeed' | 'WatchHistory' | string | null = null;
 const domUniqueSeen: Set<string> = new Set();
+// Track last watch-page stub capture to avoid spamming
+let lastWatchStubId: string | null = null;
+let lastWatchStubAt = 0;
 
 chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   try {
@@ -368,9 +371,14 @@ try {
     // Always track progress on watch pages
     if (ctx.page === 'watch') {
       try { void startWatchProgressTracking(); } catch {}
-      if (autoStubOnWatch) {
-        try { void scrapeWatchStub(); } catch {}
-      }
+      // One-shot immediate stub capture on SPA navigation (independent of auto loop)
+      try {
+        const vid = (ctx as any).videoId || null;
+        void (async () => {
+          try { await scrapeWatchStub(); } catch {}
+          try { if (vid) { lastWatchStubId = String(vid); lastWatchStubAt = Date.now(); } } catch {}
+        })();
+      } catch {}
     } else {
       // Stop tracker when leaving watch pages
       try { stopWatchProgressTracking(); } catch {}
@@ -505,12 +513,15 @@ function scheduleNextAutoScan(ms: number) {
       if (!autoDisabled) {
         const res = await autoScanOnce();
         const sig = res?.signature || '';
-        if (lastSignature != null && sig === lastSignature) {
-          sameSignatureCount += 1;
-        } else {
-          sameSignatureCount = 0;
+        const hasSig = sig.length > 0; // only count non-empty signatures (uniqueIds > 0)
+        if (hasSig) {
+          if (lastSignature != null && sig === lastSignature) {
+            sameSignatureCount += 1;
+          } else {
+            sameSignatureCount = 0;
+          }
+          lastSignature = sig;
         }
-        lastSignature = sig;
         if (autoSpeed === 'fast' && sameSignatureCount >= 3) {
           autoSpeed = 'slow';
           sameSignatureCount = 0;
@@ -722,12 +733,21 @@ function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string,
         return !!g && isCheckable(g.condition as any, new Set(seen));
       });
     }
-    return (
-      p.kind === 'sourceAny' ||
-      p.kind === 'sourcePlaylistAny' ||
-      p.kind === 'channelIdIn' ||
-      p.kind === 'titleRegex'
-    );
+    switch (p.kind) {
+      case 'sourceAny':
+      case 'sourcePlaylistAny':
+        return true; // always derivable from sources array
+      case 'channelIdIn': {
+        const hasChan = !!(c.channelId || c.handle || c.channelName);
+        return hasChan; // require some channel identifier/name present
+      }
+      case 'titleRegex': {
+        const hasTitle = !!(c.title && String(c.title).trim());
+        return hasTitle; // require a title string to apply regex meaningfully
+      }
+      default:
+        return false;
+    }
   }
   function evalCond(node: any): boolean {
     if (!node) return true;
@@ -792,15 +812,18 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
     const onPlaylist = !!getPlaylistIdFromURL();
     if (onChannel || onPlaylist) return { signature: '', accepted: 0 };
   } catch { /* ignore */ }
-  const currentWatchId: string | null = ctx.page === 'watch' ? (ctx as any).videoId || null : null;
-  // Always ensure current watch video is scraped as well (regardless of presets)
+    const currentWatchId: string | null = ctx.page === 'watch' ? (ctx as any).videoId || null : null;
+  // Always ensure current watch video is captured with title/channel when available
   if (currentWatchId) {
     try {
-      dlog('[content] scrape current watch', currentWatchId);
-      chrome.runtime.sendMessage({ type: 'cache/VIDEO_SEEN', payload: { id: currentWatchId, sources: [{ type: 'WatchPage', id: null }] } });
+      if (currentWatchId !== lastWatchStubId || (Date.now() - lastWatchStubAt) > 15000) {
+        dlog('[content] scrape watch stub', currentWatchId);
+        try { await scrapeWatchStub(); } catch {}
+        lastWatchStubId = currentWatchId;
+        lastWatchStubAt = Date.now();
+      }
     } catch {}
-  }
-  // Collect anchors for watch + common tiles. On search results, include /shorts/ anchors too.
+  }  // Collect anchors for watch + common tiles. On search results, include /shorts/ anchors too.
   let sel = 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]';
   try { if (location.pathname.startsWith('/results')) sel += ', a[href^="/shorts/"]'; } catch {}
   const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
@@ -849,7 +872,7 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
     }
     dlog('[content] scraped accepted', seen.size);
   }
-  // Build signature from total ids (sorted, capped) — independent of preset gating
+  // Build signature from total ids (sorted, capped) â€” independent of preset gating
   const sigIds = Array.from(idSetAll.values()).slice(0, 200).sort();
   const signature = sigIds.join('|');
   return { signature, accepted: sigIds.length };
@@ -894,3 +917,6 @@ try {
     }
   }, { passive: true });
 } catch {}
+
+
+
