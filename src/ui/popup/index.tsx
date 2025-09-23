@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+ï»¿import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { send as sendBg } from '../lib/messaging';
 import { getOne } from '../lib/idb';
@@ -92,7 +92,7 @@ function TagChips(props: { labels: string[]; onRemove?: (name: string)=>void }) 
       {labels.map(t => (
         <span key={t} className="chip">
           <span>{t}</span>
-          {props.onRemove && <span className="x" title="Remove" onClick={() => props.onRemove?.(t)}>×</span>}
+          {props.onRemove && <span className="x" title="Remove" onClick={() => props.onRemove?.(t)}>Ã—</span>}
         </span>
       ))}
     </div>
@@ -103,7 +103,7 @@ function AddTagSelect(props: { all: string[]; onAdd: (name: string)=>void; disab
   const [val, setVal] = useState('');
   return (
     <select value={val} disabled={props.disabled} onChange={(e) => { const v = e.currentTarget.value; setVal(''); if (v) props.onAdd(v); }}>
-      <option value="">Add tag…</option>
+      <option value="">Add tagâ€¦</option>
       {props.all.map(n => <option key={n} value={n}>{n}</option>)}
     </select>
   );
@@ -119,6 +119,7 @@ function PopupApp() {
   const [autoStubOnWatch, setAutoStubOnWatch] = useState<boolean>(false);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [origHandle, setOrigHandle] = useState<string>('');
+  const [gateManual, setGateManual] = useState<boolean>(false);
 
   const byGroup = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -195,12 +196,22 @@ function PopupApp() {
 
   // Auto-stub toggle (read + write to storage)
   useEffect(() => {
-    try { chrome.storage?.local?.get('autoStubOnWatch', (o) => setAutoStubOnWatch(!!o?.autoStubOnWatch)); } catch {}
+    try {
+      chrome.storage?.local?.get(['autoStubOnWatch','popup.gateManual'], (o) => {
+        setAutoStubOnWatch(!!o?.autoStubOnWatch);
+        setGateManual(!!o?.['popup.gateManual']);
+      });
+    } catch {}
   }, []);
   const toggleAutoStub = async () => {
     const next = !autoStubOnWatch;
     setAutoStubOnWatch(next);
     try { chrome.storage?.local?.set({ autoStubOnWatch: next }); } catch {}
+  };
+  const toggleGateManual = async () => {
+    const next = !gateManual;
+    setGateManual(next);
+    try { chrome.storage?.local?.set({ 'popup.gateManual': next }); } catch {}
   };
 
   async function scrapeChannelIdNow() {
@@ -236,6 +247,12 @@ function PopupApp() {
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input type="checkbox" checked={autoStubOnWatch} onChange={toggleAutoStub} />
           <span className="meta">Auto-capture stubs on watch pages</span>
+        </label>
+      </div>
+      <div className="row" style={{ marginTop: 6 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={gateManual} onChange={toggleGateManual} />
+          <span className="meta">Use preset gating for manual scrapes (playlist & channel)</span>
         </label>
       </div>
       <div className="row" style={{ marginTop: 6 }}>
@@ -294,3 +311,4 @@ function PopupApp() {
 
 const root = createRoot(document.getElementById('root')!);
 root.render(<PopupApp />);
+

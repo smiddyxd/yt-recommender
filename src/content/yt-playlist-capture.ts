@@ -1,5 +1,6 @@
 import { SELECTORS, parseVideoIdFromHref, getPlaylistIdFromURL, parseDurationToSec } from '../types/util';
 import type { VideoSeed } from '../types/messages';
+import type { Group as GroupRec, Condition } from '../shared/conditions';
 
 function q1(selList: string[]): HTMLElement | null {
   for (const s of selList) {
@@ -145,6 +146,146 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
   const listId = getPlaylistIdFromURL();
   const container = q1(SELECTORS.playlistContainer);
 
+  // Optional preset gating for manual scrapes, controlled from popup (applies to playlist and channel tabs)
+  const useGate = await new Promise<boolean>((resolve) => {
+    try { chrome.storage?.local?.get('popup.gateManual', (o) => resolve(!!o?.['popup.gateManual'])); } catch { resolve(false); }
+  });
+  let gateGroups: GroupRec[] = [];
+  if (useGate) {
+    gateGroups = await new Promise<GroupRec[]>((resolve) => {
+      try { chrome.runtime.sendMessage({ type: 'groups/list', payload: {} } as any, (r: any) => {
+        const items: GroupRec[] = Array.isArray(r?.items) ? r.items : [];
+        resolve(items.filter(g => (g as any).scrape === true));
+      }); } catch { resolve([]); }
+    });
+  }
+
+  function tileRootFromAnchor(a: HTMLAnchorElement): HTMLElement | null {
+    try {
+      const sel = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, ytd-compact-video-renderer, ytd-playlist-video-renderer';
+      return a.closest(sel) as HTMLElement | null;
+    } catch { return null; }
+  }
+  function extractChannelFromRoot(root: HTMLElement | null): { channelId?: string | null; handle?: string | null; name?: string | null } {
+    try {
+      if (!root) return {};
+      const a = root.querySelector('ytd-channel-name a[href^="/channel/"]') as HTMLAnchorElement | null
+             || root.querySelector('#byline a[href^="/channel/"]') as HTMLAnchorElement | null
+             || root.querySelector('#channel-name a[href^="/channel/"]') as HTMLAnchorElement | null;
+      if (a) {
+        const u = new URL(a.href, location.origin);
+        const seg = u.pathname.split('/');
+        if (seg[1] === 'channel' && seg[2]) return { channelId: seg[2] };
+      }
+      const h = root.querySelector('ytd-channel-name a[href^="/@"]') as HTMLAnchorElement | null;
+      if (h?.href) {
+        const u = new URL(h.href, location.origin);
+        const handle = u.pathname.slice(1);
+        const name = (h.textContent || '').trim() || null;
+        return { handle, name };
+      }
+      return {};
+    } catch { return {}; }
+  }
+  type Cand = { id: string; sources: Array<{ type: string; id?: string | null }>; channelId?: string | null; handle?: string | null; channelName?: string | null; title?: string | null };
+  function candidateFromAnchor(a: HTMLAnchorElement): Cand | null {
+    const id = parseVideoIdFromHref(a.href);
+    if (!id) return null;
+    const src = listId ? [{ type: 'playlist', id: listId }] as Array<{ type: string; id?: string | null }> : [{ type: 'panel', id: null }];
+    const root = tileRootFromAnchor(a);
+    const ch = extractChannelFromRoot(root);
+    let title: string | null = null;
+    try {
+      const tEl = (root?.querySelector('#video-title') as HTMLElement | null)
+               || (root?.querySelector('a#video-title') as HTMLElement | null)
+               || (root?.querySelector('a#video-title-link') as HTMLElement | null)
+               || (a as HTMLElement | null);
+      const t = (tEl?.textContent || (tEl as any)?.title || '').toString().trim();
+      title = t || null;
+    } catch {}
+    // Channel page context fallback
+    try {
+      if (ctx?.page === 'channel' && !ch.channelId && !ch.handle && !ch.name) {
+        if (ctx.channelId) ch.channelId = ctx.channelId;
+        else if (location.pathname.startsWith('/@')) ch.handle = location.pathname.slice(1);
+      }
+    } catch {}
+    return { id, sources: src, channelId: ch.channelId || null, handle: ch.handle || null, channelName: ch.name || null, title };
+  }
+  function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string, GroupRec>): boolean {
+    function isCheckable(node: any, seen: Set<string>): boolean {
+      if (!node) return true;
+      if ('all' in node) return (Array.isArray(node.all) ? node.all : []).every((n: any) => isCheckable(n, seen));
+      if ('any' in node) return (Array.isArray(node.any) ? node.any : []).every((n: any) => isCheckable(n, seen));
+      if ('not' in node) return isCheckable(node.not, seen);
+      const p = node as any;
+      if (p.kind === 'groupRef') {
+        const ids: string[] = Array.isArray(p.ids) ? p.ids : [];
+        if (!ids.length) return false;
+        return ids.every((gid) => {
+          if (!gid || seen.has(gid)) return true;
+          seen.add(gid);
+          const g = groupsById.get(gid);
+          return !!g && isCheckable(g.condition as any, new Set(seen));
+        });
+      }
+      return (
+        p.kind === 'sourceAny' ||
+        p.kind === 'sourcePlaylistAny' ||
+        p.kind === 'channelIdIn' ||
+        p.kind === 'titleRegex'
+      );
+    }
+    function evalCond(node: any): boolean {
+      if (!node) return true;
+      if ('all' in node) return (Array.isArray(node.all) ? node.all : []).every(evalCond);
+      if ('any' in node) return (Array.isArray(node.any) ? node.any : []).some(evalCond);
+      if ('not' in node) return !evalCond(node.not);
+      const p = node as any;
+      switch (p.kind) {
+        case 'sourceAny': {
+          const items = Array.isArray(p.items) ? p.items : [];
+          if (!items.length) return false;
+          const src = Array.isArray(c.sources) ? c.sources : [];
+          return src.some(s => items.some((it: any) => (s?.type || '') === (it?.type || '') && ((s?.id ?? null) === (it?.id ?? null))));
+        }
+        case 'sourcePlaylistAny': {
+          const ids = new Set((p.ids || []).map(String));
+          const src = Array.isArray(c.sources) ? c.sources : [];
+          return src.some(s => s?.type === 'playlist' && s?.id && ids.has(String(s.id)));
+        }
+        case 'channelIdIn': {
+          const id = (c.channelId || '').trim().toLowerCase();
+          const handle = (c.handle || '').trim().toLowerCase();
+          const name = (c.channelName || '').trim().toLowerCase();
+          const set = new Set((Array.isArray(p.ids) ? p.ids : []).map((s: any) => String(s || '').trim().toLowerCase()));
+          const handleBare = handle.startsWith('@') ? handle.slice(1) : handle;
+          return (!!id && set.has(id)) || (!!handle && (set.has(handle) || set.has(handleBare))) || (!!name && set.has(name));
+        }
+        case 'titleRegex': {
+          const pat = String(p.pattern || '');
+          if (!pat) return false;
+          let re: RegExp | null = null;
+          try { re = new RegExp(pat, String(p.flags || '')); } catch { re = null; }
+          const t = (c.title || '').toString();
+          return !!re && re.test(t);
+        }
+        case 'groupRef': {
+          const ids: string[] = Array.isArray(p.ids) ? p.ids : [];
+          if (!ids.length) return false;
+          return ids.some((gid) => {
+            const g = gid ? groupsById.get(gid) : undefined;
+            return g ? evalCond(g.condition as any) : false;
+          });
+        }
+        default:
+          return false;
+      }
+    }
+    if (!isCheckable(cond as any, new Set())) return false;
+    return evalCond(cond as any);
+  }
+
   // Special handling: Subscriptions feed
   try {
     if (location.pathname === '/feed/subscriptions') {
@@ -190,21 +331,26 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
     const tiles = container.querySelectorAll(SELECTORS.playlistTiles);
     if (tiles.length > 0) {
       const seeds: VideoSeed[] = [];
+      const groupsById = new Map<string, GroupRec>(); gateGroups.forEach(g => groupsById.set(g.id, g));
       tiles.forEach(el => {
         const node = el as HTMLElement;
+        const a = node.querySelector(SELECTORS.tileLink) as HTMLAnchorElement | null;
+        if (!a) return;
+        const id = parseVideoIdFromHref(a.href);
+        if (!id || added.has(id)) return;
+        let accept = true;
+        if (useGate && gateGroups.length > 0) {
+          const cand = candidateFromAnchor(a);
+          accept = gateGroups.some(g => evalPresetOnCandidate(cand!, g.condition as any, groupsById));
+        }
+        if (!accept) return;
         const seed = tileToSeed(node, { type: 'playlist', id: listId });
         if (seed) {
-          if (!added.has(seed.id)) {
-            added.add(seed.id);
-            seeds.push(seed);
-            sent++;
-          }
-          const a = node.querySelector(SELECTORS.tileLink) as HTMLAnchorElement | null;
-          if (a) {
-            const id = parseVideoIdFromHref(a.href);
-            if (id && !added.has(id)) scrapeProgressForTile(a, id);
-          }
+          added.add(seed.id);
+          seeds.push(seed);
+          sent++;
         }
+        if (id) scrapeProgressForTile(a, id);
       });
       if (seeds.length) await sendInChunks(seeds);
       return { count: sent, page: ctx.page || 'other' } as any;
@@ -219,11 +365,18 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
         const anchors = Array.from(document.querySelectorAll('a[href^="/shorts/"]')) as HTMLAnchorElement[];
         const seen = new Set<string>();
         const seeds: VideoSeed[] = [];
+        const groupsById = new Map<string, GroupRec>(); gateGroups.forEach(g => groupsById.set(g.id, g));
         for (const a of anchors) {
           try {
             const u = new URL(a.href, location.origin);
             const id = u.pathname.split('/')[2] || '';
             if (!id || seen.has(id)) continue;
+            let accept = true;
+            if (useGate && gateGroups.length > 0) {
+              const cand: any = { id, sources: [{ type: 'ChannelShortsTab' }], channelId: ctx.channelId || null, handle: (location.pathname.startsWith('/@') ? location.pathname.slice(1) : null) };
+              accept = gateGroups.some(g => evalPresetOnCandidate(cand, g.condition as any, groupsById));
+            }
+            if (!accept) continue;
             seen.add(id);
             const seed: VideoSeed = { id, sources: [{ type: 'ChannelShortsTab' }] };
             seeds.push(seed);
@@ -241,11 +394,18 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
       )) as HTMLAnchorElement[];
       const seen = new Set<string>();
       const seeds: VideoSeed[] = [];
+      const groupsById = new Map<string, GroupRec>(); gateGroups.forEach(g => groupsById.set(g.id, g));
       for (const a of anchors) {
         const root = findTileRootFromAnchor(a);
         if (!root) continue;
         const id = parseVideoIdFromHref(a.href);
         if (!id || seen.has(id)) continue;
+        let accept = true;
+        if (useGate && gateGroups.length > 0) {
+          const cand = candidateFromAnchor(a);
+          accept = gateGroups.some(g => evalPresetOnCandidate(cand!, g.condition as any, groupsById));
+        }
+        if (!accept) continue;
         seen.add(id);
         const seed = tileToSeed(root, { type: sourceType });
         if (seed) {

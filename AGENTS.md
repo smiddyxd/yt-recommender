@@ -69,9 +69,10 @@
 5) On mutations, background records lightweight events -> commits; appends to `events-YYYY-MM.jsonl` in Drive and occasionally saves snapshots.
 
 ## Auto-Scrape & Presets
-- Passive scraping runs on Home (`/`), Sub Feed (`/feed/subscriptions`), and Watch pages (side suggestions) — disabled on channel and playlist pages.
-- Frequency: every ~2s; if the preset‑accepted result signature is unchanged 3 consecutive ticks, slow to every ~4s; if unchanged 3 more ticks at 4s, pause until user scrolls down past a page‑specific threshold: Home ≥50%, Sub Feed ≥80%, Watch ≥40% (reactivates at 4s).
-- Still gated by presets marked `scrape: true`; only checkable predicates are evaluated in‑page.
+- Passive scraping runs on Home (`/`), Sub Feed (`/feed/subscriptions`), Watch pages (side suggestions), and Search results (`/results`) — disabled on channel and playlist pages.
+- Frequency: every ~2s; if the total (non‑gated) result signature is unchanged 3 consecutive ticks, slow to every ~4s; if unchanged 3 more ticks at 4s, pause until scroll passes a page‑specific threshold to reactivate at 4s:
+  - Search ≥99%, Sub Feed ≥89%, Home ≥81%, Watch ≥40%.
+- Preset gating only controls what is upserted, not the stop/slowdown logic.
 - The current watch video is always upserted regardless of presets; side tiles are gated by presets.
 ## Scrape Panel (Sub Feed / Watch History)
 - Stop condition: background stops when content-reported cumulative DOM-unique IDs reach the configured max.

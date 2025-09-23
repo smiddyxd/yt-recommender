@@ -800,12 +800,17 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
       chrome.runtime.sendMessage({ type: 'cache/VIDEO_SEEN', payload: { id: currentWatchId, sources: [{ type: 'WatchPage', id: null }] } });
     } catch {}
   }
-  // Collect anchors for watch + shorts
-  const anchors = Array.from(document.querySelectorAll(
-    'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]'
-  )) as HTMLAnchorElement[]; // exclude generic /shorts links from auto-scan
+  // Collect anchors for watch + common tiles. On search results, include /shorts/ anchors too.
+  let sel = 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]';
+  try { if (location.pathname.startsWith('/results')) sel += ', a[href^="/shorts/"]'; } catch {}
+  const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
   dlog('[content] scan anchors', anchors.length);
   if (anchors.length === 0) return { signature: '', accepted: 0 };
+  // Build total (non-gated) signature from unique ids in anchors
+  const idSetAll = new Set<string>();
+  for (const a of anchors) {
+    try { const vid = parseVideoIdFromHref(a.href); if (vid) idSetAll.add(vid); } catch {}
+  }
   const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));
   const accepted: Cand[] = [];
   for (const a of anchors) {
@@ -844,8 +849,8 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
     }
     dlog('[content] scraped accepted', seen.size);
   }
-  // Build signature from accepted ids (sorted, capped)
-  const sigIds = Array.from(new Set(accepted.map(c => c.id))).slice(0, 200).sort();
+  // Build signature from total ids (sorted, capped) — independent of preset gating
+  const sigIds = Array.from(idSetAll.values()).slice(0, 200).sort();
   const signature = sigIds.join('|');
   return { signature, accepted: sigIds.length };
 }
@@ -854,8 +859,9 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
 function getPageReactivateThresholdPct(): number {
   try {
     const path = location.pathname || '';
-    if (path === '/feed/subscriptions') return 0.80; // Sub Feed: 80%
-    if (path === '/' || path === '/feed/what_to_watch') return 0.50; // Home: 50%
+    if (path.startsWith('/results')) return 0.99; // Search page: 99%
+    if (path === '/feed/subscriptions') return 0.89; // Sub Feed: 89%
+    if (path === '/' || path === '/feed/what_to_watch') return 0.81; // Home: 81%
     const ctx = detectPageContext();
     if (ctx?.page === 'watch') return 0.40; // Watch page: 40%
   } catch {}
