@@ -38,7 +38,7 @@
 
 ### Background
 - `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes). Scrape loop stops based on DOM-unique counts reported by content, supports batching, stall detection, and wait-until-flushed finalization.
-- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 13`.
+- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 14`.
 - `src/background/driveBackup.ts`: Google Drive appData auth + read/write (JSON, JSONL, snapshots). Plaintext storage only; pass `{ interactive: true }` when user prompts are needed.
 - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
@@ -91,7 +91,7 @@
 - Tiles with just a handle/name may upsert to `channels_pending` (gated by accepted presets, per-page de-duped). Channel pages resolve pending entries to real ids automatically; Options exposes a debug panel to open background tabs and auto-resolve handles in batches.
 
 ## Storage Model (IndexedDB)
-- DB: `yt-recommender`, `DB_VERSION = 13`.
+- DB: `yt-recommender`, `DB_VERSION = 14`.
 - Stores and key fields
   - `videos` (keyPath: `id`) - indexes: `byChannel` on `channelId`, `byTag` on `tags` (multiEntry).
   - `trash` (keyPath: `id`) - index: `byDeletedAt`.
@@ -104,8 +104,12 @@
   - `meta` (keyPath: `key`) - holds aggregated lists like `{ key: 'videoTopics', list: string[] }`. Also stores per-source latest markers: `{ key: 'latestBy.SubscriptionsFeed', value: '<videoId>' }`, `{ key: 'latestBy.WatchHistory', value: '<videoId>' }`.
   - `events_commits` (keyPath: `commitId`) - index: `byTs`.
   - `events` (keyPath: `id`) - index: `byCommit`.
-- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`. Markers: `latestFromSubFeed?`, `latestFromWatchHistory?` booleans.
-- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `keywords`, `topics[]`, `description`, `bannerUrl`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
+- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`.
+  - New compact projections (replacing heavy raw `yt` usage): `type` (`short` | `video` | `livestream`), `transcript` ("" if captions available, "no transcript" if not), `views`, `likes`, `commentCount`, `liveViewers`, `rejectionReason`, `failureReason`, `premiereTime`, `customThumbnail`, `contentRating`, `regionRestriction`.
+  - Removed redundant: `thumbUrl` (derivable from `id`). The raw `yt` payload is no longer stored.
+- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `videoTopics[]`, `keywords`, `topics[]`, `description`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
+  - New compact projection: `thumbnailID` (unique part of `yt3.ggpht.com` avatar URLs), `playlists` (from `contentDetails.relatedPlaylists`).
+  - Removed redundant: `bannerUrl`, raw `yt` payload, and full `thumbnails` object.
 
 ## Messaging Protocol
 - Content -> Background
@@ -139,9 +143,9 @@
 - API key is stored in `chrome.storage.local.ytApiKey`.
 - Batch fetch relies on `fetchVideosListWithRetry` / `fetchChannelsListWithRetry`; back off between attempts.
 - Selective change history is recorded during refresh:
-  - Videos: diffs for `title`, `thumbnailUrl`, `description`.
-  - Channels: diffs for best `avatarUrl`, `bannerUrl`, `description`.
-- After video refresh: fetch missing/stale channel rows, recompute channel `videoTags[]`, recompute global `videoTopics` in `meta`.
+  - Videos: diffs for `title`, `description` (thumbnail diffs dropped; computed from `id`).
+  - Channels: diffs for `thumbnailID` and `description`.
+- After video refresh: fetch missing/stale channel rows, recompute channel `videoTags[]`, recompute per-channel `videoTopics[]`, and recompute global `videoTopics` in `meta`.
  - Refresh gating: `videos/refreshAll` skips any video tagged `no fetch` and any video whose channel is tagged `no fetch`.
 
 ## Backup, History & Snapshots
@@ -196,6 +200,7 @@
   - "Fetch video data" calls YouTube API to fetch video metadata.
   - "Fetch channels (unfetched)" fetches channels that were never fetched.
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
+  - Images: the Options UI uses lowest-resolution thumbnails/avatars for efficiency.
 - Sidebar: Tag CRUD, Tag Groups CRUD, assign tags to groups; tag pickers grouped by Tag Group.
 - Bulk actions: selection + bulk tagging; delete/restore; wipe duplicate sources.
   - Backup/History: Version History modal lists commits with sizes/weights, shows Drive usage, can download a commit (UTF-8 base64), download a bundle up to a commit (zip, UTF-8 base64 parts), delete up to a commit (commit-bounded). "Revert to here" and "Snapshot now" buttons added. Delete-up-to preflight warns if no baseline snapshot exists before the target commit.
@@ -302,6 +307,11 @@
 
 ## Changelog
 - 2025-09-24
+  - Data: stop storing raw `yt` payloads for videos/channels; add compact projections to video rows (`type`, `transcript`, `views`, `likes`, `commentCount`, `liveViewers`, `rejectionReason`, `failureReason`, `premiereTime`, `customThumbnail`, `contentRating`, `regionRestriction`).
+  - Data: channels store `thumbnailID` (unique avatar hash), `playlists` (related playlists), and omit `thumbnails`/`bannerUrl`/raw `yt`.
+  - UI: Options uses lowest-resolution images; channel avatars built from `thumbnailID`.
+  - Refresh: channel fetch now requests `contentDetails` and `topicDetails`; selective diffs updated (`thumbnailID` instead of `avatarUrl`/`bannerUrl`).
+  - Derived: added per-channel `videoTopics[]` aggregation after video refresh.
   - History: exclude pending channel operations from version history (`pending/*` are ignored by the event recorder) to reduce noise in Version History and snapshots.
   - Scrape: Sub Feed and Watch History routines now scroll aggressively — background sends `scrape/SCROLL_BOTTOM` every iteration to reach the bottom faster and load more items.
   - Scrape Panel: Added per-source toggles to "stop at previous most recent video" for Sub Feed and Watch History. Each run marks the top-most item as latest for that source (stored in `meta` and flagged on the video), and early-stops when enabled.

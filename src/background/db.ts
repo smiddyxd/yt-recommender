@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 13;
+const DB_VERSION = 14;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -74,6 +74,51 @@ export async function openDB(): Promise<IDBDatabase> {
         const ev = db.createObjectStore('events', { keyPath: 'id' });
         ev.createIndex('byCommit', 'commitId', { unique: false });
       }
+      // v14: best-effort data cleanup to reduce stored payload sizes
+      try {
+        const tx = (req as any).transaction as IDBTransaction;
+        // videos: drop raw yt and per-row thumbUrl (derivable from id)
+        try {
+          const vs = tx.objectStore('videos');
+          const cur: IDBRequest = (vs as any).openCursor();
+          cur.onsuccess = () => {
+            const c = (cur as any).result as IDBCursorWithValue | null;
+            if (!c) return;
+            const row: any = c.value || {};
+            if (row && row.yt) {
+              try { applyYouTubeFields(row, row.yt); } catch {}
+              delete row.yt;
+            }
+            if ('thumbUrl' in row) delete row.thumbUrl;
+            try { c.update(row); } catch {}
+            c.continue();
+          };
+        } catch { /* ignore */ }
+        // channels: project thumbnailID, drop thumbnails/bannerUrl/raw yt
+        try {
+          const cs = tx.objectStore('channels');
+          const cur: IDBRequest = (cs as any).openCursor();
+          cur.onsuccess = () => {
+            const c = (cur as any).result as IDBCursorWithValue | null;
+            if (!c) return;
+            const row: any = c.value || {};
+            if (row) {
+              try {
+                if (!row.thumbnailID) {
+                  const best = (row?.thumbnails?.high?.url || row?.thumbnails?.medium?.url || row?.thumbnails?.default?.url || null) as (string | null);
+                  const id = extractAvatarId(best);
+                  if (id) row.thumbnailID = id;
+                }
+              } catch { /* ignore */ }
+              if ('thumbnails' in row) delete row.thumbnails;
+              if ('bannerUrl' in row) delete row.bannerUrl;
+              if ('yt' in row) delete row.yt;
+            }
+            try { c.update(row); } catch {}
+            c.continue();
+          };
+        } catch { /* ignore */ }
+      } catch { /* best-effort only */ }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -626,7 +671,7 @@ export async function deleteGroup(id: string) {
     tx.onerror = () => reject(tx.error);
   });
 }
-export async function listChannels(): Promise<Array<{ id: string; name: string; count: number; fetchedAt?: number | null; thumbUrl?: string | null }>> {
+export async function listChannels(): Promise<Array<{ id: string; name: string; count: number; fetchedAt?: number | null; thumbnailID?: string | null }>> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction('channels', 'readonly');
@@ -636,8 +681,9 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
       const rows = (req.result || []) as any[];
       rows.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
       const items = rows.map(r => {
-        const thumbs = r?.thumbnails || {};
-        const best = thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null;
+        const bestId: string | null = r?.thumbnailID ? String(r.thumbnailID) : ((): string | null => {
+          try { const u = (r?.thumbnails?.high?.url || r?.thumbnails?.medium?.url || r?.thumbnails?.default?.url || null) as (string | null); return extractAvatarId(u); } catch { return null; }
+        })();
         const baseTags: string[] = Array.isArray(r.tags) ? r.tags : [];
         const extra: string[] = [];
         if (r?.subscribed === true) extra.push('subscribed');
@@ -648,7 +694,7 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
           name: r.name || r.id,
           count: Number(r.videos) || 0,
           fetchedAt: r.fetchedAt || null,
-          thumbUrl: best,
+          thumbnailID: bestId,
           tags: mergedTags,
           videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
           subs: Number(r.subs) || null,
@@ -711,7 +757,6 @@ export async function wipeSourcesDuplicates(): Promise<void> {
 // Helper to apply normalized fields from a YouTube videos.list item
 function applyYouTubeFields(row: any, yt: any) {
   try {
-    row.yt = yt;
     const sn = yt?.snippet || {};
     const cd = yt?.contentDetails || {};
     const st = yt?.status || {};
@@ -719,12 +764,6 @@ function applyYouTubeFields(row: any, yt: any) {
     const lsd = yt?.liveStreamingDetails || null;
     row.fetchedAt = Date.now();
     row.title = sn.title ?? row.title ?? null;
-    // best available thumbnail url
-    try {
-      const thumbs = sn.thumbnails || {};
-      const best = thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null;
-      row.thumbUrl = best || row.thumbUrl || null;
-    } catch { /* ignore */ }
     row.channelId = sn.channelId ?? row.channelId ?? null;
     row.channelName = sn.channelTitle ?? row.channelName ?? null;
     row.uploadedAt = parseIsoDate(sn.publishedAt) ?? row.uploadedAt ?? null;
@@ -743,6 +782,41 @@ function applyYouTubeFields(row: any, yt: any) {
     row.videoTopics = cats.map((u: string) => {
       try { const s = u.split('/'); return decodeURIComponent(s[s.length - 1] || ''); } catch { return ''; }
     }).filter(Boolean);
+    // New compact top-level projections
+    try {
+      const live = !!lsd || (String(sn?.liveBroadcastContent || '').toLowerCase() !== 'none' && !!sn?.liveBroadcastContent);
+      const dur = Number(row.durationSec || parseIsoDurationToSec(cd.duration) || 0);
+      (row as any).type = live ? 'livestream' : (dur > 0 && dur <= 60 ? 'short' : 'video');
+    } catch {}
+    try {
+      const cap = (cd?.caption ?? '').toString();
+      if (cap === 'true') (row as any).transcript = '';
+      else if (cap === 'false') (row as any).transcript = 'no transcript';
+    } catch {}
+    try {
+      const stats = yt?.statistics || {};
+      if (stats?.viewCount != null) (row as any).views = Number(stats.viewCount);
+      if (stats?.likeCount != null) (row as any).likes = Number(stats.likeCount);
+      if (stats?.commentCount != null) (row as any).commentCount = Number(stats.commentCount);
+    } catch {}
+    try { const v = yt?.liveStreamingDetails?.concurrentViewers; if (v != null) (row as any).liveViewers = Number(v); } catch {}
+    try {
+      if (st?.rejectionReason != null) (row as any).rejectionReason = String(st.rejectionReason);
+      if (st?.failureReason != null) (row as any).failureReason = String(st.failureReason);
+      if (st?.publishAt != null) (row as any).premiereTime = parseIsoDate(st.publishAt);
+      if (typeof st?.hasCustomThumbnail === 'boolean') (row as any).customThumbnail = !!st.hasCustomThumbnail;
+    } catch {}
+    try {
+      const cr = (yt?.contentRating?.ytRating) || (cd?.contentRating?.ytRating);
+      if (cr) (row as any).contentRating = String(cr);
+    } catch {}
+    try {
+      const rr = cd?.regionRestriction;
+      if (rr && (rr.allowed || rr.blocked)) (row as any).regionRestriction = rr;
+    } catch {}
+    // Ensure heavy fields are not persisted
+    if ('yt' in row) delete (row as any).yt;
+    if ('thumbUrl' in row) delete (row as any).thumbUrl;
   } catch { /* ignore malformed payloads */ }
 }
 
@@ -813,6 +887,7 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
   const statistics = ch?.statistics || {};
   const branding = ch?.brandingSettings || {};
   const topics = Array.isArray((ch?.topicDetails || {}).topicCategories) ? (ch.topicDetails.topicCategories as any[]) : [];
+  const contentDetails = ch?.contentDetails || {};
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction('channels', 'readwrite');
     const os = tx.objectStore('channels');
@@ -823,13 +898,17 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
       const next: any = { ...prev };
       next.name = snippet.title || prev.name || id;
       next.customUrl = snippet.customUrl || prev.customUrl || null;
-      next.thumbnails = snippet.thumbnails || prev.thumbnails || null;
+      // Compact avatar id from thumbnails url
+      try {
+        const best = (snippet?.thumbnails?.high?.url || snippet?.thumbnails?.medium?.url || snippet?.thumbnails?.default?.url || null) as (string | null);
+        const tid = extractAvatarId(best);
+        if (tid) next.thumbnailID = tid;
+      } catch { /* ignore */ }
       next.country = snippet.country || (branding?.channel?.country) || prev.country || null;
       // Store description for diffing/history
       next.description = typeof snippet.description === 'string' ? snippet.description : (prev.description ?? null);
-      // Store banner image link for diffing/history
-      const banner = (branding?.image?.bannerExternalUrl as string) || null;
-      next.bannerUrl = banner || prev.bannerUrl || null;
+      // Related playlists projection
+      try { const rel = (contentDetails?.relatedPlaylists || null); if (rel) next.playlists = rel; } catch { /* ignore */ }
       try {
         const t = Date.parse(snippet.publishedAt || '');
         next.publishedAt = Number.isFinite(t) ? t : (prev.publishedAt ?? null);
@@ -841,7 +920,10 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
       next.topics = topics as string[];
       next.subsHidden = statistics?.hiddenSubscriberCount === true;
       next.fetchedAt = Date.now();
-      next.yt = ch;
+      // Ensure heavy/raw fields are not kept
+      if ('thumbnails' in next) delete next.thumbnails;
+      if ('bannerUrl' in next) delete next.bannerUrl;
+      if ('yt' in next) delete next.yt;
       // DO NOT touch next.tags or next.videoTags here; they are local/derived
       os.put(next);
     };
@@ -1103,7 +1185,24 @@ export async function listChannelsTrash(): Promise<any[]> {
     req.onsuccess = () => {
       const rows = (req.result || []) as any[];
       rows.sort((a,b) => (b.deletedAt || 0) - (a.deletedAt || 0));
-      resolve(rows);
+      const items = rows.map(r => ({
+        id: r.id,
+        name: r.name || r.id,
+        fetchedAt: r.fetchedAt || null,
+        deletedAt: r.deletedAt || null,
+        thumbnailID: r?.thumbnailID || extractAvatarId((r?.thumbnails?.high?.url || r?.thumbnails?.medium?.url || r?.thumbnails?.default?.url || null) as (string | null)) || null,
+        subs: Number(r.subs) || null,
+        views: Number(r.views) || null,
+        videos: Number(r.videos) || 0,
+        country: r.country || null,
+        publishedAt: ((): number | null => { try { const t = Date.parse(r.publishedAt || ''); return Number.isFinite(t) ? t : (Number.isFinite(r.publishedAt) ? r.publishedAt : null); } catch { return Number.isFinite(r.publishedAt) ? r.publishedAt : null; } })(),
+        subsHidden: r.subsHidden === true,
+        tags: Array.isArray(r.tags) ? r.tags : [],
+        videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
+        keywords: r.keywords || null,
+        topics: Array.isArray(r.topics) ? r.topics : []
+      }));
+      resolve(items);
     };
     req.onerror = () => reject(req.error);
   });
@@ -1325,6 +1424,45 @@ export async function listPendingChannels(): Promise<Array<{ key: string; name?:
   });
 }
 
+// Aggregate and persist per-channel videoTopics lists by scanning videos
+export async function recomputeChannelVideoTopicsForAllChannels() {
+  const db = await openDB();
+  const map = new Map<string, Set<string>>();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('videos', 'readonly');
+    const os = tx.objectStore('videos');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const v: any = c.value;
+      const chId: string | null = v?.channelId || null;
+      if (chId) {
+        const list: string[] = Array.isArray(v?.videoTopics) ? v.videoTopics : [];
+        const set = map.get(chId) || (map.set(chId, new Set<string>()), map.get(chId)!);
+        for (const t of list) { const s = (t || '').toString().trim(); if (s) set.add(s); }
+      }
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) return resolve();
+      const row: any = c.value;
+      const set = map.get(row.id) || new Set<string>();
+      row.videoTopics = Array.from(set.values()).sort((a,b)=>a.localeCompare(b));
+      c.update(row);
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+}
+
 // Delete a single pending channel row by key
 export async function deletePendingChannel(key: string): Promise<boolean> {
   const k = (key || '').trim();
@@ -1365,5 +1503,21 @@ export async function purgeChannelsFromTrash(ids: string[]): Promise<number> {
     tx.oncomplete = () => resolve(n);
     tx.onerror = () => reject(tx.error);
   });
+}
+
+// ---- Local helpers ----
+function bestThumbSafe(thumbs: any): string | null {
+  try { return (thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null) as (string | null); } catch { return null; }
+}
+function extractAvatarId(url?: string | null): string | null {
+  try {
+    const u = String(url || ''); if (!u) return null;
+    const i = u.indexOf('yt3.ggpht.com/'); if (i === -1) return null;
+    const after = u.slice(i + 'yt3.ggpht.com/'.length);
+    const last = after.split('/').pop() || '';
+    if (!last) return null;
+    const left = last.split('=')[0];
+    return left || null;
+  } catch { return null; }
 }
 

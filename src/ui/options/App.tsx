@@ -12,6 +12,7 @@ import VideoList from './components/VideoList';
 import BackupModal from './components/BackupModal';
 import HistoryModal from './components/HistoryModal';
 import PendingPanel from './components/PendingPanel';
+import { avatarUrlFromThumbId } from '../lib/format';
 
 // ---- Types ----
 type Video = {
@@ -126,7 +127,7 @@ export default function App() {
     id: string;
     name: string;
     fetchedAt?: number | null;
-    thumbUrl?: string | null;
+    thumbnailID?: string | null;
     subs?: number | null;
     views?: number | null;
     videos?: number | null;
@@ -1485,7 +1486,7 @@ const channelsFiltered = useMemo(() => {
           <input type="checkbox" checked={selected.has(ch.id)} onChange={() => toggleSelect(ch.id)} aria-label="Select channel" />
         </label>
         <img
-          src={ch.thumbUrl || ''}
+          src={avatarUrlFromThumbId((ch as any).thumbnailID || null)}
           alt="avatar"
           style={{ width: 40, height: 40, borderRadius: '50%', background: '#222', cursor: 'pointer' }}
           onClick={() => toggleSelect(ch.id)}

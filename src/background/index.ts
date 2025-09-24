@@ -1,4 +1,4 @@
-import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -700,7 +700,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
       try {
         const ids = await listChannelIdsNeedingFetch();
-        const parts = ['snippet','statistics','brandingSettings'].join(',');
+        const parts = ['snippet','statistics','brandingSettings','contentDetails','topicDetails'].join(',');
         const chunkSize = 50;
         let applied = 0;
         for (let i = 0; i < ids.length; i += chunkSize) {
@@ -726,7 +726,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       if (!apiKey) { sendResponse?.({ ok: false, error: 'Missing API key' }); return; }
       if (ids.length === 0) { sendResponse?.({ ok: true, count: 0 }); return; }
       try {
-        const parts = ['snippet','statistics','brandingSettings'].join(',');
+        const parts = ['snippet','statistics','brandingSettings','contentDetails','topicDetails'].join(',');
         const chunkSize = 50;
         let applied = 0;
         for (let i = 0; i < ids.length; i += chunkSize) {
@@ -883,15 +883,13 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                         const prev: any = g.result || null;
                         const prevTitle = prev?.title || null;
                         const prevDesc = typeof prev?.description === 'string' ? prev.description : null;
-                        const prevThumb = (prev?.thumbUrl || null) as (string | null);
+                        // We no longer track video thumbnail URL changes (derivable from id) to reduce noise/size
                         const sn = it?.snippet || {};
                         const nextTitle: string | null = sn?.title || null;
                         const nextDesc: string | null = (typeof sn?.description === 'string') ? sn.description : null;
-                        const nextThumb: string | null = bestThumb(sn?.thumbnails) || null;
                         const changed: any = {};
                         if (prevTitle != null && nextTitle != null && prevTitle !== nextTitle) changed.title = { from: prevTitle, to: nextTitle };
                         if (prevDesc != null && nextDesc != null && prevDesc !== nextDesc) changed.description = { from: trimText(prevDesc), to: trimText(nextDesc) };
-                        if (prevThumb != null && nextThumb != null && prevThumb !== nextThumb) changed.thumbnailUrl = { from: prevThumb, to: nextThumb };
                         if (Object.keys(changed).length) {
                           try { recordEvent('videos/attrChanged', { id, changed }, { impact: { videos: 1 } }); } catch {}
                         }
@@ -924,7 +922,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           for (let j = 0; j < toFetch.length; j += chanChunk) {
             const batch = toFetch.slice(j, j + chanChunk);
             try {
-              const items = await fetchChannelsListWithRetry(['snippet','statistics','brandingSettings'].join(','), batch, apiKey);
+              const items = await fetchChannelsListWithRetry(['snippet','statistics','brandingSettings','contentDetails','topicDetails'].join(','), batch, apiKey);
               for (const ch of items) {
                 try {
                   const id = ch?.id;
@@ -937,17 +935,20 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                         const g = os.get(id);
                         g.onsuccess = () => {
                           const prev: any = g.result || null;
-                          const prevAvatar = bestThumb(prev?.thumbnails) || null;
-                          const prevBanner = (prev?.bannerUrl || null) as (string | null);
+                          // Compare compact avatar ids instead of URLs; banner no longer stored
+                          const prevAvatar = (prev?.thumbnailID || null) as (string | null);
                           const prevDesc = typeof prev?.description === 'string' ? prev.description : null;
                           const sn = ch?.snippet || {};
                           const branding = ch?.brandingSettings || {};
-                          const nextAvatar = bestThumb(sn?.thumbnails) || null;
-                          const nextBanner = (branding?.image?.bannerExternalUrl as string) || null;
+                          const nextAvatar = ((): string | null => {
+                            try { return (sn?.thumbnails?.high?.url || sn?.thumbnails?.medium?.url || sn?.thumbnails?.default?.url || null) as (string | null); } catch { return null; }
+                          })();
+                          const nextAvatarId = ((): string | null => {
+                            try { const u = nextAvatar; if (!u) return null; const i = u.indexOf('yt3.ggpht.com/'); if (i === -1) return null; const after = u.slice(i + 'yt3.ggpht.com/'.length); const last = after.split('/').pop() || ''; return (last.split('=')[0] || null); } catch { return null; }
+                          })();
                           const nextDesc = (typeof sn?.description === 'string') ? sn.description : null;
                           const changed: any = {};
-                          if (prevAvatar != null && nextAvatar != null && prevAvatar !== nextAvatar) changed.avatarUrl = { from: prevAvatar, to: nextAvatar };
-                          if (prevBanner != null && nextBanner != null && prevBanner !== nextBanner) changed.bannerUrl = { from: prevBanner, to: nextBanner };
+                          if (prevAvatar != null && nextAvatarId != null && prevAvatar !== nextAvatarId) changed.thumbnailID = { from: prevAvatar, to: nextAvatarId };
                           if (prevDesc != null && nextDesc != null && prevDesc !== nextDesc) changed.description = { from: trimText(prevDesc), to: trimText(nextDesc) };
                           if (Object.keys(changed).length) {
                             try { recordEvent('channels/attrChanged', { id, changed }, { impact: { channels: 1 } }); } catch {}
@@ -970,8 +971,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         } catch { /* ignore */ }
         try {
-          // Compute videoTags for all channels now that videos' tags are current
+          // Compute videoTags and per-channel videoTopics now that videos are current
           await recomputeVideoTagsForAllChannels();
+          await recomputeChannelVideoTopicsForAllChannels();
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         } catch {}
         try {
