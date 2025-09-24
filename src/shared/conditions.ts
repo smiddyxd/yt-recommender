@@ -10,6 +10,7 @@ export type Pred =
   | { kind: 'descriptionRegex'; pattern: string; flags?: string }
   | { kind: 'categoryIn'; ids: number[] }
   | { kind: 'isLive'; value: boolean }
+  | { kind: 'videoTypeIn'; types: Array<'video'|'short'|'livestream'> }
   | { kind: 'languageCodeIn'; codes: Array<'en'|'de'|'other'> }
   | { kind: 'visibilityIn'; values: Array<'public'|'unlisted'|'private'> }
   | { kind: 'topicAny'; topics: string[] }
@@ -51,6 +52,7 @@ export type VideoRow = {
   languageCode?: 'en'|'de'|'other'|null;
   visibility?: 'public'|'unlisted'|'private'|null;
   isLive?: boolean | null;
+  type?: 'video'|'short'|'livestream' | null;
   videoTopics?: string[] | null;
 };
 
@@ -146,6 +148,12 @@ export function matches(
     case 'categoryIn': {
       const id = v.categoryId;
       return id != null && p.ids.includes(id);
+    }
+    case 'videoTypeIn': {
+      const t = ((v as any).type || '').toString().toLowerCase();
+      if (!t) return false;
+      const set = new Set((p.types || []).map(x => (x || '').toString().toLowerCase()));
+      return set.has(t);
     }
     case 'isLive': {
       return (v.isLive === true) === (p.value === true);
@@ -268,7 +276,7 @@ export function matchesChannel(
   const p = c as Pred;
   const isVideoPred = (
     p.kind === 'titleRegex' || p.kind === 'durationRange' || p.kind === 'ageDays' ||
-    p.kind === 'descriptionRegex' || p.kind === 'categoryIn' || p.kind === 'isLive' ||
+    p.kind === 'descriptionRegex' || p.kind === 'categoryIn' || p.kind === 'isLive' || p.kind === 'videoTypeIn' ||
     p.kind === 'languageCodeIn' || p.kind === 'visibilityIn' || p.kind === 'topicAny' ||
     p.kind === 'topicAll' || p.kind === 'tagsAny' || p.kind === 'tagsAll' || p.kind === 'tagsNone' ||
     p.kind === 'flag' || p.kind === 'sourceAny' || p.kind === 'sourcePlaylistAny' || p.kind === 'groupRef'

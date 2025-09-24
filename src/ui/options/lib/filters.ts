@@ -17,6 +17,7 @@ export type FilterNode =
   | { kind: 'v_tags_none'; tagsCsv: string }
   | { kind: 'v_desc'; pattern: string; flags: string }
   | { kind: 'v_category'; ids: number[] }
+  | { kind: 'v_type'; types: Array<'video'|'short'|'livestream'> }
   | { kind: 'v_livestream'; value: boolean }
   | { kind: 'v_language'; codes: Array<'en'|'de'|'other'> }
   | { kind: 'v_visibility'; values: Array<'public'|'unlisted'|'private'> }
@@ -126,8 +127,15 @@ export function entryToCondition(e: FilterEntry): Condition | null {
     const node: Condition = { kind: 'categoryIn', ids: f.ids.slice() } as any;
     return e.not ? ({ not: node } as any) : node;
   }
+  if (f.kind === 'v_type') {
+    const types = Array.isArray(f.types) ? f.types.filter(Boolean) : [];
+    if (!types.length) return null;
+    const node: Condition = { kind: 'videoTypeIn', types } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
   if (f.kind === 'v_livestream') {
-    const node: Condition = { kind: 'isLive', value: !!f.value } as any;
+    // Map livestream chip to type predicate for consistency
+    const node: Condition = { kind: 'videoTypeIn', types: ['livestream'] } as any;
     return e.not ? ({ not: node } as any) : node;
   }
   if (f.kind === 'v_language') {
@@ -262,6 +270,10 @@ export function conditionToChainSimple(cond: any): FilterEntry[] | null {
     }
     if (leaf.kind === 'groupRef') {
       return { op: undefined, not, pred: { kind: 'group', ids: leaf.ids || [] } };
+    }
+    if (leaf.kind === 'videoTypeIn') {
+      const types: Array<'video'|'short'|'livestream'> = Array.isArray(leaf.types) ? leaf.types : [];
+      return { op: undefined, not, pred: { kind: 'v_type', types } as any };
     }
     if (leaf.kind === 'ageDays') {
       return { op: undefined, not, pred: { kind: 'age', ui: { min: leaf.min, max: leaf.max, unit: 'd' } } } as any;

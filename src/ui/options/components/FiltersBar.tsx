@@ -61,6 +61,7 @@ export default function FiltersBar({
       kind === 'title'         ? { kind: 'title', pattern: '', flags: 'i' } :
       kind === 'v_category'    ? { kind: 'v_category', ids: [] } as any :
       kind === 'v_language'    ? { kind: 'v_language', codes: [] } as any :
+      kind === 'v_type'        ? { kind: 'v_type', types: [] } as any :
       kind === 'v_visibility'  ? { kind: 'v_visibility', values: [] } as any :
       kind === 'v_livestream'  ? { kind: 'v_livestream', value: true } as any :
       kind === 'v_desc'        ? { kind: 'v_desc', pattern: '', flags: 'i' } as any :
@@ -563,6 +564,40 @@ export default function FiltersBar({
           );
         }
 
+        // ---- VIDEO: TYPE CHIP ----
+        if (f.kind === 'v_type') {
+          const selected = new Set<string>(Array.isArray((f as any).types) ? (f as any).types : []);
+          const toggle = (t: 'video'|'short'|'livestream') => setChain(arr => arr.map((e,i)=> i===idx && e.pred.kind==='v_type' ? { ...e, pred: { ...e.pred, types: ((): Array<'video'|'short'|'livestream'> => { const cur = new Set<string>(Array.isArray((e.pred as any).types) ? (e.pred as any).types : []); if (cur.has(t)) cur.delete(t); else cur.add(t); return Array.from(cur) as any; })() } } : e));
+          const Btn = (t: 'video'|'short'|'livestream', label: string) => (
+            <label key={t} className="chip-check">
+              <input type="checkbox" checked={selected.has(t)} onChange={() => toggle(t)} />
+              <span>{label}</span>
+            </label>
+          );
+          return (
+            <div className="filter-chip-row" key={idx}>
+              {OpToggle}
+              <div className="filter-chip">
+                <div className="chip-head">
+                  <span>Type</span>
+                  <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                    <label className="chip-not">
+                      <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
+                      NOT
+                    </label>
+                    <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
+                  </span>
+                </div>
+                <div className="chip-list">
+                  {Btn('video','Video')}
+                  {Btn('short','Short')}
+                  {Btn('livestream','Livestream')}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
         // ---- VIDEO: LIVESTREAM CHIP ----
         if (f.kind === 'v_livestream') {
           const checked = !!(f as any).value;
@@ -1042,6 +1077,7 @@ export default function FiltersBar({
           <option value="title">Title (regex)</option>
           <option value="v_desc">Description (regex)</option>
           <option value="v_category">Category</option>
+          <option value="v_type">Video Type</option>
           <option value="v_livestream">Livestream</option>
           <option value="v_language">Language</option>
           <option value="v_visibility">Visibility</option>
