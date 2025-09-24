@@ -399,12 +399,12 @@ function startEditFromGroup(g: GroupRec) {
   }
 
   async function deleteSelected() {
-    const ids = Array.from(selectedVisibleSet);
+    const ids = Array.from(selectedVisibleSetDisplay);
     if (!ids.length) return;
     if (inChannels || inChannelsTrash) {
       await sendBg('channels/delete', { ids });
       await loadChannelsDir();
-      clearSelection();
+      setSelected(prev => { const s = new Set(prev); ids.forEach(id => s.delete(id)); return s; });
       return;
     } else {
       await sendBg('videos/delete', { ids });
@@ -412,7 +412,7 @@ function startEditFromGroup(g: GroupRec) {
 
     setLastDeleted(ids);
     setShowUndo(true);
-    clearSelection();
+    setSelected(prev => { const s = new Set(prev); ids.forEach(id => s.delete(id)); return s; });
     await refresh();
 
     // auto-hide toast after a bit (optional)
@@ -443,7 +443,7 @@ function startEditFromGroup(g: GroupRec) {
   }
 
   async function purgeSelected() {
-    const ids = Array.from(selectedVisibleSet);
+    const ids = Array.from(selectedVisibleSetDisplay);
     if (!ids.length) return;
     const confirmMsg = (inChannelsTrash || inTrash)
       ? `Permanently delete ${ids.length} item(s) from trash? This cannot be undone.`
@@ -452,12 +452,12 @@ function startEditFromGroup(g: GroupRec) {
     if (inChannelsTrash) {
       await sendBg('channels/purge', { ids });
       await loadChannelsDir();
-      clearSelection();
+      setSelected(prev => { const s = new Set(prev); ids.forEach(id => s.delete(id)); return s; });
       return;
     }
     if (inTrash) {
       await sendBg('videos/purge', { ids });
-      clearSelection();
+      setSelected(prev => { const s = new Set(prev); ids.forEach(id => s.delete(id)); return s; });
       await refresh();
     }
   }
@@ -491,7 +491,12 @@ function startEditFromGroup(g: GroupRec) {
   }
 
   function selectAllMatching(allIds: string[]) {
-    setSelected(new Set(allIds));
+    // Union with existing selection; preserve disabled (hidden) selections
+    setSelected(prev => {
+      const next = new Set(prev);
+      for (const id of allIds) next.add(id);
+      return next;
+    });
   }
 
   function clearSelection() {
@@ -702,8 +707,8 @@ const channelsFiltered = useMemo(() => {
   );
 }, [channels, q, chain, videos, groups, showStubsOnly]);
 
-  // Visible ids under current filter (selection is temporarily disabled for hidden ones)
-  const visibleIds = useMemo(() => {
+  // Visible ids under current (normal) filter; selection is temporarily disabled for items not in this set
+  const visibleIdsNormal = useMemo(() => {
     const ids = new Set<string>();
     if (inChannels || inChannelsTrash) {
       for (const ch of channelsFiltered) ids.add(ch.id);
@@ -713,18 +718,47 @@ const channelsFiltered = useMemo(() => {
     return ids;
   }, [inChannels, inChannelsTrash, channelsFiltered, filtered]);
 
-  const selectedVisibleSet = useMemo(() => {
+  const selectedVisibleSetNormal = useMemo(() => {
     const s = new Set<string>();
-    selected.forEach(id => { if (visibleIds.has(id)) s.add(id); });
+    selected.forEach(id => { if (visibleIdsNormal.has(id)) s.add(id); });
     return s;
-  }, [selected, visibleIds]);
-  const selectedVisibleCount = selectedVisibleSet.size;
+  }, [selected, visibleIdsNormal]);
+  const selectedVisibleCount = selectedVisibleSetNormal.size;
   const selectedHiddenCount = useMemo(() => {
-    let n = 0; selected.forEach(id => { if (!visibleIds.has(id)) n++; }); return n;
-  }, [selected, visibleIds]);
+    let n = 0; selected.forEach(id => { if (!visibleIdsNormal.has(id)) n++; }); return n;
+  }, [selected, visibleIdsNormal]);
+  // Toggle to show disabled (hidden) selected items instead of normal filtered results
+  const [showDisabledOnly, setShowDisabledOnly] = useState(false);
 
-  // For selected items, how many have each tag (visible selection only)?
-  const selectedVideosVisible = useMemo(() => videos.filter(v => selectedVisibleSet.has(v.id)), [videos, selectedVisibleSet]);
+  // Display lists depending on mode
+  const displayVideos = useMemo(() => {
+    if (showDisabledOnly) {
+      // show selected items that are hidden by current filters
+      return videos.filter(v => selected.has(v.id) && !visibleIdsNormal.has(v.id));
+    }
+    return filtered;
+  }, [showDisabledOnly, videos, selected, filtered, visibleIdsNormal]);
+  const displayChannels = useMemo(() => {
+    if (showDisabledOnly) {
+      return channels.filter(ch => selected.has(ch.id) && !visibleIdsNormal.has(ch.id));
+    }
+    return channelsFiltered;
+  }, [showDisabledOnly, channels, selected, channelsFiltered, visibleIdsNormal]);
+
+  // Visible selection for currently displayed list (normal or disabled view)
+  const selectedVisibleSetDisplay = useMemo(() => {
+    const s = new Set<string>();
+    if (inChannels || inChannelsTrash) {
+      for (const ch of displayChannels) if (selected.has(ch.id)) s.add(ch.id);
+    } else {
+      for (const v of displayVideos) if (selected.has(v.id)) s.add(v.id);
+    }
+    return s;
+  }, [inChannels, inChannelsTrash, displayChannels, displayVideos, selected]);
+  const selectedVisibleCountDisplay = selectedVisibleSetDisplay.size;
+
+  // For selected items, how many have each tag (display-visible selection only)?
+  const selectedVideosVisible = useMemo(() => videos.filter(v => selectedVisibleSetDisplay.has(v.id)), [videos, selectedVisibleSetDisplay]);
   const tagCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const v of selectedVideosVisible) for (const t of v.tags || []) m.set(t, (m.get(t) || 0) + 1);
@@ -822,17 +856,19 @@ const channelsFiltered = useMemo(() => {
   }
 
   const sortedVideos = useMemo(() => {
+    const base = displayVideos;
     if (!videoSorts.length) {
       // default for videos
-      return filtered.slice().sort((a,b) => (b.uploadedAt||0) - (a.uploadedAt||0));
+      return base.slice().sort((a,b) => (b.uploadedAt||0) - (a.uploadedAt||0));
     }
-    return applySort(filtered, videoSorts, 'videos');
-  }, [filtered, videoSorts]);
+    return applySort(base, videoSorts, 'videos');
+  }, [displayVideos, videoSorts]);
 
   const sortedChannels = useMemo(() => {
-    if (!channelSorts.length) return channelsFiltered;
-    return applySort(channelsFiltered, channelSorts, 'channels');
-  }, [channelsFiltered, channelSorts]);
+    const base = displayChannels;
+    if (!channelSorts.length) return base;
+    return applySort(base, channelSorts, 'channels');
+  }, [displayChannels, channelSorts]);
 
   const inChannelLike = inChannels || inChannelsTrash;
   const total = inChannelLike ? sortedChannels.length : sortedVideos.length;
@@ -1008,8 +1044,8 @@ const channelsFiltered = useMemo(() => {
 
   function applyTagToSelection(tag: string) {
     if (inChannels) {
-      const selectedIds = Array.from(selectedVisibleSet);
-      const haveAll = selectedIds.length > 0 && channels.reduce((n: number, c) => (selectedVisibleSet.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
+      const selectedIds = Array.from(selectedVisibleSetDisplay);
+      const haveAll = selectedIds.length > 0 && channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
       sendBg('channels/applyTags', {
         ids: selectedIds,
         addIds: haveAll ? [] : [tag],
@@ -1017,9 +1053,10 @@ const channelsFiltered = useMemo(() => {
       }).then(() => loadChannelsDir());
       return;
     }
-    const haveAllVideos = selectedVisibleCount > 0 && (tagCounts.get(tag) || 0) === selectedVisibleCount;
+    // Respect the selection visible in the current display mode (filtered or disabled view)
+    const haveAllVideos = selectedVisibleCountDisplay > 0 && (tagCounts.get(tag) || 0) === selectedVisibleCountDisplay;
     sendBg('videos/applyTags', {
-      ids: Array.from(selectedVisibleSet),
+      ids: Array.from(selectedVisibleSetDisplay),
       addIds: haveAllVideos ? [] : [tag],
       removeIds: haveAllVideos ? [tag] : []
     }).then(() => refresh());
@@ -1124,7 +1161,7 @@ const channelsFiltered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Select all (matching filter)"
-                onClick={() => selectAllMatching(inChannelLike ? channelsFiltered.map(ch => ch.id) : filtered.map(v => v.id))}
+                onClick={() => selectAllMatching((inChannels || inChannelsTrash) ? displayChannels.map(ch => ch.id) : displayVideos.map(v => v.id))}
               >
                 all
               </button>
@@ -1147,16 +1184,25 @@ const channelsFiltered = useMemo(() => {
                   setSelected(prev => {
                     const next = new Set(prev);
                     if (inChannels || inChannelsTrash) {
-                      for (const ch of channelsFiltered) { if (next.has(ch.id)) next.delete(ch.id); else next.add(ch.id); }
+                      for (const ch of displayChannels) { if (next.has(ch.id)) next.delete(ch.id); else next.add(ch.id); }
                     } else {
-                      for (const v of filtered) { if (next.has(v.id)) next.delete(v.id); else next.add(v.id); }
+                      for (const v of displayVideos) { if (next.has(v.id)) next.delete(v.id); else next.add(v.id); }
                     }
                     return next;
                   });
                 }}
-                disabled={(inChannels || inChannelsTrash) ? channelsFiltered.length === 0 : filtered.length === 0}
+                disabled={(inChannels || inChannelsTrash) ? displayChannels.length === 0 : displayVideos.length === 0}
               >
                 Inv
+              </button>
+
+              <button
+                type="button"
+                className="btn-ghost"
+                title={showDisabledOnly ? 'Show filtered results' : 'Show disabled selection'}
+                onClick={() => setShowDisabledOnly(v => !v)}
+              >
+                D
               </button>
 
               <span className="sel-info">{selectedVisibleCount}{selectedHiddenCount > 0 ? ` -${selectedHiddenCount}` : ''}</span>
@@ -1168,7 +1214,7 @@ const channelsFiltered = useMemo(() => {
               className="btn-danger"
               title={(inTrash || inChannelsTrash) ? 'Delete selected permanently' : 'Delete selected (moves to Trash)'}
               onClick={(inTrash || inChannelsTrash) ? purgeSelected : deleteSelected}
-              disabled={selectedVisibleCount === 0}
+              disabled={selectedVisibleCountDisplay === 0}
             >
               X
             </button>
@@ -1177,8 +1223,8 @@ const channelsFiltered = useMemo(() => {
                 type="button"
                 className="btn-ghost"
                 title="Restore selected channels from trash"
-                onClick={async () => { const ids = Array.from(selectedVisibleSet); if (!ids.length) return; await sendBg('channels/restore', { ids }); clearSelection(); await loadChannelsDir(); }}
-                disabled={selectedVisibleCount === 0}
+                onClick={async () => { const ids = Array.from(selectedVisibleSetDisplay); if (!ids.length) return; await sendBg('channels/restore', { ids }); setSelected(prev => { const s = new Set(prev); ids.forEach(id => s.delete(id)); return s; }); await loadChannelsDir(); }}
+                disabled={selectedVisibleCountDisplay === 0}
               >
                 Restore
               </button>
@@ -1188,7 +1234,7 @@ const channelsFiltered = useMemo(() => {
               className="btn-ghost"
               title="Tag selected"
               onClick={() => setShowTagger(v => !v)}
-              disabled={selectedVisibleCount === 0}
+              disabled={selectedVisibleCountDisplay === 0}
             >
               tags
             </button>
@@ -1274,7 +1320,7 @@ const channelsFiltered = useMemo(() => {
             {/* Wipe sources removed per UX */}
           </div>
         </header>
-        {showTagger && selectedVisibleCount > 0 && (
+        {showTagger && selectedVisibleCountDisplay > 0 && (
           <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ marginRight: 8 }}>Apply tag:</span>
             {/* Grouped dropdowns */}
@@ -1288,8 +1334,8 @@ const channelsFiltered = useMemo(() => {
                   <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                     {names.map(tag => {
                       const haveAll = inChannels
-                        ? (channels.reduce((n: number, c) => (selectedVisibleSet.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCount && selectedVisibleCount > 0)
-                        : ((tagCounts.get(tag) || 0) === selectedVisibleCount && selectedVisibleCount > 0);
+                        ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0)
+                        : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);
                       return (
                         <button
                           key={tag}
@@ -1503,3 +1549,12 @@ const channelsFiltered = useMemo(() => {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

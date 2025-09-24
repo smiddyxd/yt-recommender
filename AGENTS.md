@@ -181,8 +181,9 @@
   - Videos <-> Channels (aware of trash)
   - Trash toggle (switches Videos <-> Videos Trash or Channels <-> Channels Trash)
 - Selection toolbar:
-  - Buttons: `all` (select all matching current filter), `C` (clear all selection), `Inv` (invert selection within current filter), `X` (delete/purge selected; disabled when no visible selection), `tags` (open tagger; disabled when no visible selection).
-  - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
+  - Buttons: `all` (select all matching current filter), `C` (clear all selection), `Inv` (invert selection within current filter), `D` (toggle display between normal filtered results and the disabled selection), `X` (delete/purge selected; disabled when no visible selection), `tags` (open tagger; disabled when no visible selection).
+  - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible under the normal filter, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions in normal view and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
+  - Display toggle `D`: when active, the list shows only the disabled selection (items currently hidden by the filter). Actions (`X`, `tags`, `Inv`, `all`) operate on the items visible in the current display mode. The `N -M` counter remains anchored to the normal filter (so `-M` always means "hidden by current filters").
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
   - "Fetch video data" calls YouTube API to fetch video metadata.
