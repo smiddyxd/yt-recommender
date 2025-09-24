@@ -10,6 +10,7 @@ type EventKind =
   | 'videos/delete' | 'videos/restore' | 'videos/purge'
   | 'videos/progress'
   | 'videos/wipeSources'
+  | 'videos/typeSet'
   | 'groups/create' | 'groups/update' | 'groups/delete'
   | 'tags/create' | 'tags/rename' | 'tags/delete' | 'tags/assignGroup'
   | 'tagGroups/create' | 'tagGroups/rename' | 'tagGroups/delete'

@@ -298,6 +298,18 @@ function PopupApp() {
       {ctx.videoId && (
         <div className="section">
           <h2>Video Tags</h2>
+          {/* Video Type toggle (does not change tags) */}
+          <div className="row" style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
+            <span className="meta">Type:</span>
+            {(() => {
+              const cur = String(((video as any)?.type || '')).toLowerCase();
+              const setType = async (t: 'video'|'short'|'livestream') => { if (!ctx.videoId) return; await sendBg('videos/setType', { ids: [ctx.videoId], type: t } as any); };
+              const Btn = (t: 'video'|'short'|'livestream', label: string) => (
+                <button className="btn-ghost" style={{ background: cur === t ? '#203040' : undefined }} onClick={() => setType(t)}>{label}</button>
+              );
+              return <>{Btn('video','Video')}{Btn('short','Short')}{Btn('livestream','Livestream')}</>;
+            })()}
+          </div>
           <TagChips labels={videoTags} onRemove={removeVideoTag} />
           <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             {Array.from(byGroup.map.entries()).map(([gid, names]) => (

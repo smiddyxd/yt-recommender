@@ -1323,6 +1323,26 @@ const channelsFiltered = useMemo(() => {
         </header>
         {showTagger && selectedVisibleCountDisplay > 0 && (
           <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            {/* Video Type toggles (does not change tags) */}
+            {!inChannels && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <span>Video Type:</span>
+                {(() => {
+                  const selectedTypes = new Set<string>();
+                  for (const v of selectedVideosVisible) { const t = String((v as any).type || '').toLowerCase(); if (t) selectedTypes.add(t); }
+                  const common = selectedTypes.size === 1 ? Array.from(selectedTypes)[0] : '';
+                  const setType = async (t: 'video'|'short'|'livestream') => {
+                    const ids = Array.from(selectedVisibleSetDisplay);
+                    if (!ids.length) return;
+                    await sendBg('videos/setType', { ids, type: t } as any);
+                  };
+                  const btn = (t: 'video'|'short'|'livestream', label: string) => (
+                    <button type="button" className="btn-ghost" style={{ background: common === t ? '#203040' : undefined }} onClick={() => setType(t)}>{label}</button>
+                  );
+                  return <>{btn('video','Video')}{btn('short','Short')}{btn('livestream','Livestream')}</>;
+                })()}
+              </div>
+            )}
             <span style={{ marginRight: 8 }}>Apply tag:</span>
             {/* Grouped dropdowns */}
             {Array.from(tagsByGroup.grouped.entries()).map(([gid, names]) => {

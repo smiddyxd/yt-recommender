@@ -111,6 +111,31 @@
   - New compact projection: `thumbnailID` (unique part of `yt3.ggpht.com` avatar URLs), `playlists` (from `contentDetails.relatedPlaylists`).
   - Removed redundant: `bannerUrl`, raw `yt` payload, and full `thumbnails` object.
 
+### Stored Record Signatures (v14)
+- Video (store: `videos`, keyPath: `id`):
+  - Identity: `id: string`
+  - Basic: `title?: string`, `channelId?: string`, `channelName?: string`, `uploadedAt?: number|null`, `durationSec?: number|null`, `fetchedAt?: number|null`
+  - Tags/flags: `tags?: string[]`, `ytTags?: string[]`, `flags?: { started?: boolean; completed?: boolean }`
+  - Progress: `progress?: { sec?: number; pct?: number; duration?: number }`
+  - Sources: `sources?: Array<{ type: string; id?: string|null }>`
+  - Visibility/lang: `visibility?: 'public'|'unlisted'|'private'|null`, `languageCode?: 'en'|'de'|'other'|null`, `isLive?: boolean|null`
+  - Topics: `videoTopics?: string[]`
+  - Compact projections: `type?: 'video'|'short'|'livestream'`, `transcript?: ''|'no transcript'`, `views?: number`, `likes?: number`, `commentCount?: number`, `liveViewers?: number`, `rejectionReason?: string`, `failureReason?: string`, `premiereTime?: number|null`, `customThumbnail?: boolean`, `contentRating?: string`, `regionRestriction?: { allowed?: string[]; blocked?: string[] }`
+  - Recency/markers: `lastSeenAt?: number`, `latestFromSubFeed?: boolean`, `latestFromWatchHistory?: boolean`
+  - Removed in v14: `thumbUrl`, `yt`
+
+- Channel (store: `channels`, keyPath: `id`):
+  - Identity: `id: string`, `name?: string`, `customUrl?: string|null`, `altHandles?: string[]`
+  - Stats: `subs?: number|null`, `views?: number|null`, `videos?: number|null`, `subsHidden?: boolean`
+  - Locale/meta: `country?: string|null`, `publishedAt?: number|null`, `keywords?: string|null`
+  - Avatars/playlists: `thumbnailID?: string|null`, `playlists?: { uploads?: string; likes?: string; watchHistory?: string; watchLater?: string; favorites?: string } | null`
+  - Topics/descriptions: `topics?: string[]` (YouTube channel topics, URLs), `videoTopics?: string[]` (aggregated from videos), `description?: string|null`
+  - Tags: `tags?: string[]`, `videoTags?: string[]` (derived from videos’ tags)
+  - Scrape markers: `scrapedAt?: number`, `scrapedAtVideos?: number`, `scrapedAtShorts?: number`, `scrapedAtLivestreams?: number`, `scrapedVideoCount?: number`, `scrapedShortsCount?: number`, `scrapedLivestreamCount?: number`, `totalVideoCountOnScrapeTime?: number|null`
+  - Subscriptions: `subscribed?: boolean`, `unsubscribed?: boolean`
+  - Timestamps: `fetchedAt?: number|null`
+  - Removed in v14: `thumbnails`, `bannerUrl`, `yt`
+
 ## Messaging Protocol
 - Content -> Background
   - `cache/VIDEO_SEEN`, `cache/VIDEO_STUB`
@@ -121,7 +146,7 @@
 - Background -> Content (scrape loop)
   - `scrape/NOW`, `scrape/LOG` (accepts `stopAtId`, returns `foundStopId` and `dom.firstId`), `scrape/SCROLL`, `scrape/SCROLL_BOTTOM`, `scrape/FINAL`
 - UI -> Background (selected)
-  - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
+  - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/setType`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
   - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`, `channels/stubsCount`
   - Trash purge: `videos/purge` (delete permanently from videos trash), `channels/purge` (delete permanently from channels trash)
   - Tags: `tags/list`, `tags/create`, `tags/rename`, `tags/delete`, `tags/assignGroup`
@@ -147,6 +172,10 @@
   - Channels: diffs for `thumbnailID` and `description`.
 - After video refresh: fetch missing/stale channel rows, recompute channel `videoTags[]`, recompute per-channel `videoTopics[]`, and recompute global `videoTopics` in `meta`.
  - Refresh gating: `videos/refreshAll` skips any video tagged `no fetch` and any video whose channel is tagged `no fetch`.
+
+### Request Parts (standardized)
+- `videos.list.part`: `snippet,contentDetails,status,statistics,topicDetails,recordingDetails,liveStreamingDetails,localizations`
+- `channels.list.part`: `snippet,statistics,brandingSettings,contentDetails,topicDetails`
 
 ## Backup, History & Snapshots
 - OAuth via `chrome.identity.launchWebAuthFlow` (scope: `drive.appdata`). Silent by default; UI requests interactive auth on demand.
@@ -310,7 +339,7 @@
   - Data: stop storing raw `yt` payloads for videos/channels; add compact projections to video rows (`type`, `transcript`, `views`, `likes`, `commentCount`, `liveViewers`, `rejectionReason`, `failureReason`, `premiereTime`, `customThumbnail`, `contentRating`, `regionRestriction`).
   - Data: channels store `thumbnailID` (unique avatar hash), `playlists` (related playlists), and omit `thumbnails`/`bannerUrl`/raw `yt`.
   - UI: Options uses lowest-resolution images; channel avatars built from `thumbnailID`.
-  - Refresh: channel fetch now requests `contentDetails` and `topicDetails`; selective diffs updated (`thumbnailID` instead of `avatarUrl`/`bannerUrl`).
+  - Refresh: channel fetch now requests `contentDetails` and `topicDetails`; selective diffs updated (`thumbnailID` instead of `avatarUrl`/`bannerUrl`). Video fetch no longer requests the `player` part.
   - Derived: added per-channel `videoTopics[]` aggregation after video refresh.
   - History: exclude pending channel operations from version history (`pending/*` are ignored by the event recorder) to reduce noise in Version History and snapshots.
   - Scrape: Sub Feed and Watch History routines now scroll aggressively — background sends `scrape/SCROLL_BOTTOM` every iteration to reach the bottom faster and load more items.

@@ -608,6 +608,35 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('videos/applyTags', { ids: ids || [], addIds: add, removeIds: rem }, { impact: { videos: (ids || []).length, tags: add.length + rem.length } });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/setType') {
+        const ids: string[] = Array.isArray(raw.payload?.ids) ? raw.payload.ids.filter(Boolean) : [];
+        const type: string = String(raw.payload?.type || '').toLowerCase();
+        if (!ids.length || !['video','short','livestream'].includes(type)) { sendResponse?.({ ok: false, error: 'Invalid args' }); return; }
+        const db = await openDB();
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('videos', 'readwrite');
+          const os = tx.objectStore('videos');
+          (async () => {
+            for (const id of ids) {
+              await new Promise<void>((res, rej) => {
+                const g = os.get(id);
+                g.onsuccess = () => {
+                  const row = (g.result as any) || { id };
+                  row.type = type;
+                  os.put(row);
+                  res();
+                };
+                g.onerror = () => rej(g.error);
+              });
+            }
+          })().then(() => (tx as any).commit?.());
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+        recordEvent('videos/typeSet', { ids, to: type }, { impact: { videos: ids.length } });
+        scheduleBackup();
+        sendResponse?.({ ok: true, count: ids.length });
       } else if (raw.type === 'tags/list') {
         const items = await listTags();
         const present = new Set(items.map(t => String(t.name || '').toLowerCase()));
@@ -854,7 +883,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const ids = await listVideoIds({ skipFetched });
         const parts = [
           'snippet', 'contentDetails', 'status', 'statistics',
-          'player', 'topicDetails', 'recordingDetails', 'liveStreamingDetails', 'localizations'
+          'topicDetails', 'recordingDetails', 'liveStreamingDetails', 'localizations'
         ].join(',');
         const chunkSize = 50;
         const total = ids.length;
