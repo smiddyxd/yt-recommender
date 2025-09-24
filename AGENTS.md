@@ -14,7 +14,7 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-23
+**Verified As Of:** 2025-09-24
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -44,7 +44,7 @@
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
 
 ### Content
-- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting.
+- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting. `scrape/LOG` returns `dom.firstId` and accepts `stopAtId`, replying with `foundStopId`.
 - `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
 - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
 - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
@@ -52,7 +52,7 @@
 
 ### UI
 - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
-  - Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history.
+- Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "×" button on the right to remove the entry.
 - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch).
 
 ### Shared / Types
@@ -77,7 +77,8 @@
 ## Scrape Panel (Sub Feed / Watch History)
 - Stop condition: background stops when content-reported cumulative DOM-unique IDs reach the configured max.
 - Batching: content sends seeds via `cache/VIDEO_SEEN_BATCH` (chunked) and background bulk-writes (`upsertVideosBulk`).
-- Stall detection: if DOM-unique does not increase across two iterations, background triggers `scrape/SCROLL_BOTTOM` to force a bottom scroll and nudge loaders.
+- Aggressive scrolling: background now issues `scrape/SCROLL_BOTTOM` every iteration to continuously push the page to the bottom and load more items; this replaces the prior stall-only nudge.
+ - New toggles: checkboxes allow stopping when the previously marked most recent item is encountered again on Sub Feed and Watch History runs. Labels: "Sub Feed: stop at previous most recent video" and "History: stop at previous most recent video". Stored in `chrome.storage.local` under `scrape.stopAtPrevLatest.subFeed` and `scrape.stopAtPrevLatest.history`.
 - Finalization: background waits until pending upserts are flushed and upserts >= last DOM cumulative, logs a final summary, then closes the tab.
 - Per-iteration page-console logs include anchors/withId/uniqueIds/noRoot/noId/seen(upserts)/pending(upserts)/cumulative(dom)/max/stall.
 
@@ -100,10 +101,10 @@
   - `channels` (keyPath: `id`) - indexes: `byName`, `byFetchedAt`.
   - `channels_trash` (keyPath: `id`) - index: `byDeletedAt`.
   - `channels_pending` (keyPath: `key`) - index: `byCreatedAt`; rows like `{ key: 'handle:@foo' | 'name:Some Name', name?, handle?, subscribedPending?, createdAt?, updatedAt? }`.
-  - `meta` (keyPath: `key`) - holds aggregated lists like `{ key: 'videoTopics', list: string[] }`.
+  - `meta` (keyPath: `key`) - holds aggregated lists like `{ key: 'videoTopics', list: string[] }`. Also stores per-source latest markers: `{ key: 'latestBy.SubscriptionsFeed', value: '<videoId>' }`, `{ key: 'latestBy.WatchHistory', value: '<videoId>' }`.
   - `events_commits` (keyPath: `commitId`) - index: `byTs`.
   - `events` (keyPath: `id`) - index: `byCommit`.
-- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`.
+- Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `thumbUrl`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`. Markers: `latestFromSubFeed?`, `latestFromWatchHistory?` booleans.
 - Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `keywords`, `topics[]`, `description`, `bannerUrl`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
 
 ## Messaging Protocol
@@ -114,7 +115,7 @@
   - `cache/VIDEO_SEEN_BATCH` (batched seeds for bulk DB write via single transaction)
 
 - Background -> Content (scrape loop)
-  - `scrape/NOW`, `scrape/LOG`, `scrape/SCROLL`, `scrape/SCROLL_BOTTOM`, `scrape/FINAL`
+  - `scrape/NOW`, `scrape/LOG` (accepts `stopAtId`, returns `foundStopId` and `dom.firstId`), `scrape/SCROLL`, `scrape/SCROLL_BOTTOM`, `scrape/FINAL`
 - UI -> Background (selected)
   - Videos: `videos/delete`, `videos/restore`, `videos/applyTags`, `videos/wipeSources`, `videos/refreshAll`, `videos/stubsCount`, `videos/applyYTBatch`
   - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`, `channels/stubsCount`
@@ -123,7 +124,7 @@
   - Tag Groups: `tagGroups/list`, `tagGroups/create`, `tagGroups/rename`, `tagGroups/delete`
   - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
   - Topics: `topics/list`
-  - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`
+- Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`, `channels/pending/delete`
   - Scrape Panel: `scrape/status`, `scrape/stop`, `scrape/resolveIds`, `scrape/subFeed`, `scrape/subscriptionsManager`, `scrape/history`, `scrape/runAll`
   - Backup core: `backup/getClientId`, `backup/setClientId`, `backup/saveSettings`, `backup/restoreSettings`, `backup/listFiles`, `backup/downloadFile`, `backup/downloadFileRange`, `backup/wipeAll`
   - History: `backup/history/list`, `backup/history/getCommit`, `backup/history/getUpTo`, `backup/history/deleteUpTo`, `backup/history/usage`, `backup/history/import`, `backup/history/revertTo`, `backup/history/snapshotNow`
@@ -150,7 +151,7 @@
   - `events-YYYY-MM.jsonl` (monthly append-only history with a JSON header line).
   - Optional `cutoff.json` markers after "Delete up to here".
 - Dynamic checkpoints: when commit processing weight >= 10,000 or month file size >= 20 MB, background saves a snapshot and resets counters; a daily alarm also saves settings.
-- Event history: call `recordEvent` for meaningful mutations (tag ops, delete/restore, assign group, channel tag ops, etc.) and include an `impact` estimate for snapshot thresholds.
+- Event history: call `recordEvent` for meaningful mutations (tag ops, delete/restore, assign group, channel tag ops, etc.) and include an `impact` estimate for snapshot thresholds. Ephemeral pending-channels operations (`pending/upsert`, `pending/resolve`, `pending/delete`) are excluded from version history and do not create events/commits.
 - Commit flush: `queueCommitFlush(3000)` batches events; `finalizeCommitAndFlushIfAny()` runs during backup schedule.
 - JSONL month files are rewritten by appending full commits; export slicing operates on entire commits so follow-up events stay intact.
 - Deduplication: when appending a commit to a monthly JSONL, the background checks for an existing matching `commitId` in that file and skips appending duplicates. This protects against replay/import edge cases.
@@ -162,9 +163,10 @@
 - Importing earlier history also requires matching the Drive cutoff marker before data is merged locally.
 
 ### History Exports Behavior
-- Download commit: exports only that commit’s events from local IDB (no header; event lines omit `commitId`/`size`).
+- Download commit: exports only that commit's events from local IDB (no header; event lines omit `commitId`/`size`).
 - Download up to here: bundles monthly files from Drive, slicing the commit month from the file header through the target commit (inclusive), using raw JSONL lines (with `commitId` and `size`).
 - Slicing detail: the month slicer includes all lines up to the last occurrence of the target `commitId`. If a month file ever contained duplicate entries for the same commit (e.g., older replay/import), the bundle may include intervening commits and a repeated target commit. The dedup-on-append guard above prevents new duplicates.
+ - Pending channels operations (`pending/*`) are not recorded in version history; they do not appear in export lines.
 
 ## Restore (Dry Run + Apply)
 - Snapshot shape: `{ version:1, at, tags[], tagGroups[], groups[], videoIndex[], channelIndex[], pendingChannels[] }`.
@@ -178,6 +180,9 @@
   - List <-> Grid view
   - Videos <-> Channels (aware of trash)
   - Trash toggle (switches Videos <-> Videos Trash or Channels <-> Channels Trash)
+- Selection toolbar:
+  - Buttons: `all` (select all matching current filter), `C` (clear all selection), `Inv` (invert selection within current filter), `X` (delete/purge selected; disabled when no visible selection), `tags` (open tagger; disabled when no visible selection).
+  - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
   - "Fetch video data" calls YouTube API to fetch video metadata.
@@ -288,6 +293,10 @@
   4) Document store schema in this file
 
 ## Changelog
+- 2025-09-24
+  - History: exclude pending channel operations from version history (`pending/*` are ignored by the event recorder) to reduce noise in Version History and snapshots.
+  - Scrape: Sub Feed and Watch History routines now scroll aggressively — background sends `scrape/SCROLL_BOTTOM` every iteration to reach the bottom faster and load more items.
+  - Scrape Panel: Added per-source toggles to "stop at previous most recent video" for Sub Feed and Watch History. Each run marks the top-most item as latest for that source (stored in `meta` and flagged on the video), and early-stops when enabled.
 - 2025-09-23
   - DB_VERSION bumped to 13. Removed legacy `videos.byLastSeen` index during upgrade; no data loss.
   - History: added dedup-on-append guard to monthly JSONL (skip appending a commit if the same `commitId` already exists).

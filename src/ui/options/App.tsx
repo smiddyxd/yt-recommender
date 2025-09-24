@@ -399,7 +399,7 @@ function startEditFromGroup(g: GroupRec) {
   }
 
   async function deleteSelected() {
-    const ids = Array.from(selected);
+    const ids = Array.from(selectedVisibleSet);
     if (!ids.length) return;
     if (inChannels || inChannelsTrash) {
       await sendBg('channels/delete', { ids });
@@ -443,7 +443,7 @@ function startEditFromGroup(g: GroupRec) {
   }
 
   async function purgeSelected() {
-    const ids = Array.from(selected);
+    const ids = Array.from(selectedVisibleSet);
     if (!ids.length) return;
     const confirmMsg = (inChannelsTrash || inTrash)
       ? `Permanently delete ${ids.length} item(s) from trash? This cannot be undone.`
@@ -612,13 +612,7 @@ const groupsById = useMemo(() => {
   for (const g of groups) m.set(g.id, g);
   return m;
 }, [groups]);
-  // For selected items, how many have each tag?
-  const selectedVideos = useMemo(() => videos.filter(v => selected.has(v.id)), [videos, selected]);
-  const tagCounts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const v of selectedVideos) for (const t of v.tags || []) m.set(t, (m.get(t) || 0) + 1);
-    return m;
-  }, [selectedVideos]);
+  // (moved) tagCounts is computed after visible/hidden selection is derived
   // AFTER: derive names from the registry we loaded via tags/list
   // All registry tags (for the tag apply UI)
   const availableTags = useMemo(() => tags.map(t => t.name), [tags]);
@@ -707,6 +701,35 @@ const channelsFiltered = useMemo(() => {
     (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
   );
 }, [channels, q, chain, videos, groups, showStubsOnly]);
+
+  // Visible ids under current filter (selection is temporarily disabled for hidden ones)
+  const visibleIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (inChannels || inChannelsTrash) {
+      for (const ch of channelsFiltered) ids.add(ch.id);
+    } else {
+      for (const v of filtered) ids.add(v.id);
+    }
+    return ids;
+  }, [inChannels, inChannelsTrash, channelsFiltered, filtered]);
+
+  const selectedVisibleSet = useMemo(() => {
+    const s = new Set<string>();
+    selected.forEach(id => { if (visibleIds.has(id)) s.add(id); });
+    return s;
+  }, [selected, visibleIds]);
+  const selectedVisibleCount = selectedVisibleSet.size;
+  const selectedHiddenCount = useMemo(() => {
+    let n = 0; selected.forEach(id => { if (!visibleIds.has(id)) n++; }); return n;
+  }, [selected, visibleIds]);
+
+  // For selected items, how many have each tag (visible selection only)?
+  const selectedVideosVisible = useMemo(() => videos.filter(v => selectedVisibleSet.has(v.id)), [videos, selectedVisibleSet]);
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const v of selectedVideosVisible) for (const t of v.tags || []) m.set(t, (m.get(t) || 0) + 1);
+    return m;
+  }, [selectedVideosVisible]);
 
   // Tag options derived from current results, ignoring the tag predicates themselves
   const videoTagOptions = useMemo((): Array<{ name: string; count: number }> => {
@@ -985,8 +1008,8 @@ const channelsFiltered = useMemo(() => {
 
   function applyTagToSelection(tag: string) {
     if (inChannels) {
-      const selectedIds = Array.from(selected);
-      const haveAll = selectedIds.length > 0 && channels.reduce((n: number, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
+      const selectedIds = Array.from(selectedVisibleSet);
+      const haveAll = selectedIds.length > 0 && channels.reduce((n: number, c) => (selectedVisibleSet.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedIds.length;
       sendBg('channels/applyTags', {
         ids: selectedIds,
         addIds: haveAll ? [] : [tag],
@@ -994,9 +1017,9 @@ const channelsFiltered = useMemo(() => {
       }).then(() => loadChannelsDir());
       return;
     }
-    const haveAllVideos = selectedCount > 0 && (tagCounts.get(tag) || 0) === selectedCount;
+    const haveAllVideos = selectedVisibleCount > 0 && (tagCounts.get(tag) || 0) === selectedVisibleCount;
     sendBg('videos/applyTags', {
-      ids: Array.from(selected),
+      ids: Array.from(selectedVisibleSet),
       addIds: haveAllVideos ? [] : [tag],
       removeIds: haveAllVideos ? [tag] : []
     }).then(() => refresh());
@@ -1103,7 +1126,7 @@ const channelsFiltered = useMemo(() => {
                 title="Select all (matching filter)"
                 onClick={() => selectAllMatching(inChannelLike ? channelsFiltered.map(ch => ch.id) : filtered.map(v => v.id))}
               >
-                Select all (matching)
+                all
               </button>
 
               <button
@@ -1113,10 +1136,30 @@ const channelsFiltered = useMemo(() => {
                 onClick={clearSelection}
                 disabled={selectedCount === 0}
               >
-                Clear
+                C
               </button>
 
-              <span className="sel-info">{selectedCount} selected</span>
+              <button
+                type="button"
+                className="btn-ghost"
+                title="Invert selection (within current filter)"
+                onClick={() => {
+                  setSelected(prev => {
+                    const next = new Set(prev);
+                    if (inChannels || inChannelsTrash) {
+                      for (const ch of channelsFiltered) { if (next.has(ch.id)) next.delete(ch.id); else next.add(ch.id); }
+                    } else {
+                      for (const v of filtered) { if (next.has(v.id)) next.delete(v.id); else next.add(v.id); }
+                    }
+                    return next;
+                  });
+                }}
+                disabled={(inChannels || inChannelsTrash) ? channelsFiltered.length === 0 : filtered.length === 0}
+              >
+                Inv
+              </button>
+
+              <span className="sel-info">{selectedVisibleCount}{selectedHiddenCount > 0 ? ` -${selectedHiddenCount}` : ''}</span>
             </div>
 
             {/* Delete */}
@@ -1125,17 +1168,17 @@ const channelsFiltered = useMemo(() => {
               className="btn-danger"
               title={(inTrash || inChannelsTrash) ? 'Delete selected permanently' : 'Delete selected (moves to Trash)'}
               onClick={(inTrash || inChannelsTrash) ? purgeSelected : deleteSelected}
-              disabled={selectedCount === 0}
+              disabled={selectedVisibleCount === 0}
             >
-              Delete
+              X
             </button>
             {inChannelsTrash && (
               <button
                 type="button"
                 className="btn-ghost"
                 title="Restore selected channels from trash"
-                onClick={async () => { const ids = Array.from(selected); if (!ids.length) return; await sendBg('channels/restore', { ids }); clearSelection(); await loadChannelsDir(); }}
-                disabled={selectedCount === 0}
+                onClick={async () => { const ids = Array.from(selectedVisibleSet); if (!ids.length) return; await sendBg('channels/restore', { ids }); clearSelection(); await loadChannelsDir(); }}
+                disabled={selectedVisibleCount === 0}
               >
                 Restore
               </button>
@@ -1143,11 +1186,11 @@ const channelsFiltered = useMemo(() => {
             <button
               type="button"
               className="btn-ghost"
-              title="Tag selected…"
+              title="Tag selected"
               onClick={() => setShowTagger(v => !v)}
-              disabled={selectedCount === 0}
+              disabled={selectedVisibleCount === 0}
             >
-              Tags…
+              tags
             </button>
             {/* Search & refresh */}
             <input
@@ -1231,7 +1274,7 @@ const channelsFiltered = useMemo(() => {
             {/* Wipe sources removed per UX */}
           </div>
         </header>
-        {showTagger && selectedCount > 0 && (
+        {showTagger && selectedVisibleCount > 0 && (
           <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <span style={{ marginRight: 8 }}>Apply tag:</span>
             {/* Grouped dropdowns */}
@@ -1245,8 +1288,8 @@ const channelsFiltered = useMemo(() => {
                   <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                     {names.map(tag => {
                       const haveAll = inChannels
-                        ? (channels.reduce((n: number, c) => (selected.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedCount && selectedCount > 0)
-                        : ((tagCounts.get(tag) || 0) === selectedCount && selectedCount > 0);
+                        ? (channels.reduce((n: number, c) => (selectedVisibleSet.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCount && selectedVisibleCount > 0)
+                        : ((tagCounts.get(tag) || 0) === selectedVisibleCount && selectedVisibleCount > 0);
                       return (
                         <button
                           key={tag}

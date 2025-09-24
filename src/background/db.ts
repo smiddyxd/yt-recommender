@@ -122,6 +122,75 @@ function mergeSources(a: any[], b: any[]) {
   for (const s of Array.isArray(b) ? b : []) push(s);
   return out;
 }
+
+// ---- Meta helpers ----
+export async function getMetaValue<T = any>(key: string): Promise<T | undefined> {
+  const db = await openDB();
+  return new Promise<T | undefined>((resolve, reject) => {
+    const tx = db.transaction('meta', 'readonly');
+    const os = tx.objectStore('meta');
+    const g = os.get(key);
+    g.onsuccess = () => {
+      const row = g.result as any;
+      resolve(row?.value ?? row?.id ?? undefined);
+    };
+    g.onerror = () => reject(g.error);
+  });
+}
+
+export async function setMetaValue(key: string, value: any): Promise<void> {
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('meta', 'readwrite');
+    const os = tx.objectStore('meta');
+    os.put({ key, value });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export type LatestSource = 'SubscriptionsFeed' | 'WatchHistory';
+
+// Update the per-source "latest" marker: clear flag on previous id, set on new id, and persist meta key
+export async function updateLatestForSource(source: LatestSource, newId: string | null): Promise<{ prevId: string | null; newId: string | null }> {
+  const key = source === 'SubscriptionsFeed' ? 'latestBy.SubscriptionsFeed' : 'latestBy.WatchHistory';
+  const db = await openDB();
+  let prevId: string | null = null;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['meta', 'videos'] as any, 'readwrite');
+    const ms = tx.objectStore('meta');
+    const vs = tx.objectStore('videos');
+    const g = ms.get(key);
+    g.onsuccess = () => {
+      try { prevId = ((g.result as any)?.value || (g.result as any)?.id || null) ? String(((g.result as any)?.value || (g.result as any)?.id)) : null; } catch { prevId = null; }
+      // Clear flag on previous
+      if (prevId) {
+        const pv = vs.get(prevId);
+        pv.onsuccess = () => {
+          const row = pv.result as any;
+          if (row) {
+            if (source === 'SubscriptionsFeed') delete row.latestFromSubFeed; else delete row.latestFromWatchHistory;
+            vs.put(row);
+          }
+        };
+      }
+      // Set flag on new and update meta
+      if (newId) {
+        const nv = vs.get(newId);
+        nv.onsuccess = () => {
+          const row = (nv.result as any) || { id: newId };
+          if (source === 'SubscriptionsFeed') row.latestFromSubFeed = true; else row.latestFromWatchHistory = true;
+          vs.put(row);
+        };
+        ms.put({ key, value: newId });
+      }
+    };
+    g.onerror = () => reject(g.error);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return { prevId, newId: newId || null };
+}
 export async function moveToTrash(ids: string[]) {
   dlog('moveToTrash start', ids.length);
   if (!ids?.length) return;
@@ -286,10 +355,12 @@ export async function renameTag(oldName: string, newName: string) {
 
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(['tags', 'videos', 'trash'], 'readwrite');
+    const tx = db.transaction(['tags', 'videos', 'trash', 'channels', 'channels_trash'] as any, 'readwrite');
     const ts = tx.objectStore('tags');
     const vs = tx.objectStore('videos');
     const rs = tx.objectStore('trash');
+    const cs = (tx as any).objectStore('channels') as IDBObjectStore;
+    const cts = (tx as any).objectStore('channels_trash') as IDBObjectStore;
 
     // move tag record (delete old, put new)
     const g = ts.get(from);
@@ -317,7 +388,7 @@ export async function renameTag(oldName: string, newName: string) {
     };
     cur1.onerror = () => reject(cur1.error);
 
-    // replace in trash
+    // replace in trash (videos)
     const cur2 = rs.openCursor();
     cur2.onsuccess = () => {
       const c = cur2.result;
@@ -331,6 +402,34 @@ export async function renameTag(oldName: string, newName: string) {
     };
     cur2.onerror = () => reject(cur2.error);
 
+    // replace in channels
+    const cur3 = cs.openCursor();
+    cur3.onsuccess = () => {
+      const c = cur3.result as IDBCursorWithValue | null;
+      if (!c) return;
+      const row = c.value as any;
+      if (Array.isArray(row.tags) && row.tags.includes(from)) {
+        row.tags = row.tags.map((t: string) => (t === from ? to : t));
+        c.update(row);
+      }
+      c.continue();
+    };
+    cur3.onerror = () => reject(cur3.error);
+
+    // replace in channels_trash
+    const cur4 = cts.openCursor();
+    cur4.onsuccess = () => {
+      const c = cur4.result as IDBCursorWithValue | null;
+      if (!c) return;
+      const row = c.value as any;
+      if (Array.isArray(row.tags) && row.tags.includes(from)) {
+        row.tags = row.tags.map((t: string) => (t === from ? to : t));
+        c.update(row);
+      }
+      c.continue();
+    };
+    cur4.onerror = () => reject(cur4.error);
+
     tx.oncomplete = () => resolve();
     tx.onerror    = () => reject(tx.error);
   });
@@ -341,7 +440,7 @@ export async function deleteTag(name: string, cascade: boolean = true) {
   if (!tag) return;
   const db = await openDB();
   await new Promise<void>((resolve, reject) => {
-    const stores = cascade ? ['tags', 'videos', 'trash'] : ['tags'];
+    const stores = cascade ? ['tags', 'videos', 'trash', 'channels', 'channels_trash'] : ['tags'];
     const tx = db.transaction(stores as any, 'readwrite');
     const ts = tx.objectStore('tags');
     ts.delete(tag);
@@ -364,6 +463,9 @@ export async function deleteTag(name: string, cascade: boolean = true) {
       };
       clean((tx as any).objectStore('videos'));
       clean((tx as any).objectStore('trash'));
+      // also clean channel tags
+      clean((tx as any).objectStore('channels'));
+      clean((tx as any).objectStore('channels_trash'));
     }
 
     tx.oncomplete = () => resolve();
@@ -1215,6 +1317,20 @@ export async function listPendingChannels(): Promise<Array<{ key: string; name?:
       };
       (req as IDBRequest).onerror = () => reject((req as any).error);
     }
+  });
+}
+
+// Delete a single pending channel row by key
+export async function deletePendingChannel(key: string): Promise<boolean> {
+  const k = (key || '').trim();
+  if (!k) return false;
+  const db = await openDB();
+  return new Promise<boolean>((resolve, reject) => {
+    const tx = db.transaction('channels_pending', 'readwrite');
+    const os = tx.objectStore('channels_pending');
+    const req = os.delete(k);
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
   });
 }
 

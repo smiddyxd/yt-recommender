@@ -36,6 +36,7 @@ export type Msg =
   | { type: 'channels/resolvePending'; payload: { id: string; name?: string | null; handle?: string | null; altHandle?: string | null } }
   | { type: 'channels/pending/list'; payload: {} }
   | { type: 'channels/pending/resolveBatch'; payload: { limit?: number } }
+  | { type: 'channels/pending/delete'; payload: { key: string } }
   | { type: 'channels/delete'; payload: { ids: string[] } }
   | { type: 'channels/restore'; payload: { ids: string[] } }
   | { type: 'channels/purge'; payload: { ids: string[] } }

@@ -213,6 +213,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         const max = Number(msg?.payload?.max || 0);
         const stall = Number(msg?.payload?.stall || 0);
         const pending = Number(msg?.payload?.pending || 0);
+        const stopAtId = typeof msg?.payload?.stopAtId === 'string' ? String(msg.payload.stopAtId) : '';
         // Detailed scan like the manual snippet
         const stats = scanCurrentAnchors(what);
         // Reset cumulative tracker when switching modes
@@ -242,7 +243,14 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
           if (what === 'SubscriptionsFeed') highlightFromAnchors(stats.anchors, 'sf');
           else if (what === 'WatchHistory') highlightFromAnchors(stats.anchors, 'wh');
         } catch {}
-        sendResponse?.({ ok: true, dom: { passUnique: stats.uniques.length, cumulativeUnique: domUniqueSeen.size } });
+        // First id on page (best-effort): first anchor with an id
+        let firstId: string | null = null;
+        try {
+          const a = (stats.withId && stats.withId.length > 0) ? stats.withId[0] : null;
+          if (a) { try { firstId = parseVideoIdFromHref(a.href); } catch { firstId = null; } }
+        } catch { firstId = null; }
+        const foundStopId = !!(stopAtId && stats.uniques.includes(stopAtId));
+        sendResponse?.({ ok: true, dom: { passUnique: stats.uniques.length, cumulativeUnique: domUniqueSeen.size, firstId }, foundStopId });
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }

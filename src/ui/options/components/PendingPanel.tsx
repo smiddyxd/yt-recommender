@@ -19,6 +19,8 @@ export default function PendingPanel() {
   const [historyMaxInput, setHistoryMaxInput] = useState<string>('250');
   const [resolving, setResolving] = useState(false);
   const [noStubs, setNoStubs] = useState<boolean>(false);
+  const [stopAtPrevSubFeed, setStopAtPrevSubFeed] = useState<boolean>(false);
+  const [stopAtPrevHistory, setStopAtPrevHistory] = useState<boolean>(false);
   const resolvingRef = useRef(false);
 
   async function load() {
@@ -39,7 +41,7 @@ export default function PendingPanel() {
       setLastRun(runs);
     } catch {}
     try {
-      chrome.storage?.local?.get(['scrape.max.subFeed','scrape.max.history','debug.noStubs'], (o) => {
+      chrome.storage?.local?.get(['scrape.max.subFeed','scrape.max.history','debug.noStubs','scrape.stopAtPrevLatest.subFeed','scrape.stopAtPrevLatest.history'], (o) => {
         const sf = Number(o?.['scrape.max.subFeed']);
         const hi = Number(o?.['scrape.max.history']);
         const sfx = (Number.isFinite(sf) && sf > 0 ? sf : 120);
@@ -47,6 +49,8 @@ export default function PendingPanel() {
         setSubFeedMax(sfx); setSubFeedMaxInput(String(sfx));
         setHistoryMax(hix); setHistoryMaxInput(String(hix));
         setNoStubs(!!o?.['debug.noStubs']);
+        setStopAtPrevSubFeed(!!o?.['scrape.stopAtPrevLatest.subFeed']);
+        setStopAtPrevHistory(!!o?.['scrape.stopAtPrevLatest.history']);
       });
     } catch {}
   }
@@ -92,6 +96,8 @@ export default function PendingPanel() {
 
   function tsLabel(ts?: number | null) { return ts ? new Date(ts).toLocaleString() : 'N/A'; }
   function toggleNoStubs() { const v = !noStubs; setNoStubs(v); try { chrome.storage?.local?.set({ 'debug.noStubs': v }); } catch {} }
+  function toggleStopAtPrevSubFeed() { const v = !stopAtPrevSubFeed; setStopAtPrevSubFeed(v); try { chrome.storage?.local?.set({ 'scrape.stopAtPrevLatest.subFeed': v }); } catch {} }
+  function toggleStopAtPrevHistory() { const v = !stopAtPrevHistory; setStopAtPrevHistory(v); try { chrome.storage?.local?.set({ 'scrape.stopAtPrevLatest.history': v }); } catch {} }
 
   async function runSubFeed() {
     const n = parseInt(subFeedMaxInput, 10);
@@ -149,13 +155,19 @@ export default function PendingPanel() {
           <button onClick={runHistory} disabled={running}>Scrape Watch History</button>
           <button className="btn-danger" onClick={stopAll} disabled={!running}>Stop</button>
         </div>
-        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 8 }}>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
           <label className="muted">Max Sub Feed videos</label>
           <input className="side-input" type="number" value={subFeedMaxInput} onChange={(e)=> setSubFeedMaxInput(e.currentTarget.value)} style={{ width: '4ch' }} />
           <label className="muted">Max History items</label>
           <input className="side-input" type="number" value={historyMaxInput} onChange={(e)=> setHistoryMaxInput(e.currentTarget.value)} style={{ width: '5ch' }} />
           <label className="muted" title="When enabled, VIDEO_STUB upserts are treated as VIDEO_SEEN (no stub rows)." style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <input type="checkbox" checked={noStubs} onChange={toggleNoStubs} /> Debug: No stubs
+          </label>
+          <label className="muted" title="Stop when the previously marked most recent Sub Feed item appears (for incremental scrapes)." style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={stopAtPrevSubFeed} onChange={toggleStopAtPrevSubFeed} /> Sub Feed: stop at previous most recent video
+          </label>
+          <label className="muted" title="Stop when the previously marked most recent Watch History item appears (for incremental scrapes)." style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={stopAtPrevHistory} onChange={toggleStopAtPrevHistory} /> History: stop at previous most recent video
           </label>
         </div>
         <div className="muted" style={{ display: 'flex', flexWrap: 'wrap', gap: 16 }}>
@@ -188,6 +200,7 @@ export default function PendingPanel() {
               <th style={{ textAlign: 'left', padding: '6px 8px' }}>Name</th>
               <th style={{ textAlign: 'left', padding: '6px 8px' }}>Updated</th>
               <th style={{ textAlign: 'left', padding: '6px 8px' }}>Action</th>
+              <th style={{ textAlign: 'right', padding: '6px 8px', width: 28 }} aria-label="Delete" title="Delete pending entry" />
             </tr>
           </thead>
           <tbody>
@@ -200,6 +213,18 @@ export default function PendingPanel() {
                   <td style={{ padding: '4px 8px' }}>{it.name || ''}</td>
                   <td style={{ padding: '4px 8px' }}>{it.updatedAt ? new Date(it.updatedAt).toLocaleString() : ''}</td>
                   <td style={{ padding: '4px 8px' }}>{url ? <a href={url} target="_blank" rel="noreferrer">Open</a> : ''}</td>
+                  <td style={{ padding: '2px 6px', textAlign: 'right' }}>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      aria-label="Delete pending entry"
+                      title="Delete pending entry"
+                      onClick={async () => { await sendBg('channels/pending/delete', { key: it.key }); await load(); }}
+                      style={{ padding: 0, width: 20, height: 20, lineHeight: '18px', textAlign: 'center' }}
+                    >
+                      ×
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -216,4 +241,3 @@ export default function PendingPanel() {
     </div>
   );
 }
-

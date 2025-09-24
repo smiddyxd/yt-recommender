@@ -14,7 +14,8 @@ type EventKind =
   | 'tags/create' | 'tags/rename' | 'tags/delete' | 'tags/assignGroup'
   | 'tagGroups/create' | 'tagGroups/rename' | 'tagGroups/delete'
   | 'channels/applyTags' | 'channels/delete' | 'channels/restore' | 'channels/purge' | 'channels/markScraped'
-  | 'pending/upsert' | 'pending/resolve'
+  // Pending channel operations are excluded from version history; kept in union for call sites.
+  | 'pending/upsert' | 'pending/resolve' | 'pending/delete'
   | 'videos/attrChanged' | 'channels/attrChanged';
 
 export type EventRecord = {
@@ -65,6 +66,9 @@ function nowCommitId(): string {
 }
 
 export function recordEvent(kind: EventKind, payload: any, opts?: { inverse?: any; impact?: EventRecord['impact'] }) {
+  // Filter out non-historical events (do not include in version history)
+  // - All 'pending/*' operations are ephemeral and should not be recorded.
+  if (String(kind).startsWith('pending/')) return;
   if (!currentCommitId) currentCommitId = nowCommitId();
   const ts = Date.now();
   const rec: EventRecord = {

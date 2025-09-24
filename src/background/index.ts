@@ -1,4 +1,4 @@
-import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -180,6 +180,13 @@ async function getNoStubsFlag(): Promise<boolean> {
   });
 }
 
+async function getStopAtPrevLatestFlag(kind: 'subFeed' | 'history'): Promise<boolean> {
+  const key = kind === 'subFeed' ? 'scrape.stopAtPrevLatest.subFeed' : 'scrape.stopAtPrevLatest.history';
+  return new Promise((resolve) => {
+    try { chrome.storage?.local?.get(key, (o) => resolve(!!o?.[key])); } catch { resolve(false); }
+  });
+}
+
 async function handleVideoUpsert(kind: 'SEEN'|'STUB', payload: any, sender?: chrome.runtime.MessageSender) {
   const tabId = sender?.tab?.id;
   const session = currentScrape && tabId && currentScrape.tabIds.has(tabId) ? currentScrape : null;
@@ -218,6 +225,16 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   await sleep(1200);
   let lastCum = 0;
   let stall = 0;
+  // Determine previously marked latest id for optional early stop
+  let stopAtId: string | null = null;
+  if (opts?.stopOnKnown) {
+    try {
+      const key = override === 'WatchHistory' ? 'latestBy.WatchHistory' : 'latestBy.SubscriptionsFeed';
+      const val = await getMetaValue<string>(key);
+      stopAtId = (typeof val === 'string' && val) ? val : null;
+    } catch { stopAtId = null; }
+  }
+  let firstIdOnRun: string | null = null;
   try {
     for (let i = 0; i < 60; i++) {
       if (!currentScrape || currentScrape.stopRequested) break;
@@ -228,24 +245,23 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
       let cum = lastCum;
       try {
         const resp: any = await new Promise((resolve) => {
-          try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LOG', payload: { what: override, seen: currentScrape?.seen?.size || 0, max, stall, pending: pendingUpserts } }, (r: any) => resolve(r)); } catch { resolve(null); }
+          try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LOG', payload: { what: override, seen: currentScrape?.seen?.size || 0, max, stall, pending: pendingUpserts, stopAtId } }, (r: any) => resolve(r)); } catch { resolve(null); }
         });
         const dom = resp?.dom || {};
         const v = Number(dom?.cumulativeUnique || 0);
         if (Number.isFinite(v) && v >= 0) cum = v;
+        if (!firstIdOnRun) {
+          const fid = resp?.dom?.firstId;
+          if (typeof fid === 'string' && fid) firstIdOnRun = fid;
+        }
+        if (opts?.stopOnKnown && resp?.foundStopId === true && stopAtId) { lastCum = cum; break; }
       } catch {}
       // Stop if DOM-unique count reached the limit
       if (cum >= max) { lastCum = cum; break; }
-      // Stall detection: if cumulative did not grow, increment stall and nudge loader
-      if (cum <= lastCum) {
-        stall += 1;
-        if (stall >= 2) {
-          try { await new Promise((resolve)=> chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 1, delayMs: 500 } }, () => resolve(undefined))); } catch {}
-          stall = 0;
-        }
-      } else {
-        stall = 0;
-      }
+      // Aggressive scrolling: always nudge the infinite loader to the bottom
+      try { await new Promise((resolve)=> chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 2, delayMs: 600 } }, () => resolve(undefined))); } catch {}
+      // Reset stall tracker (no longer used for conditional nudge)
+      if (cum <= lastCum) { stall += 1; } else { stall = 0; }
       lastCum = Math.max(lastCum, cum);
       // Safety net: also exit if upserts greatly exceed max (shouldn't happen)
       if ((currentScrape?.seen?.size || 0) >= max * 2) break;
@@ -263,6 +279,13 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   }
   const count = currentScrape ? currentScrape.seen.size : 0;
   const stopped = !!currentScrape?.stopRequested;
+  // Update latest marker (flag on video + meta) based on firstId captured at start of run
+  try {
+    if (firstIdOnRun) {
+      await updateLatestForSource(override === 'WatchHistory' ? 'WatchHistory' : 'SubscriptionsFeed', firstIdOnRun);
+      try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+    }
+  } catch {}
   if (!(opts?.keepOpen)) { try { chrome.tabs?.remove?.(tabId); } catch {} }
   currentScrape = null;
   return { count, stopped };
@@ -270,25 +293,76 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
 
 async function runSubscriptionsManagerOnce(): Promise<{ subscribedCount: number; created: number; unsubscribed: number }> {
   try { if (currentScrape) { currentScrape.stopRequested = true; for (const id of Array.from(currentScrape.tabIds.values())) { try { chrome.tabs?.remove?.(id); } catch {} } currentScrape = null; } } catch {}
-  const tab = await chrome.tabs?.create?.({ url: 'https://www.youtube.com/feed/channels', active: true });
+  const url = 'https://www.youtube.com/feed/channels';
+  const tab = await chrome.tabs?.create?.({ url, active: true });
   const tabId = tab?.id as number | undefined;
   if (typeof tabId !== 'number') return { subscribedCount: 0, created: 0, unsubscribed: 0 };
-  await sleep(1200);
-  let handles: string[] = [];
-  try {
-    const resp: any = await new Promise((resolve) => { try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); } });
-    handles = Array.isArray(resp?.handles) ? resp.handles : [];
-  } catch {}
+
+  // Helper to list current subscriptions (ids + handles) from the page
+  async function listSubs(): Promise<{ ids: string[]; handles: string[]; count: number }> {
+    try {
+      const resp: any = await new Promise((resolve) => {
+        try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); }
+      });
+      const ids = Array.isArray(resp?.ids) ? (resp.ids as string[]).map(String) : [];
+      const handles = Array.isArray(resp?.handles) ? (resp.handles as string[]).map(String) : [];
+      return { ids, handles, count: ids.length + handles.length };
+    } catch {
+      return { ids: [], handles: [], count: 0 };
+    }
+  }
+
+  // Wait until at least one channel link is present (first appearance)
+  let first = { ids: [] as string[], handles: [] as string[], count: 0 };
+  const firstDeadline = Date.now() + 60000; // safety cap 60s
+  for (;;) {
+    first = await listSubs();
+    if (first.count > 0) break;
+    if (Date.now() > firstDeadline) break;
+    await sleep(500);
+  }
+
+  // Once first is seen, check every 4s until the count stops changing for 4 intervals
+  let prevCount = first.count;
+  let stable = 0;
+  let last = first;
+  if (prevCount > 0) {
+    while (stable < 4) {
+      await sleep(4000);
+      const cur = await listSubs();
+      if (cur.count !== prevCount) {
+        prevCount = cur.count;
+        stable = 0;
+        last = cur;
+      } else {
+        stable += 1;
+        last = cur;
+      }
+    }
+  } else {
+    // Nothing found within safety cap; take one last snapshot before closing
+    last = await listSubs();
+  }
+
+  // Close the tab now that we've finished sampling
   try { chrome.tabs?.remove?.(tabId); } catch {}
-  for (const raw of handles) {
+
+  // Persist pending handles; ensure leading '@'
+  for (const raw of last.handles) {
     const h = typeof raw === 'string' ? raw.trim() : '';
     if (!h) continue;
     const withAt = h.startsWith('@') ? h : ('@' + h);
     const key = `handle:${withAt}`;
     try { await upsertPendingChannel(key, { handle: withAt, subscribedPending: true }); } catch {}
   }
-  const res = await applySubscribedSet([]);
-  return { subscribedCount: handles.length, created: res.created, unsubscribed: res.unsubscribed };
+  // Update subscribed/unsubscribed flags for channels with concrete ids
+  let created = 0, unsubscribed = 0;
+  try {
+    const res = await applySubscribedSet(last.ids);
+    created = res.created; unsubscribed = res.unsubscribed;
+  } catch {}
+
+  return { subscribedCount: last.count, created, unsubscribed };
 }
 
 chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
@@ -381,14 +455,16 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       } else if (raw.type === 'scrape/subFeed') {
         try {
           const max = Math.max(1, Math.min(2000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('subFeed')))));
-          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown: false, keepOpen: false });
+          const stopOnKnown = await getStopAtPrevLatestFlag('subFeed');
+          const r = await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', max, { stopOnKnown, keepOpen: false });
           await setLastRun('subFeed'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'scrape/history') {
         try {
           const max = Math.max(1, Math.min(5000, Number(((raw as any)?.payload?.max) ?? (await getDefaultMax('history')))));
-          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown: false, historyHints: true, keepOpen: false });
+          const stopOnKnown = await getStopAtPrevLatestFlag('history');
+          const r = await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', max, { stopOnKnown, historyHints: true, keepOpen: false });
           await setLastRun('history'); await setLastRun('any');
           sendResponse?.({ ok: true, ...r });
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
@@ -402,9 +478,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         try {
           const out: any = { ok: true };
           try { await setLastRun('resolveIds'); await setLastRun('any'); await new Promise((res) => chrome.runtime.sendMessage({ type: 'channels/pending/resolveBatch', payload: { limit: 5 } } as any, () => res(undefined))); } catch {}
-          try { await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', await getDefaultMax('subFeed'), { stopOnKnown: false }); await setLastRun('subFeed'); await setLastRun('any'); } catch {}
+          try { const stopOnKnown = await getStopAtPrevLatestFlag('subFeed'); await runScrollingScrape('https://www.youtube.com/feed/subscriptions', 'SubscriptionsFeed', await getDefaultMax('subFeed'), { stopOnKnown }); await setLastRun('subFeed'); await setLastRun('any'); } catch {}
           try { await runSubscriptionsManagerOnce(); await setLastRun('subscriptionsManager'); await setLastRun('any'); } catch {}
-          try { await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', await getDefaultMax('history'), { stopOnKnown: false, historyHints: true }); await setLastRun('history'); await setLastRun('any'); } catch {}
+          try { const stopOnKnownH = await getStopAtPrevLatestFlag('history'); await runScrollingScrape('https://www.youtube.com/feed/history', 'WatchHistory', await getDefaultMax('history'), { stopOnKnown: stopOnKnownH, historyHints: true }); await setLastRun('history'); await setLastRun('any'); } catch {}
           sendResponse?.(out);
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'channels/list') {
@@ -855,6 +931,17 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         try {
           const items = await listPendingChannels();
           sendResponse?.({ ok: true, items });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'channels/pending/delete') {
+        try {
+          const key = String(((raw as any)?.payload?.key) || '');
+          const ok = await deletePendingChannel(key);
+          if (ok) {
+            try { recordEvent('pending/delete', { key }, { impact: {} }); } catch {}
+          }
+          sendResponse?.({ ok });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }

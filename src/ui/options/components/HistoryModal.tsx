@@ -27,7 +27,8 @@ export default function HistoryModal({ open, onClose }: Props) {
           const r: any = await sendBg('backup/downloadFile', { id: f.id } as any);
           if (!r?.ok || !r?.contentB64) continue;
           const bytes = b64ToBytes(String(r.contentB64));
-          const blob = new Blob([bytes], { type: r?.mimeType || 'application/octet-stream' });
+          const ab = new ArrayBuffer(bytes.byteLength); new Uint8Array(ab).set(bytes);
+          const blob = new Blob([ab], { type: r?.mimeType || 'application/octet-stream' });
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
           a.download = String(f.name || r?.name || f.id);
@@ -125,7 +126,8 @@ export default function HistoryModal({ open, onClose }: Props) {
       const bin = atob(String(r.contentB64));
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: r?.mimeType || 'text/plain' });
+      const ab = new ArrayBuffer(bytes.byteLength); new Uint8Array(ab).set(bytes);
+      const blob = new Blob([ab], { type: r?.mimeType || 'text/plain' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = r?.name || `commit-${commitId}.jsonl`;
