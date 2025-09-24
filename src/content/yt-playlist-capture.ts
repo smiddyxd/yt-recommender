@@ -69,6 +69,14 @@ export function detectPageContext() {
         if (seg[1] === 'channel' && seg[2]) out.channelId = seg[2];
       }
     } catch {}
+    // Fallback: data-channel-external-id (subscribe/collection buttons sometimes carry it)
+    if (!out.channelId) {
+      try {
+        const el = document.querySelector('div.add-to-collection-button-new[data-channel-external-id], [data-channel-external-id]') as HTMLElement | null;
+        const val = el?.getAttribute('data-channel-external-id');
+        if (val) out.channelId = val;
+      } catch {}
+    }
     return out;
   }
   // channel page

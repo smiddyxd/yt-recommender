@@ -81,6 +81,14 @@ export default function Sidebar(props: Props) {
   const [editingGroupId, setEditingGroupId] = React.useState<string | null>(null);
   const [groupEditName, setGroupEditName] = React.useState('');
 
+  // Hide system default tags and the default tag group from the Sidebar (edit/delete area)
+  const defaultTagNames = React.useMemo(() => new Set(['no fetch','subscribed','unsubscribed','tagged','scrape']), []);
+  const visibleTags = React.useMemo(() => (tags || []).filter(t => !defaultTagNames.has(String(t.name || '').toLowerCase())), [tags]);
+  const visibleTagGroups = React.useMemo(() => (tagGroups || []).filter(g => {
+    const nm = String(g.name || '').trim().toLowerCase();
+    return g.id !== 'tagGroup.default' && nm !== 'default tags';
+  }), [tagGroups]);
+
   return (
     <aside className="sidebar">
         {viewLabel && (
@@ -139,8 +147,8 @@ export default function Sidebar(props: Props) {
 
               {/* List of tags with rename/delete and group selector */}
               <div className="tag-list">
-                {tags.length === 0 && <div className="muted">No tags yet.</div>}
-                {tags.map(t => (
+                {visibleTags.length === 0 && <div className="muted">No tags yet.</div>}
+                {visibleTags.map(t => (
                   <div className="tag-row" key={t.name}>
                     {tagEditing === t.name ? (
                       <>
@@ -163,13 +171,13 @@ export default function Sidebar(props: Props) {
                         <span className="tag-name">{t.name}</span>
                         <select
                           className="side-input"
-                          value={t.groupId || ''}
+                          value={(t.groupId === 'tagGroup.default' || !t.groupId) ? '' : (t.groupId as any)}
                           onChange={(e) => onAssignTagToGroup(t.name, e.currentTarget.value ? e.currentTarget.value : null)}
                           title="Assign to tag group"
                           disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
                           <option value="">— no group —</option>
-                          {tagGroups.map(g => (
+                          {visibleTagGroups.map(g => (
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
                         </select>
@@ -198,8 +206,8 @@ export default function Sidebar(props: Props) {
                 </button>
               </div>
               <div className="group-list">
-                {tagGroups.length === 0 && <div className="muted">No groups yet.</div>}
-                {tagGroups.map(g => (
+                {visibleTagGroups.length === 0 && <div className="muted">No groups yet.</div>}
+                {visibleTagGroups.map(g => (
                   <div className="group-row" key={g.id}>
                     {editingGroupId === g.id ? (
                       <>

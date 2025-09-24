@@ -114,7 +114,9 @@ function PopupApp() {
   const allTags = useTagsRegistry();
   const tagGroups = useTagGroups();
   const video = useRowRefresh<any>('videos', ctx.videoId || null);
-  const channel = useRowRefresh<any>('channels', ctx.channelId || null);
+  const [resolvedChannelId, setResolvedChannelId] = useState<string | null>(null);
+  const effectiveChannelId = (ctx.channelId || resolvedChannelId || null) as (string | null);
+  const channel = useRowRefresh<any>('channels', effectiveChannelId);
   const [scrapeCount, setScrapeCount] = useState<number | null>(null);
   const [autoStubOnWatch, setAutoStubOnWatch] = useState<boolean>(false);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
@@ -146,17 +148,19 @@ function PopupApp() {
     await sendBg('videos/applyTags', { ids: [ctx.videoId], removeIds: [name] });
   };
   const addChannelTag = async (name: string) => {
-    if (!ctx.channelId) return;
+    const targetId = effectiveChannelId;
+    if (!targetId) return;
     try {
       // Auto-apply the default 'tagged' channel tag when adding any other tag
       const auto = 'tagged';
       const add = name !== auto ? [name, auto] : [name];
-      await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: add });
+      await sendBg('channels/applyTags', { ids: [targetId], addIds: add });
     } catch { /* ignore */ }
   };
   const removeChannelTag = async (name: string) => {
-    if (!ctx.channelId) return;
-    await sendBg('channels/applyTags', { ids: [ctx.channelId], removeIds: [name] });
+    const targetId = effectiveChannelId;
+    if (!targetId) return;
+    await sendBg('channels/applyTags', { ids: [targetId], removeIds: [name] });
   };
 
   const onScrape = async () => {
@@ -223,6 +227,7 @@ function PopupApp() {
         if (err) { setResolveMsg("Content not available"); return; }
         if (resp?.ok) {
           setResolveMsg(`Found: ${resp.id}`);
+          try { setResolvedChannelId(String(resp.id || '')); } catch {}
           try {
             const alt = (origHandle || "").trim();
             const altNorm = alt ? (alt.startsWith("@") ? alt : ("@" + alt)) : null;
@@ -235,6 +240,34 @@ function PopupApp() {
       setResolveMsg(e?.message || String(e));
     }
   }
+
+  // On watch pages, if we have a videoId but no channelId, try to resolve once so that Channel Tags are available.
+  useEffect(() => {
+    let tried = false;
+    if (ctx.page === 'watch' && !ctx.channelId && !resolvedChannelId) {
+      tried = true;
+      (async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const t = tabs?.[0];
+          if (!t?.id) return;
+          chrome.tabs.sendMessage(t.id, { type: 'channel/RESOLVE_ID_NOW', payload: {} }, (resp: any) => {
+            const err = chrome.runtime.lastError;
+            if (err) return;
+            const id = (resp && resp.ok && resp.id) ? String(resp.id) : '';
+            if (id) try { setResolvedChannelId(id); } catch {}
+          });
+        } catch {}
+      })();
+    }
+    return () => { void tried; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.page, ctx.channelId, ctx.videoId]);
+
+  // Reset any resolved channel id when navigating between different contexts
+  useEffect(() => {
+    setResolvedChannelId(null);
+  }, [ctx.url]);
   return (
     <div className="wrap">
       <h1>YT Manager</h1>
@@ -255,7 +288,7 @@ function PopupApp() {
         </label>
       </div>
       <div className="row" style={{ marginTop: 6 }}>
-        <span className="meta">{ctx.page === 'watch' ? `watch: ${ctx.videoId}` : ctx.page === 'channel' ? `channel: ${ctx.channelId || 'unknown'}` : 'Not on YouTube'}</span>
+        <span className="meta">{ctx.page === 'watch' ? `watch: ${ctx.videoId}${effectiveChannelId ? ` · channel: ${effectiveChannelId}` : ''}` : ctx.page === 'channel' ? `channel: ${effectiveChannelId || ctx.channelId || 'unknown'}` : 'Not on YouTube'}</span>
       </div>
       <div className="row" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button onClick={scrapeChannelIdNow}>Scrape channel id</button>
@@ -286,7 +319,7 @@ function PopupApp() {
           </div>
         </div>
       )}
-      {ctx.channelId && (
+      {effectiveChannelId && (
         <div className="section">
           <h2>Channel Tags</h2>
           <TagChips labels={channelTags} onRemove={removeChannelTag} />
