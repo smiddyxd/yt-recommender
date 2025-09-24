@@ -125,6 +125,9 @@ function PopupApp() {
     const map = new Map<string, string[]>();
     const groupById = new Map(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
     for (const t of allTags) {
+      // Hide non-manual default tags from manual apply lists
+      const nm = String(t.name || '').toLowerCase();
+      if (nm === 'subscribed' || nm === 'unsubscribed') continue;
       const gid = (t.groupId || '') as string;
       const key = gid && groupById.has(gid) ? gid : '';
       const list = map.get(key) || (map.set(key, []), map.get(key)!);
@@ -145,14 +148,10 @@ function PopupApp() {
   const addChannelTag = async (name: string) => {
     if (!ctx.channelId) return;
     try {
-      // Ensure the auto-tag exists in registry, then apply both
-      const auto = '.tagged';
-      if (name !== auto) {
-        try { await sendBg('tags/create', { name: auto }); } catch { /* noop */ }
-        await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: [name, auto] });
-      } else {
-        await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: [name] });
-      }
+      // Auto-apply the default 'tagged' channel tag when adding any other tag
+      const auto = 'tagged';
+      const add = name !== auto ? [name, auto] : [name];
+      await sendBg('channels/applyTags', { ids: [ctx.channelId], addIds: add });
     } catch { /* ignore */ }
   };
   const removeChannelTag = async (name: string) => {
@@ -273,6 +272,9 @@ function PopupApp() {
                 <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
                 <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                   {names.map(n => {
+                    const nm = String(n || '').toLowerCase();
+                    // Hide channel-only tags from video tag apply UI
+                    if (nm === 'scrape' || nm === 'tagged') return null;
                     const active = Array.isArray(videoTags) && videoTags.includes(n);
                     return (
                       <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addVideoTag(n)} title={active ? 'Already applied' : 'Apply to video'}>{n}</button>
@@ -294,6 +296,9 @@ function PopupApp() {
                 <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
                 <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                   {names.map(n => {
+                    // For channel tags, hide non-manual system defaults
+                    const nm = String(n || '').toLowerCase();
+                    if (nm === 'subscribed' || nm === 'unsubscribed') return null;
                     const active = Array.isArray(channelTags) && channelTags.includes(n);
                     return (
                       <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addChannelTag(n)} title={active ? 'Already applied' : 'Apply to channel'}>{n}</button>

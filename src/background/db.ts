@@ -638,13 +638,18 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
       const items = rows.map(r => {
         const thumbs = r?.thumbnails || {};
         const best = thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null;
+        const baseTags: string[] = Array.isArray(r.tags) ? r.tags : [];
+        const extra: string[] = [];
+        if (r?.subscribed === true) extra.push('subscribed');
+        if (r?.unsubscribed === true) extra.push('unsubscribed');
+        const mergedTags = Array.from(new Set<string>([...baseTags, ...extra]));
         return {
           id: r.id,
           name: r.name || r.id,
           count: Number(r.videos) || 0,
           fetchedAt: r.fetchedAt || null,
           thumbUrl: best,
-          tags: Array.isArray(r.tags) ? r.tags : [],
+          tags: mergedTags,
           videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
           subs: Number(r.subs) || null,
           views: Number(r.views) || null,

@@ -142,6 +142,7 @@
   - Videos: diffs for `title`, `thumbnailUrl`, `description`.
   - Channels: diffs for best `avatarUrl`, `bannerUrl`, `description`.
 - After video refresh: fetch missing/stale channel rows, recompute channel `videoTags[]`, recompute global `videoTopics` in `meta`.
+ - Refresh gating: `videos/refreshAll` skips any video tagged `no fetch` and any video whose channel is tagged `no fetch`.
 
 ## Backup, History & Snapshots
 - OAuth via `chrome.identity.launchWebAuthFlow` (scope: `drive.appdata`). Silent by default; UI requests interactive auth on demand.
@@ -184,6 +185,12 @@
   - Buttons: `all` (select all matching current filter), `C` (clear all selection), `Inv` (invert selection within current filter), `D` (toggle display between normal filtered results and the disabled selection), `X` (delete/purge selected; disabled when no visible selection), `tags` (open tagger; disabled when no visible selection).
   - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible under the normal filter, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions in normal view and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
   - Display toggle `D`: when active, the list shows only the disabled selection (items currently hidden by the filter). Actions (`X`, `tags`, `Inv`, `all`) operate on the items visible in the current display mode. The `N -M` counter remains anchored to the normal filter (so `-M` always means "hidden by current filters").
+ - Default tags (hardcoded): system tags shown like normal tags but not deletable/renamable. The default tag group `default tags` appears at the top for manual defaults.
+   - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel’s videos from video refresh.
+   - `subscribed` / `unsubscribed` (channels; automatic): set by Subscriptions Manager scraping; hidden from tag pickers but available in filters.
+   - `tagged` (channels; manual+auto): auto-applied when tagging a channel via Popup; also manually appliable under `default tags`.
+   - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
+ - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
   - "Fetch video data" calls YouTube API to fetch video metadata.
@@ -200,7 +207,7 @@
 
 ## Popup Highlights
 - Shows current page context (watch/channel/other); "Scrape current page"; toggle "Auto-capture stubs on watch pages".
-- Tag current video/channel using grouped tag pickers; channel auto-tag helper applies a `.tagged` tag alongside the chosen tag.
+- Tag current video/channel using grouped tag pickers; non-manual default tags are hidden. Applying any channel tag auto-applies the `tagged` default tag.
 
 ## Core Invariants
 - Background is the only writer to IndexedDB; UI and content scripts perform read-only transactions and close DB connections after `oncomplete`.

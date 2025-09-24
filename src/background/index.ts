@@ -8,6 +8,56 @@ import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getCl
 import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
 import { applyRestore, dryRunRestoreApply } from './restore';
 
+// ---- Default Tags / Groups ----
+const DEFAULT_TAG_GROUP_ID = 'tagGroup.default';
+const DEFAULT_TAG_GROUP_NAME = 'default tags';
+const DEFAULT_TAGS = [
+  { name: 'no fetch', manual: true, scope: 'both' as const },
+  { name: 'subscribed', manual: false, scope: 'channel' as const },
+  { name: 'unsubscribed', manual: false, scope: 'channel' as const },
+  { name: 'tagged', manual: true, scope: 'channel' as const },
+  { name: 'scrape', manual: true, scope: 'channel' as const },
+];
+const DEFAULT_PRESET_ID = 'group.default.scrapable';
+const DEFAULT_PRESET_NAME = 'scrapable channels';
+
+function isDefaultTag(name: string): boolean {
+  const nm = String(name || '').toLowerCase();
+  return DEFAULT_TAGS.some(t => t.name === nm);
+}
+function sanitizeVideoTagAdds(names: string[]): string[] {
+  const banned = new Set(['scrape', 'tagged', 'subscribed', 'unsubscribed']);
+  return Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean))).filter(n => !banned.has(n));
+}
+function sanitizeChannelTagAdds(names: string[]): string[] {
+  const banned = new Set(['subscribed', 'unsubscribed']);
+  return Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean))).filter(n => !banned.has(n));
+}
+function sanitizeChannelTagRemoves(names: string[]): string[] {
+  const banned = new Set(['subscribed', 'unsubscribed']);
+  return Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean))).filter(n => !banned.has(n));
+}
+async function channelIdsWithTag(tagName: string): Promise<Set<string>> {
+  const tag = String(tagName || '').toLowerCase();
+  const set = new Set<string>();
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readonly');
+    const os = tx.objectStore('channels');
+    const cur = os.openCursor();
+    cur.onsuccess = () => {
+      const c = cur.result as IDBCursorWithValue | null;
+      if (!c) { resolve(); return; }
+      const row: any = c.value || {};
+      const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
+      if (tags.map((t: string)=> String(t||'').toLowerCase()).includes(tag)) set.add(String(row.id || ''));
+      c.continue();
+    };
+    cur.onerror = () => reject(cur.error);
+  });
+  return set;
+}
+
 // Click the extension icon to trigger scrape in active tab
 chrome.action?.onClicked.addListener((tab) => {
   try {
@@ -423,6 +473,27 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         }
       } else if (raw.type === 'groups/list') {
         const items = await listGroups();
+        // Overlay default preset built from channels tagged with 'scrape'
+        try {
+          const db = await openDB();
+          const tx = db.transaction('channels', 'readonly');
+          const os = tx.objectStore('channels');
+          const cur = os.openCursor();
+          const ids: string[] = [];
+          await new Promise<void>((resolve, reject) => {
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(); return; }
+              const row: any = c.value || {};
+              const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
+              if (tags.map(t => String(t||'').toLowerCase()).includes('scrape')) ids.push(String(row.id));
+              c.continue();
+            };
+            cur.onerror = () => reject(cur.error);
+          });
+          const preset = { id: DEFAULT_PRESET_ID, name: DEFAULT_PRESET_NAME, createdAt: 0, updatedAt: Date.now(), scrape: true, condition: { kind: 'channelIdIn', ids } as any };
+          items.unshift(preset as any);
+        } catch {}
         sendResponse?.({ ok: true, items });
       } else if (raw.type === 'scrape/status') {
         const runs = await getLastRuns();
@@ -515,6 +586,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         sendResponse?.({ ok: true });
       } else if (raw.type === 'groups/delete') {
         const { id } = raw.payload || {};
+        if (String(id) === DEFAULT_PRESET_ID) { sendResponse?.({ ok: false, error: 'Default preset cannot be deleted' }); return; }
         await deleteGroup(id);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } });
         recordEvent('groups/delete', { id }, { impact: { groups: 1 } });
@@ -522,8 +594,10 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
-        dlog('videos/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
-        await applyTags(ids || [], addIds, removeIds);
+        const add = sanitizeVideoTagAdds(addIds);
+        const rem = Array.from(new Set((removeIds || []).map((s: any) => String(s || '').trim()).filter(Boolean)));
+        dlog('videos/applyTags', { ids: ids?.length || 0, add: add.length, remove: rem.length });
+        await applyTags(ids || [], add, rem);
         // Update channel videoTags for affected channels
         try {
           const chs = await channelIdsForVideos(ids || []);
@@ -531,16 +605,23 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
-        recordEvent('videos/applyTags', { ids: ids || [], addIds, removeIds }, { impact: { videos: (ids || []).length, tags: addIds.length + removeIds.length } });
+        recordEvent('videos/applyTags', { ids: ids || [], addIds: add, removeIds: rem }, { impact: { videos: (ids || []).length, tags: add.length + rem.length } });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/list') {
         const items = await listTags();
-        sendResponse?.({ ok: true, items });
+        const present = new Set(items.map(t => String(t.name || '').toLowerCase()));
+        const overlay: any[] = [];
+        for (const t of DEFAULT_TAGS) {
+          if (!present.has(t.name)) {
+            overlay.push({ name: t.name, createdAt: 0, ...(t.manual ? { groupId: DEFAULT_TAG_GROUP_ID } : {}) });
+          }
+        }
+        sendResponse?.({ ok: true, items: [...overlay, ...items] });
       } else if (raw.type === 'tags/assignGroup') {
         const name = String(raw.payload?.name || '');
         const groupId = (raw.payload?.groupId ?? null) as (string | null);
-        await setTagGroup(name, groupId);
+        if (!isDefaultTag(name)) await setTagGroup(name, groupId);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         recordEvent('tags/assignGroup', { name, groupId }, { impact: { tags: 1 } });
         scheduleBackup();
@@ -558,13 +639,19 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       } else if (raw.type === 'tags/create') {
-        await createTag(raw.payload?.name, raw.payload?.color);
+        const nm = String(raw.payload?.name || '');
+        if (!isDefaultTag(nm)) {
+          await createTag(nm, raw.payload?.color);
+        }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         recordEvent('tags/create', { name: raw.payload?.name }, { impact: { tags: 1 } });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tags/rename') {
-        await renameTag(raw.payload?.oldName, raw.payload?.newName);
+        const from = String(raw.payload?.oldName || '');
+        const to = String(raw.payload?.newName || '');
+        if (isDefaultTag(from) || isDefaultTag(to)) { sendResponse?.({ ok: false, error: 'Default tag cannot be renamed' }); return; }
+        await renameTag(from, to);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
         try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{}
@@ -572,16 +659,19 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         scheduleBackup();
         sendResponse?.({ ok: true });
   } else if (raw.type === 'tags/delete') {
+        const nm = String(raw.payload?.name || '');
         const cascade = raw.payload?.cascade ?? true;
-        await deleteTag(raw.payload?.name, cascade);
+        if (!isDefaultTag(nm)) await deleteTag(nm, cascade);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
       if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
       recordEvent('tags/delete', { name: raw.payload?.name, cascade }, { impact: { tags: 1 } });
-      scheduleBackup();
-      sendResponse?.({ ok: true });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
       } else if (raw.type === 'tagGroups/list') {
         const items = await listTagGroups();
-        sendResponse?.({ ok: true, items });
+        const hasDefault = items.some(g => String(g.id) === DEFAULT_TAG_GROUP_ID) || items.some(g => (g.name || '').toLowerCase() === DEFAULT_TAG_GROUP_NAME);
+        const out = hasDefault ? items : [{ id: DEFAULT_TAG_GROUP_ID, name: DEFAULT_TAG_GROUP_NAME, createdAt: 0 }, ...items];
+        sendResponse?.({ ok: true, items: out });
       } else if (raw.type === 'tagGroups/create') {
         const id = await createTagGroup(String(raw.payload?.name || ''));
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
@@ -589,13 +679,17 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         scheduleBackup();
         sendResponse?.({ ok: true, id });
       } else if (raw.type === 'tagGroups/rename') {
-        await renameTagGroup(String(raw.payload?.id || ''), String(raw.payload?.name || ''));
+        const id = String(raw.payload?.id || '');
+        if (id === DEFAULT_TAG_GROUP_ID) { sendResponse?.({ ok: false, error: 'Default tag group cannot be renamed' }); return; }
+        await renameTagGroup(id, String(raw.payload?.name || ''));
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
         recordEvent('tagGroups/rename', { id: String(raw.payload?.id || ''), name: String(raw.payload?.name || '') }, { impact: {} });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'tagGroups/delete') {
-        await deleteTagGroup(String(raw.payload?.id || ''));
+        const id = String(raw.payload?.id || '');
+        if (id === DEFAULT_TAG_GROUP_ID) { sendResponse?.({ ok: false, error: 'Default tag group cannot be deleted' }); return; }
+        await deleteTagGroup(id);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         recordEvent('tagGroups/delete', { id: String(raw.payload?.id || '') }, { impact: {} });
@@ -653,10 +747,14 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       }
       } else if (raw.type === 'channels/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
-        dlog('channels/applyTags', { ids: ids?.length || 0, add: addIds.length, remove: removeIds.length });
-        await applyChannelTags(ids || [], addIds, removeIds);
+        const add = sanitizeChannelTagAdds(addIds);
+        const rem = sanitizeChannelTagRemoves(removeIds);
+        dlog('channels/applyTags', { ids: ids?.length || 0, add: add.length, remove: rem.length });
+        await applyChannelTags(ids || [], add, rem);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
-        recordEvent('channels/applyTags', { ids: ids || [], addIds, removeIds }, { impact: { channels: (ids || []).length, tags: addIds.length + removeIds.length } });
+        const affectsScrape = (add.includes('scrape') || rem.includes('scrape'));
+        if (affectsScrape) { try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } }); } catch {} }
+        recordEvent('channels/applyTags', { ids: ids || [], addIds: add, removeIds: rem }, { impact: { channels: (ids || []).length, tags: add.length + rem.length } });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'channels/delete') {
@@ -1529,6 +1627,7 @@ async function getApiKey(): Promise<string | null> {
 
 async function listVideoIds(opts: { skipFetched: boolean }): Promise<string[]> {
   const db = await openDB();
+  const channelNoFetch = await channelIdsWithTag('no fetch');
   return new Promise((resolve, reject) => {
     const tx = db.transaction('videos', 'readonly');
     const os = tx.objectStore('videos');
@@ -1537,8 +1636,12 @@ async function listVideoIds(opts: { skipFetched: boolean }): Promise<string[]> {
     cur.onsuccess = () => {
       const c = cur.result as IDBCursorWithValue | null;
       if (!c) { resolve(ids); return; }
-      const row: any = c.value;
-      if (!opts.skipFetched || !row?.fetchedAt) ids.push(row?.id);
+      const row: any = c.value || {};
+      const vtags: string[] = Array.isArray(row.tags) ? row.tags : [];
+      const hasNoFetch = vtags.map((t: string)=> String(t||'').toLowerCase()).includes('no fetch');
+      const chId = String(row.channelId || '');
+      const channelBlocked = chId ? channelNoFetch.has(chId) : false;
+      if (!hasNoFetch && !channelBlocked && (!opts.skipFetched || !row?.fetchedAt)) ids.push(String(row?.id || ''));
       c.continue();
     };
     cur.onerror = () => reject(cur.error);

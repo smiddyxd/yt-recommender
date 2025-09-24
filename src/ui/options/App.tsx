@@ -1333,6 +1333,11 @@ const channelsFiltered = useMemo(() => {
                   <summary>{title}</summary>
                   <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
                     {names.map(tag => {
+                      const nm = String(tag || '').toLowerCase();
+                      // Hide non-manual system defaults from tagger
+                      if (nm === 'subscribed' || nm === 'unsubscribed') return null;
+                      // Hide channel-only defaults in video context
+                      if (!inChannels && (nm === 'scrape' || nm === 'tagged')) return null;
                       const haveAll = inChannels
                         ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0)
                         : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);

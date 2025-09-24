@@ -166,14 +166,15 @@ export default function Sidebar(props: Props) {
                           value={t.groupId || ''}
                           onChange={(e) => onAssignTagToGroup(t.name, e.currentTarget.value ? e.currentTarget.value : null)}
                           title="Assign to tag group"
+                          disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
                           <option value="">— no group —</option>
                           {tagGroups.map(g => (
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
                         </select>
-                        <button className="btn-ghost" onClick={() => startRename(t.name)}>R</button>
-                        <button className="btn-ghost" onClick={() => removeTag(t.name)}>x</button>
+                        <button className="btn-ghost" onClick={() => startRename(t.name)} disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>R</button>
+                        <button className="btn-ghost" onClick={() => removeTag(t.name)} disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>x</button>
                       </>
                     )}
                   </div>
@@ -209,8 +210,8 @@ export default function Sidebar(props: Props) {
                     ) : (
                       <>
                         <span className="tag-name">{g.name}</span>
-                        <button className="btn-ghost" onClick={()=>{ setEditingGroupId(g.id); setGroupEditName(g.name); }}>Rename</button>
-                        <button className="btn-ghost" onClick={()=> onDeleteTagGroup(g.id)}>Delete</button>
+                        <button className="btn-ghost" onClick={()=>{ setEditingGroupId(g.id); setGroupEditName(g.name); }} disabled={g.id === 'tagGroup.default'}>Rename</button>
+                        <button className="btn-ghost" onClick={()=> onDeleteTagGroup(g.id)} disabled={g.id === 'tagGroup.default'}>Delete</button>
                       </>
                     )}
                   </div>
@@ -239,14 +240,14 @@ export default function Sidebar(props: Props) {
 </button>
                 <button
                   className="btn-ghost"
-                  title={isPresetScrapeCheckable && !isPresetScrapeCheckable(g.id) ? 'Contains unsupported predicates for scrape-time; cannot enable' : 'Toggle scrape flag (S)'}
+                  title={g.id === 'group.default.scrapable' ? 'Always enabled for default preset' : (isPresetScrapeCheckable && !isPresetScrapeCheckable(g.id) ? 'Contains unsupported predicates for scrape-time; cannot enable' : 'Toggle scrape flag (S)')}
                   onClick={() => toggleGroupScrape?.(g.id, !(g as any).scrape)}
                   aria-pressed={(g as any).scrape === true}
-                  disabled={isPresetScrapeCheckable ? !isPresetScrapeCheckable(g.id) : false}
+                  disabled={g.id === 'group.default.scrapable' || (isPresetScrapeCheckable ? !isPresetScrapeCheckable(g.id) : false)}
                 >
                   S
                 </button>
-                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete preset">x</button>
+                <button className="btn-ghost" onClick={() => removeGroup(g.id)} title="Delete preset" disabled={g.id === 'group.default.scrapable'}>x</button>
               </div>
             ))}
           </div>
