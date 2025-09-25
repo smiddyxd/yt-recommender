@@ -32,7 +32,7 @@ export type Msg =
   | { type: 'channels/refreshByIds'; payload: { ids: string[] } }
   | { type: 'channels/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
   | { type: 'channels/markScraped'; payload: { id: string; at: number; tab?: 'videos'|'shorts'|'live'; count?: number; totalVideoCountOnScrapeTime?: number | null } }
-  | { type: 'channels/upsertPending'; payload: { key: string; name?: string | null; handle?: string | null } }
+  | { type: 'channels/upsertPending'; payload: { key: string; name?: string | null; handle?: string | null; subscribedPending?: boolean } }
   | { type: 'channels/resolvePending'; payload: { id: string; name?: string | null; handle?: string | null; altHandle?: string | null } }
   | { type: 'channels/pending/list'; payload: {} }
   | { type: 'channels/pending/resolveBatch'; payload: { limit?: number } }
@@ -41,6 +41,8 @@ export type Msg =
   | { type: 'channels/restore'; payload: { ids: string[] } }
   | { type: 'channels/purge'; payload: { ids: string[] } }
   | { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } }
+  | { type: 'latest/mark'; payload: { source: 'SubscriptionsFeed'|'WatchHistory'; id: string | null; createIfMissing?: boolean } }
+  | { type: 'channels/markSubscribed'; payload: { ids: string[] } }
   // TAGS (you already added earlier)
   | { type: 'tags/list';    payload: {} }
   | { type: 'tags/create';  payload: { name: string; color?: string } }

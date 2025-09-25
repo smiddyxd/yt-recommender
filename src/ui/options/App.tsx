@@ -678,6 +678,21 @@ const filtered = useMemo(() => {
     }));
   }
 
+  // Exclude videos tagged 'hide' by default unless the tag filter explicitly includes 'hide'
+  try {
+    const includesHide = chain.some(e => {
+      const p: any = e?.pred || {};
+      if (p?.kind === 'v_tags_any' || p?.kind === 'v_tags_all') {
+        const csv = String(p.tagsCsv || '').toLowerCase();
+        return csv.split(',').map(s=>s.trim()).includes('hide');
+      }
+      return false;
+    });
+    if (!includesHide) {
+      base = base.filter(v => !(Array.isArray(v.tags) && v.tags.some(t => String(t||'').toLowerCase() === 'hide')));
+    }
+  } catch {}
+
   const needle = q.trim().toLowerCase();
   if (!needle) return base;
   return base.filter(v =>

@@ -204,12 +204,15 @@ export async function scrapeNowDetailed(): Promise<{ count: number; page: 'watch
     const ch = extractChannelFromRoot(root);
     let title: string | null = null;
     try {
-      const tEl = (root?.querySelector('#video-title') as HTMLElement | null)
+      const tEl = (root?.querySelector('a.yt-lockup-metadata-view-model__title .yt-core-attributed-string') as HTMLElement | null)
+               || (root?.querySelector('a.yt-lockup-metadata-view-model__title') as HTMLElement | null)
+               || (root?.querySelector('#video-title') as HTMLElement | null)
                || (root?.querySelector('a#video-title') as HTMLElement | null)
                || (root?.querySelector('a#video-title-link') as HTMLElement | null)
                || (a as HTMLElement | null);
-      const t = (tEl?.textContent || (tEl as any)?.title || '').toString().trim();
-      title = t || null;
+      let t = (tEl?.textContent || (tEl as any)?.title || '').toString().trim();
+      const isDurationOnly = /^\d{1,2}:\d{2}$/.test(t);
+      if (t && !isDurationOnly && t.toUpperCase() !== 'LIVE') title = t; else title = null;
     } catch {}
     // Channel page context fallback
     try {

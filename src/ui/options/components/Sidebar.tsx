@@ -82,7 +82,7 @@ export default function Sidebar(props: Props) {
   const [groupEditName, setGroupEditName] = React.useState('');
 
   // Hide system default tags and the default tag group from the Sidebar (edit/delete area)
-  const defaultTagNames = React.useMemo(() => new Set(['no fetch','subscribed','unsubscribed','tagged','scrape']), []);
+  const defaultTagNames = React.useMemo(() => new Set(['no fetch','hide','subscribed','unsubscribed','tagged','scrape']), []);
   const visibleTags = React.useMemo(() => (tags || []).filter(t => !defaultTagNames.has(String(t.name || '').toLowerCase())), [tags]);
   const visibleTagGroups = React.useMemo(() => (tagGroups || []).filter(g => {
     const nm = String(g.name || '').trim().toLowerCase();
@@ -174,15 +174,15 @@ export default function Sidebar(props: Props) {
                           value={(t.groupId === 'tagGroup.default' || !t.groupId) ? '' : (t.groupId as any)}
                           onChange={(e) => onAssignTagToGroup(t.name, e.currentTarget.value ? e.currentTarget.value : null)}
                           title="Assign to tag group"
-                          disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
+                          disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
                           <option value="">— no group —</option>
                           {visibleTagGroups.map(g => (
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
                         </select>
-                        <button className="btn-ghost" onClick={() => startRename(t.name)} disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>R</button>
-                        <button className="btn-ghost" onClick={() => removeTag(t.name)} disabled={['no fetch','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>x</button>
+                        <button className="btn-ghost" onClick={() => startRename(t.name)} disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>R</button>
+                        <button className="btn-ghost" onClick={() => removeTag(t.name)} disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>x</button>
                       </>
                     )}
                   </div>

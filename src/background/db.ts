@@ -197,7 +197,8 @@ export async function setMetaValue(key: string, value: any): Promise<void> {
 export type LatestSource = 'SubscriptionsFeed' | 'WatchHistory';
 
 // Update the per-source "latest" marker: clear flag on previous id, set on new id, and persist meta key
-export async function updateLatestForSource(source: LatestSource, newId: string | null): Promise<{ prevId: string | null; newId: string | null }> {
+// opts.createIfMissing: when true, create a stub video row if the target id is not present (used for passive Sub Feed)
+export async function updateLatestForSource(source: LatestSource, newId: string | null, opts?: { createIfMissing?: boolean }): Promise<{ prevId: string | null; newId: string | null }> {
   const key = source === 'SubscriptionsFeed' ? 'latestBy.SubscriptionsFeed' : 'latestBy.WatchHistory';
   const db = await openDB();
   let prevId: string | null = null;
@@ -215,6 +216,12 @@ export async function updateLatestForSource(source: LatestSource, newId: string 
           const row = pv.result as any;
           if (row) {
             if (source === 'SubscriptionsFeed') delete row.latestFromSubFeed; else delete row.latestFromWatchHistory;
+            // If this was a Sub Feed sentinel stub (hide + no fetch, unfetched), purge permanently when the flag is removed
+            if (source === 'SubscriptionsFeed') {
+              const tags: string[] = Array.isArray(row.tags) ? row.tags.map((s:string)=>String(s).toLowerCase()) : [];
+              const isSentinel = tags.includes('hide') && tags.includes('no fetch') && !(Number.isFinite(row?.fetchedAt));
+              if (isSentinel) { try { vs.delete(prevId!); } catch { /* ignore */ } return; }
+            }
             vs.put(row);
           }
         };
@@ -223,11 +230,22 @@ export async function updateLatestForSource(source: LatestSource, newId: string 
       if (newId) {
         const nv = vs.get(newId);
         nv.onsuccess = () => {
-          const row = (nv.result as any) || { id: newId };
-          if (source === 'SubscriptionsFeed') row.latestFromSubFeed = true; else row.latestFromWatchHistory = true;
-          vs.put(row);
+          const exists = !!nv.result;
+          if (exists || (opts?.createIfMissing === true)) {
+            const row = (nv.result as any) || { id: newId };
+            if (source === 'SubscriptionsFeed') row.latestFromSubFeed = true; else row.latestFromWatchHistory = true;
+            // For Sub Feed: if creating a new stub, tag it as no fetch + hide so it doesn't get fetched or shown by default
+            if (!exists && source === 'SubscriptionsFeed') {
+              const tags: string[] = Array.isArray((row as any).tags) ? (row as any).tags.slice() : [];
+              const add = (t: string) => { const nm = t.toLowerCase(); if (!tags.map(x=>x.toLowerCase()).includes(nm)) tags.push(t); };
+              add('no fetch'); add('hide');
+              (row as any).tags = tags;
+            }
+            vs.put(row);
+          }
+          // Always record meta to track the id, even if the row wasn't present
+          ms.put({ key, value: newId });
         };
-        ms.put({ key, value: newId });
       }
     };
     g.onerror = () => reject(g.error);
@@ -703,8 +721,8 @@ export async function listChannels(): Promise<Array<{ id: string; name: string; 
           country: r.country || null,
           publishedAt: ((): number | null => { try { const t = Date.parse(r.publishedAt || ''); return Number.isFinite(t) ? t : (Number.isFinite(r.publishedAt) ? r.publishedAt : null); } catch { return Number.isFinite(r.publishedAt) ? r.publishedAt : null; } })(),
           subsHidden: r.subsHidden === true,
-          keywords: r.keywords || null,
-          topics: Array.isArray(r.topics) ? r.topics : []
+          keywords: (Array.isArray(r.keywords) ? (r.keywords as string[]).filter(Boolean).join(', ') : (r.keywords || null)),
+          topics: (Array.isArray((r as any).channelTopics) ? (r as any).channelTopics : (Array.isArray(r.topics) ? r.topics : []))
         };
       });
       resolve(items);
@@ -916,8 +934,24 @@ export async function applyYouTubeChannel(ch: any): Promise<void> {
       next.subs = Number(statistics?.subscriberCount) || null;
       next.videos = Number(statistics?.videoCount) || null;
       next.views = Number(statistics?.viewCount) || null;
-      next.keywords = (branding?.channel?.keywords as string) || prev.keywords || null;
-      next.topics = topics as string[];
+      // Keywords: parse quoted phrases and single-word tokens into an array
+      try {
+        const rawKw = (branding?.channel?.keywords as string) || '';
+        next.keywords = parseKeywords(rawKw);
+      } catch { next.keywords = Array.isArray(prev.keywords) ? prev.keywords : []; }
+      // Channel topics: map topicCategory URLs to readable labels
+      try {
+        const labels: string[] = [];
+        for (const u of (topics as any[])) {
+          try {
+            const url = new URL(String(u));
+            const slug = decodeURIComponent(url.pathname.split('/').pop() || '').replace(/_/g, ' ').trim();
+            if (slug) labels.push(slug);
+          } catch { /* ignore */ }
+        }
+        (next as any).channelTopics = Array.from(new Set(labels));
+        if ('topics' in next) delete (next as any).topics;
+      } catch { /* ignore */ }
       next.subsHidden = statistics?.hiddenSubscriberCount === true;
       next.fetchedAt = Date.now();
       // Ensure heavy/raw fields are not kept
@@ -1199,8 +1233,8 @@ export async function listChannelsTrash(): Promise<any[]> {
         subsHidden: r.subsHidden === true,
         tags: Array.isArray(r.tags) ? r.tags : [],
         videoTags: Array.isArray(r.videoTags) ? r.videoTags : [],
-        keywords: r.keywords || null,
-        topics: Array.isArray(r.topics) ? r.topics : []
+        keywords: (Array.isArray(r.keywords) ? (r.keywords as string[]).filter(Boolean).join(', ') : (r.keywords || null)),
+        topics: (Array.isArray((r as any).channelTopics) ? (r as any).channelTopics : (Array.isArray(r.topics) ? r.topics : []))
       }));
       resolve(items);
     };
@@ -1327,6 +1361,45 @@ export async function upsertPendingChannel(key: string, data: { name?: string | 
   // normalize handle to always include leading '@' if present
   const incomingHandle = data?.handle ? (String(data.handle).startsWith('@') ? String(data.handle) : '@' + String(data.handle)) : null;
   const db = await openDB();
+  // If this is a handle-based pending and a channel already exists with that handle (or alt handle),
+  // do not create/update a pending row. Optionally mark it subscribed immediately when requested.
+  try {
+    const keyIsHandle = k.toLowerCase().startsWith('handle:');
+    const keyHandleRaw = keyIsHandle ? k.slice('handle:'.length) : null;
+    const normalizedHandle = (incomingHandle || (keyHandleRaw ? (keyHandleRaw.startsWith('@') ? keyHandleRaw : ('@' + keyHandleRaw)) : null));
+    if (normalizedHandle) {
+      const wantSubscribed = data?.subscribedPending === true;
+      const updatedExisting = await new Promise<boolean>((resolve, reject) => {
+        const tx = db.transaction('channels', wantSubscribed ? 'readwrite' : 'readonly');
+        const os = tx.objectStore('channels');
+        let found = false;
+        const cur = os.openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result as IDBCursorWithValue | null;
+          if (!c) { resolve(found); return; }
+          const row: any = c.value || {};
+          const base = String(row?.handle || '').trim();
+          const baseNorm = base ? (base.startsWith('@') ? base.toLowerCase() : ('@' + base.toLowerCase())) : '';
+          const alts: string[] = Array.isArray(row?.altHandles) ? row.altHandles : [];
+          const hasAlt = alts.some(h => {
+            const s = String(h || '').trim();
+            if (!s) return false; const sn = s.startsWith('@') ? s.toLowerCase() : ('@' + s.toLowerCase());
+            return sn === normalizedHandle.toLowerCase();
+          });
+          if (baseNorm === normalizedHandle.toLowerCase() || hasAlt) {
+            found = true;
+            if (wantSubscribed) {
+              const next = { ...row, subscribed: true, unsubscribed: false };
+              try { c.update(next); } catch { /* ignore */ }
+            }
+          }
+          c.continue();
+        };
+        cur.onerror = () => reject(cur.error);
+      });
+      if (updatedExisting) return false; // skip creating/updating pending; channel already exists
+    }
+  } catch { /* fall through to pending upsert */ }
   return new Promise<boolean>((resolve, reject) => {
     const tx = db.transaction('channels_pending', 'readwrite');
     const os = tx.objectStore('channels_pending');
@@ -1424,6 +1497,38 @@ export async function listPendingChannels(): Promise<Array<{ key: string; name?:
   });
 }
 
+// Mark the given channel ids as subscribed (idempotent). Ensures rows exist.
+export async function markChannelsSubscribed(ids: string[]): Promise<number> {
+  const list = Array.from(new Set((ids || []).map(s => String(s || '').trim()).filter(Boolean)));
+  if (list.length === 0) return 0;
+  const db = await openDB();
+  let updated = 0;
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('channels', 'readwrite');
+    const os = tx.objectStore('channels');
+    (async () => {
+      for (const id of list) {
+        await new Promise<void>((res, rej) => {
+          const g = os.get(id);
+          g.onsuccess = () => {
+            const prev = (g.result as any) || null;
+            const row: any = prev ? { ...prev } : { id };
+            row.subscribed = true;
+            row.unsubscribed = false;
+            os.put(row);
+            updated++;
+            res();
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+  return updated;
+}
+
 // Aggregate and persist per-channel videoTopics lists by scanning videos
 export async function recomputeChannelVideoTopicsForAllChannels() {
   const db = await openDB();
@@ -1512,12 +1617,36 @@ function bestThumbSafe(thumbs: any): string | null {
 function extractAvatarId(url?: string | null): string | null {
   try {
     const u = String(url || ''); if (!u) return null;
-    const i = u.indexOf('yt3.ggpht.com/'); if (i === -1) return null;
-    const after = u.slice(i + 'yt3.ggpht.com/'.length);
-    const last = after.split('/').pop() || '';
-    if (!last) return null;
-    const left = last.split('=')[0];
-    return left || null;
+    const marker = 'yt3.ggpht.com/';
+    const i = u.indexOf(marker); if (i === -1) return null;
+    const start = i + marker.length;
+    // Take everything after domain up to the first '=' (size params), preserving any 'ytc/' prefix
+    const eq = u.indexOf('=', start);
+    let end = eq !== -1 ? eq : u.length;
+    // Trim any trailing query/hash if '=' not found
+    const q = u.indexOf('?', start); if (q !== -1 && q < end) end = q;
+    const h = u.indexOf('#', start); if (h !== -1 && h < end) end = h;
+    const base = u.slice(start, end).replace(/\/+$/,'');
+    return base || null;
   } catch { return null; }
+}
+
+// Parse YouTube channel keywords string into an array.
+// Supports quoted multi-word phrases and single-word tokens separated by whitespace.
+function parseKeywords(input?: string | null): string[] {
+  const s = (input || '').toString();
+  if (!s.trim()) return [];
+  const out: string[] = [];
+  const re = /"([^"]+)"|(\S+)/g; // quoted phrase or non-space token
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s)) !== null) {
+    const val = (m[1] || m[2] || '').trim();
+    if (val) out.push(val);
+  }
+  // Dedupe while preserving order
+  const seen = new Set<string>();
+  const res: string[] = [];
+  for (const k of out) { if (!seen.has(k)) { seen.add(k); res.push(k); } }
+  return res;
 }
 

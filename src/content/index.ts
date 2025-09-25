@@ -45,6 +45,8 @@ const domUniqueSeen: Set<string> = new Set();
 // Track last watch-page stub capture to avoid spamming
 let lastWatchStubId: string | null = null;
 let lastWatchStubAt = 0;
+// Track latest marker sent for Sub Feed (to avoid spamming background)
+let lastSubFeedLatestId: string | null = null;
 
 chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
   try {
@@ -55,12 +57,13 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
           // Subscriptions Feed: gate by enabled scrape presets and upsert missing channels
           if (path === '/feed/subscriptions') {
             await refreshScrapeGroups();
-            const anchors = Array.from(document.querySelectorAll('ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
+            const anchors = Array.from(document.querySelectorAll('a[href^="/watch"]')) as HTMLAnchorElement[];
             if (anchors.length === 0) { sendResponse?.({ ok: true, count: 0, page: 'other' }); return; }
             const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));
             const seeds: Array<{ id: string; sources: Array<{ type: string; id?: string | null }> }> = [];
             const seenIds = new Set<string>();
             const seenChan = new Set<string>();
+            const markSubscribedIds = new Set<string>();
             for (const a of anchors) {
               const cand = candidateFromAnchor(a);
               if (!cand) continue;
@@ -70,7 +73,7 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
                 seenIds.add(cand.id);
                 seeds.push({ id: cand.id, sources: Array.isArray(cand.sources) ? cand.sources : [] });
               }
-              // Upsert channel stub/pending for accepted tiles
+              // Upsert channel stub/pending for accepted tiles (now also flags subscribed)
               try {
                 const chanId = (cand.channelId || '').trim();
                 const handle = (cand.handle || '').trim();
@@ -81,12 +84,13 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
                     seenChan.add(key);
                     if (chanId) {
                       chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: chanId, name: name || null, handle: handle || null } });
+                      markSubscribedIds.add(chanId);
                     } else {
                       const handleKey = handle ? (handle.startsWith('@') ? handle : ('@' + handle)) : null;
                       const pendKey = handleKey ? `handle:${handleKey}` : (name ? `name:${name}` : null);
                       if (pendKey && !pendingKeysSubmitted.has(pendKey)) {
                         pendingKeysSubmitted.add(pendKey);
-                        chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key: pendKey, name: name || null, handle: handleKey || null } });
+                        chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key: pendKey, name: name || null, handle: handleKey || null, subscribedPending: true } });
                       }
                     }
                   }
@@ -101,7 +105,41 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
                 await new Promise(res => setTimeout(res, 120));
               }
             }
-            sendResponse?.({ ok: true, count: seeds.length, page: 'other' });
+            // Additionally (non-gated): ensure all tiles' channels are upserted and marked subscribed
+            try {
+              let stubs = 0, pend = 0;
+              let chanLinks = 0;
+              try { chanLinks = document.querySelectorAll('a.yt-core-attributed-string__link').length; } catch {}
+              for (const a of anchors) {
+                const cand = candidateFromAnchor(a);
+                if (!cand) continue;
+                const chanId = (cand.channelId || '').trim();
+                const handle = (cand.handle || '').trim();
+                const name = (cand.channelName || '').trim();
+                if (!(chanId || handle || name)) continue;
+                if (chanId) {
+                  if (!seenChan.has(`id:${chanId}`)) {
+                    seenChan.add(`id:${chanId}`);
+                    chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: chanId, name: name || null, handle: handle || null } });
+                  }
+                  markSubscribedIds.add(chanId);
+                  stubs++;
+                } else {
+                  const handleKey = handle ? (handle.startsWith('@') ? handle : ('@' + handle)) : null;
+                  const pendKey = handleKey ? `handle:${handleKey}` : (name ? `name:${name}` : null);
+                  if (pendKey && !pendingKeysSubmitted.has(pendKey)) {
+                    pendingKeysSubmitted.add(pendKey);
+                    chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key: pendKey, name: name || null, handle: handleKey || null, subscribedPending: true } });
+                    pend++;
+                  }
+                }
+              }
+              const ids = Array.from(markSubscribedIds.values());
+              if (ids.length) { try { chrome.runtime.sendMessage({ type: 'channels/markSubscribed', payload: { ids } }); } catch {} }
+              // eslint-disable-next-line no-console
+              console.log('[YT-Manager][SubFeed][active] channels', { stubs, pend, marked: ids.length, chanLinks });
+            } catch {}
+            sendResponse?.({ ok: true, count: seeds.length, page: 'sub' });
             return;
           }
 
@@ -216,6 +254,13 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
         const stopAtId = typeof msg?.payload?.stopAtId === 'string' ? String(msg.payload.stopAtId) : '';
         // Detailed scan like the manual snippet
         const stats = scanCurrentAnchors(what);
+        // Channel link count (best-effort). On Sub Feed, these are the channel-name anchors.
+        let channelLinks = 0;
+        try {
+          if (what === 'SubscriptionsFeed') {
+            channelLinks = document.querySelectorAll('a.yt-core-attributed-string__link').length;
+          }
+        } catch { channelLinks = 0; }
         // Reset cumulative tracker when switching modes
         if (domUniqueWhat !== what) { domUniqueWhat = what; try { domUniqueSeen.clear(); } catch {} }
         // Merge pass uniques into cumulative
@@ -231,7 +276,8 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
                     'pending(upserts):', pending,
                     'cumulative(dom):', domUniqueSeen.size,
                     'max:', max,
-                    'stall:', stall);
+                    'stall:', stall,
+                    'channels(links):', channelLinks);
         // eslint-disable-next-line no-console
         console.log(`${prefix} sample ids:`, stats.uniques.slice(0, 10));
         // eslint-disable-next-line no-console
@@ -243,14 +289,27 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
           if (what === 'SubscriptionsFeed') highlightFromAnchors(stats.anchors, 'sf');
           else if (what === 'WatchHistory') highlightFromAnchors(stats.anchors, 'wh');
         } catch {}
-        // First id on page (best-effort): first anchor with an id
+        // First id on page (best-effort)
+        // SubscriptionsFeed: choose the first non-livestream tile (badge text is 'LIVE' for livestreams)
+        // Other modes: fallback to the first anchor with an id
         let firstId: string | null = null;
         try {
-          const a = (stats.withId && stats.withId.length > 0) ? stats.withId[0] : null;
+          let a: HTMLAnchorElement | null = null;
+          if (what === 'SubscriptionsFeed') {
+            const pick = (stats.withId || []).find((el) => {
+              try {
+                const root = tileRoot(el);
+                return !isLivestreamTile(root);
+              } catch { return true; }
+            });
+            a = pick || null;
+          } else {
+            a = (stats.withId && stats.withId.length > 0) ? stats.withId[0] : null;
+          }
           if (a) { try { firstId = parseVideoIdFromHref(a.href); } catch { firstId = null; } }
         } catch { firstId = null; }
         const foundStopId = !!(stopAtId && stats.uniques.includes(stopAtId));
-        sendResponse?.({ ok: true, dom: { passUnique: stats.uniques.length, cumulativeUnique: domUniqueSeen.size, firstId }, foundStopId });
+        sendResponse?.({ ok: true, dom: { passUnique: stats.uniques.length, cumulativeUnique: domUniqueSeen.size, firstId, channelLinks }, foundStopId });
       } catch (e: any) {
         sendResponse?.({ ok: false, error: e?.message || String(e) });
       }
@@ -546,7 +605,7 @@ function scheduleNextAutoScan(ms: number) {
 }
 
 function tileRoot(a: HTMLAnchorElement): HTMLElement | null {
-  const sel = 'ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, ytd-compact-video-renderer';
+  const sel = 'yt-lockup-view-model, ytd-rich-item-renderer, ytd-grid-video-renderer, ytd-video-renderer, ytd-compact-video-renderer';
   return a.closest(sel) as HTMLElement | null;
 }
 function extractChannelIdFromTile(root: HTMLElement | null): { channelId?: string | null; handle?: string | null; name?: string | null } {
@@ -560,7 +619,8 @@ function extractChannelIdFromTile(root: HTMLElement | null): { channelId?: strin
       const seg = u.pathname.split('/');
       if (seg[1] === 'channel' && seg[2]) return { channelId: seg[2] };
     }
-    const h = root.querySelector('ytd-channel-name a[href^="/@"]') as HTMLAnchorElement | null;
+    const h = (root.querySelector('ytd-channel-name a[href^="/@"]') as HTMLAnchorElement | null)
+           || (root.querySelector('a[href^="/@"]') as HTMLAnchorElement | null);
     if (h?.href) {
       const u = new URL(h.href, location.origin);
       const handle = u.pathname.slice(1);
@@ -569,6 +629,28 @@ function extractChannelIdFromTile(root: HTMLElement | null): { channelId?: strin
     }
     return {};
   } catch { return {}; }
+}
+
+// Determine if a tile represents a livestream by inspecting common badge elements
+function isLivestreamTile(root: HTMLElement | null): boolean {
+  try {
+    if (!root) return false;
+    // New badge shape style
+    try {
+      const badges = Array.from(root.querySelectorAll('.yt-badge-shape__text')) as HTMLElement[];
+      for (const el of badges) {
+        const t = (el.textContent || '').trim().toUpperCase();
+        if (t === 'LIVE') return true;
+      }
+    } catch { /* ignore */ }
+    // Fallback: classic overlay time/status renderer
+    try {
+      const status = root.querySelector('ytd-thumbnail-overlay-time-status-renderer') as HTMLElement | null;
+      const txt = (status?.textContent || '').trim().toUpperCase();
+      if (txt === 'LIVE') return true;
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+  return false;
 }
 
 type Cand = { id: string; sources: Array<{ type: string; id?: string | null }>; channelId?: string | null; handle?: string | null; channelName?: string | null; title?: string | null };
@@ -623,7 +705,7 @@ function highlightFromAnchors(anchors: HTMLAnchorElement[], tag: 'sf' | 'wh') {
 function applyScrapeHighlightsFor(what: 'SubscriptionsFeed' | 'WatchHistory' | string) {
   try {
     if (what === 'SubscriptionsFeed') {
-      const anchors = Array.from(document.querySelectorAll('ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
+      const anchors = Array.from(document.querySelectorAll('a[href^="/watch"]')) as HTMLAnchorElement[];
       highlightFromAnchors(anchors, 'sf');
     } else if (what === 'WatchHistory') {
       const anchors = Array.from(document.querySelectorAll('a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]')) as HTMLAnchorElement[];
@@ -635,7 +717,7 @@ function applyScrapeHighlightsFor(what: 'SubscriptionsFeed' | 'WatchHistory' | s
 function finalizeScrapeHighlights(what: 'SubscriptionsFeed' | 'WatchHistory' | string, ids: string[]): { anchors: HTMLAnchorElement[] } {
   ensureHighlightStyles();
   const sel = (what === 'SubscriptionsFeed')
-    ? 'ytd-rich-item-renderer a[href^="/watch"]'
+    ? 'a[href^="/watch"]'
     : 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]';
   const idsSet = new Set((ids || []).map(String));
   const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
@@ -670,7 +752,7 @@ function scanCurrentAnchors(what: 'SubscriptionsFeed' | 'WatchHistory' | string)
   dups: Array<{ id: string; count: number }>;
 } {
   const sel = (what === 'SubscriptionsFeed')
-    ? 'ytd-rich-item-renderer a[href^="/watch"]'
+    ? 'a[href^="/watch"]'
     : 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"], ytd-rich-item-renderer a[href^="/watch"]';
   const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
   const idTo = new Map<string, { count: number; root: Element | null }>();
@@ -703,15 +785,19 @@ function candidateFromAnchor(a: HTMLAnchorElement): Cand | null {
   const src = list ? [{ type: 'playlist', id: list }] as Array<{ type: string; id?: string | null }> : [{ type: 'panel', id: null }];
   const root = tileRoot(a);
   const ch = extractChannelIdFromTile(root);
-  // Title from tile
+  // Title from tile (prefer title anchor/content; avoid picking duration badges)
   let title: string | null = null;
   try {
-    const tEl = (root?.querySelector('#video-title') as HTMLElement | null)
+    const tEl = (root?.querySelector('a.yt-lockup-metadata-view-model__title .yt-core-attributed-string') as HTMLElement | null)
+             || (root?.querySelector('a.yt-lockup-metadata-view-model__title') as HTMLElement | null)
+             || (root?.querySelector('#video-title') as HTMLElement | null)
              || (root?.querySelector('a#video-title') as HTMLElement | null)
              || (root?.querySelector('a#video-title-link') as HTMLElement | null)
              || (a as HTMLElement | null);
-    const t = (tEl?.textContent || (tEl as any)?.title || '').toString().trim();
-    title = t || null;
+    let t = (tEl?.textContent || (tEl as any)?.title || '').toString().trim();
+    // Filter out duration-only or LIVE badges if fallback picked the thumbnail anchor
+    const isDurationOnly = /^\d{1,2}:\d{2}$/.test(t);
+    if (t && !isDurationOnly && t.toUpperCase() !== 'LIVE') title = t; else title = null;
   } catch {}
   // Fallback on channel pages: infer channel from page URL/context
   try {
@@ -809,7 +895,9 @@ function evalPresetOnCandidate(c: Cand, cond: Condition, groupsById: Map<string,
 }
 
 async function autoScanOnce(): Promise<{ signature: string; accepted: number }> {
-  if (scrapeGroups.length === 0) return { signature: '', accepted: 0 }; // nothing enabled
+  // Ensure scrapeGroups reflect current default preset and user presets
+  try { await refreshScrapeGroups(); } catch {}
+  const gatingEnabled = scrapeGroups.length > 0;
   // Idle gating: only scrape within 10s of last user interaction
   const idleMs = Date.now() - lastActivityAt;
   if (idleMs > 10_000) { dlog('[content] idle, skipping scan', idleMs); return { signature: '', accepted: 0 }; }
@@ -832,11 +920,62 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
       }
     } catch {}
   }  // Collect anchors for watch + common tiles. On search results, include /shorts/ anchors too.
-  let sel = 'a#thumbnail[href^="/watch"], a#video-title[href^="/watch"], a#video-title-link[href^="/watch"]';
+  let sel = 'a[href^="/watch"]';
   try { if (location.pathname.startsWith('/results')) sel += ', a[href^="/shorts/"]'; } catch {}
   const anchors = Array.from(document.querySelectorAll(sel)) as HTMLAnchorElement[];
   dlog('[content] scan anchors', anchors.length);
   if (anchors.length === 0) return { signature: '', accepted: 0 };
+  // On Sub Feed, mark latest (first non-livestream tile) once per change
+  try {
+    if (location.pathname === '/feed/subscriptions') {
+      const a = anchors.find((el) => { try { const root = tileRoot(el); return !isLivestreamTile(root); } catch { return true; } });
+      if (a) {
+        let id: string | null = null; try { id = parseVideoIdFromHref(a.href); } catch { id = null; }
+        if (id && id !== lastSubFeedLatestId) {
+          lastSubFeedLatestId = id;
+          try { chrome.runtime.sendMessage({ type: 'latest/mark', payload: { source: 'SubscriptionsFeed', id, createIfMissing: true } }); } catch {}
+          dlog('[content][subfeed] mark latest', id);
+        }
+      }
+    }
+  } catch {}
+  // On Subscriptions Feed, upsert channel stubs/pending for ALL tiles and mark them as subscribed
+  try {
+    if (location.pathname === '/feed/subscriptions') {
+      const seenIds = new Set<string>();
+      const markIds = new Set<string>();
+      let stubs = 0, pend = 0;
+      let chanLinks = 0;
+      try { chanLinks = document.querySelectorAll('a.yt-core-attributed-string__link').length; } catch {}
+      for (const a of anchors) {
+        const c = candidateFromAnchor(a);
+        if (!c) continue;
+        // Prefer concrete channel id
+        if (c.channelId) {
+          if (!seenIds.has(c.channelId)) {
+            seenIds.add(c.channelId);
+            try { chrome.runtime.sendMessage({ type: 'channels/upsertStub', payload: { id: c.channelId, name: c.channelName || null, handle: c.handle || null } }); } catch {}
+            markIds.add(c.channelId);
+            stubs++;
+          }
+        } else if (c.handle || c.channelName) {
+          // Pending entry with subscribedPending so later resolve promotes subscribed=true
+          const handleKey = c.handle ? (c.handle!.startsWith('@') ? c.handle! : `@${c.handle!}`) : null;
+          const key = handleKey ? `handle:${handleKey}` : (c.channelName ? `name:${c.channelName}` : null);
+          if (key && !pendingKeysSubmitted.has(key)) {
+            pendingKeysSubmitted.add(key);
+            try { chrome.runtime.sendMessage({ type: 'channels/upsertPending', payload: { key, name: c.channelName || null, handle: handleKey || null, subscribedPending: true } }); } catch {}
+            pend++;
+          }
+        }
+      }
+      const ids = Array.from(markIds.values());
+      if (ids.length) {
+        try { chrome.runtime.sendMessage({ type: 'channels/markSubscribed', payload: { ids } }); } catch {}
+      }
+      dlog('[content][subfeed] passive channels', { stubs, pend, marked: ids.length, chanLinks });
+    }
+  } catch {}
   // Build total (non-gated) signature from unique ids in anchors
   const idSetAll = new Set<string>();
   for (const a of anchors) {
@@ -844,12 +983,14 @@ async function autoScanOnce(): Promise<{ signature: string; accepted: number }> 
   }
   const groupsById = new Map<string, GroupRec>(); scrapeGroups.forEach(g => groupsById.set(g.id, g));
   const accepted: Cand[] = [];
-  for (const a of anchors) {
-    const cand = candidateFromAnchor(a);
-    if (!cand) continue;
-    // gate by any enabled preset
-    const ok = scrapeGroups.some(g => evalPresetOnCandidate(cand, g.condition, groupsById));
-    if (ok) accepted.push(cand);
+  if (gatingEnabled) {
+    for (const a of anchors) {
+      const cand = candidateFromAnchor(a);
+      if (!cand) continue;
+      // gate by any enabled preset
+      const ok = scrapeGroups.some(g => evalPresetOnCandidate(cand, g.condition, groupsById));
+      if (ok) accepted.push(cand);
+    }
   }
   // Submit distinct ids
   if (accepted.length) {

@@ -1,4 +1,4 @@
-import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
 import { listTags, createTag, renameTag, deleteTag } from './db';
@@ -13,6 +13,7 @@ const DEFAULT_TAG_GROUP_ID = 'tagGroup.default';
 const DEFAULT_TAG_GROUP_NAME = 'default tags';
 const DEFAULT_TAGS = [
   { name: 'no fetch', manual: true, scope: 'both' as const },
+  { name: 'hide', manual: true, scope: 'video' as const },
   { name: 'subscribed', manual: false, scope: 'channel' as const },
   { name: 'unsubscribed', manual: false, scope: 'channel' as const },
   { name: 'tagged', manual: true, scope: 'channel' as const },
@@ -285,6 +286,10 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
     } catch { stopAtId = null; }
   }
   let firstIdOnRun: string | null = null;
+  let lastChannelLinks = 0;
+  const needBaselines = (override === 'SubscriptionsFeed');
+  const baselineVideos = 100;
+  const baselineChannels = 100;
   try {
     for (let i = 0; i < 60; i++) {
       if (!currentScrape || currentScrape.stopRequested) break;
@@ -300,14 +305,23 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
         const dom = resp?.dom || {};
         const v = Number(dom?.cumulativeUnique || 0);
         if (Number.isFinite(v) && v >= 0) cum = v;
+        // Track channel link count (Sub Feed baseline)
+        try { lastChannelLinks = Math.max(0, Number(dom?.channelLinks || 0)); } catch { lastChannelLinks = 0; }
         if (!firstIdOnRun) {
           const fid = resp?.dom?.firstId;
           if (typeof fid === 'string' && fid) firstIdOnRun = fid;
         }
-        if (opts?.stopOnKnown && resp?.foundStopId === true && stopAtId) { lastCum = cum; break; }
+        const reachedVideoBaseline = cum >= baselineVideos;
+        const reachedChannelBaseline = lastChannelLinks >= baselineChannels;
+        const okToShortStop = !needBaselines || (reachedVideoBaseline && reachedChannelBaseline);
+        if (opts?.stopOnKnown && resp?.foundStopId === true && stopAtId && okToShortStop) { lastCum = cum; break; }
       } catch {}
       // Stop if DOM-unique count reached the limit
-      if (cum >= max) { lastCum = cum; break; }
+      if (cum >= max) {
+        const reachedVideoBaseline = cum >= baselineVideos;
+        const reachedChannelBaseline = lastChannelLinks >= baselineChannels;
+        if (!needBaselines || (reachedVideoBaseline && reachedChannelBaseline)) { lastCum = cum; break; }
+      }
       // Aggressive scrolling: always nudge the infinite loader to the bottom
       try { await new Promise((resolve)=> chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/SCROLL_BOTTOM', payload: { times: 2, delayMs: 600 } }, () => resolve(undefined))); } catch {}
       // Reset stall tracker (no longer used for conditional nudge)
@@ -332,7 +346,8 @@ async function runScrollingScrape(url: string, override: SourceOverride, max: nu
   // Update latest marker (flag on video + meta) based on firstId captured at start of run
   try {
     if (firstIdOnRun) {
-      await updateLatestForSource(override === 'WatchHistory' ? 'WatchHistory' : 'SubscriptionsFeed', firstIdOnRun);
+      const src = (override === 'WatchHistory' ? 'WatchHistory' : 'SubscriptionsFeed');
+      await updateLatestForSource(src as any, firstIdOnRun, { createIfMissing: src === 'SubscriptionsFeed' });
       try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
     }
   } catch {}
@@ -479,18 +494,27 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           const tx = db.transaction('channels', 'readonly');
           const os = tx.objectStore('channels');
           const cur = os.openCursor();
-          const ids: string[] = [];
+          const set = new Set<string>();
           await new Promise<void>((resolve, reject) => {
             cur.onsuccess = () => {
               const c = cur.result as IDBCursorWithValue | null;
               if (!c) { resolve(); return; }
               const row: any = c.value || {};
               const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
-              if (tags.map(t => String(t||'').toLowerCase()).includes('scrape')) ids.push(String(row.id));
+              if (tags.map(t => String(t||'').toLowerCase()).includes('scrape')) {
+                try {
+                  if (row?.id) set.add(String(row.id));
+                  const handle = String(row?.handle || '').trim();
+                  if (handle) { set.add(handle); set.add(handle.startsWith('@') ? handle.slice(1) : ('@' + handle)); }
+                  const alts: string[] = Array.isArray(row?.altHandles) ? row.altHandles : [];
+                  for (const h of alts) { const s = String(h || '').trim(); if (s) { set.add(s); set.add(s.startsWith('@') ? s.slice(1) : ('@' + s)); } }
+                } catch {}
+              }
               c.continue();
             };
             cur.onerror = () => reject(cur.error);
           });
+          const ids = Array.from(set.values());
           const preset = { id: DEFAULT_PRESET_ID, name: DEFAULT_PRESET_NAME, createdAt: 0, updatedAt: Date.now(), scrape: true, condition: { kind: 'channelIdIn', ids } as any };
           items.unshift(preset as any);
         } catch {}
@@ -819,11 +843,29 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
       } else if ((raw as any)?.type === 'channels/upsertPending') {
-        const { key, name, handle } = (raw as any).payload || {};
-        const changed = await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null });
+        const { key, name, handle, subscribedPending } = (raw as any).payload || {};
+        const changed = await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null, subscribedPending: !!subscribedPending });
         // optional UI could listen to a 'channels' change, but pending are background-only for now
         if (changed) recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handle ?? null }, { impact: {} });
+        // Push a channels change because upsertPending may upgrade an existing channel's subscribed flag
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
         sendResponse?.({ ok: true, changed: !!changed });
+      } else if ((raw as any)?.type === 'latest/mark') {
+        const source = String((raw as any)?.payload?.source || 'SubscriptionsFeed');
+        const id = (raw as any)?.payload?.id ? String((raw as any)?.payload?.id) : null;
+        const createIfMissing = !!((raw as any)?.payload?.createIfMissing);
+        try {
+          await updateLatestForSource(source === 'WatchHistory' ? 'WatchHistory' : 'SubscriptionsFeed', id, { createIfMissing });
+          try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+          sendResponse?.({ ok: true });
+        } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if ((raw as any)?.type === 'channels/markSubscribed') {
+        const ids: string[] = Array.isArray((raw as any)?.payload?.ids) ? (raw as any).payload.ids.map(String) : [];
+        const count = await markChannelsSubscribed(ids);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
+        recordEvent('channels/markSubscribed', { count }, { impact: { channels: count } });
+        scheduleBackup();
+        sendResponse?.({ ok: true, count });
       } else if ((raw as any)?.type === 'channels/resolvePending') {
         const { id, name, handle } = (raw as any).payload || {};
         await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null });
@@ -973,7 +1015,18 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                             try { return (sn?.thumbnails?.high?.url || sn?.thumbnails?.medium?.url || sn?.thumbnails?.default?.url || null) as (string | null); } catch { return null; }
                           })();
                           const nextAvatarId = ((): string | null => {
-                            try { const u = nextAvatar; if (!u) return null; const i = u.indexOf('yt3.ggpht.com/'); if (i === -1) return null; const after = u.slice(i + 'yt3.ggpht.com/'.length); const last = after.split('/').pop() || ''; return (last.split('=')[0] || null); } catch { return null; }
+                            try {
+                              const u = nextAvatar; if (!u) return null;
+                              const marker = 'yt3.ggpht.com/';
+                              const i = u.indexOf(marker); if (i === -1) return null;
+                              const start = i + marker.length;
+                              const eq = u.indexOf('=', start);
+                              let end = eq !== -1 ? eq : u.length;
+                              const q = u.indexOf('?', start); if (q !== -1 && q < end) end = q;
+                              const h = u.indexOf('#', start); if (h !== -1 && h < end) end = h;
+                              const base = u.slice(start, end).replace(/\/+$/,'');
+                              return base || null;
+                            } catch { return null; }
                           })();
                           const nextDesc = (typeof sn?.description === 'string') ? sn.description : null;
                           const changed: any = {};

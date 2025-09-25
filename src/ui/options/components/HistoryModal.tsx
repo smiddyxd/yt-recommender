@@ -228,9 +228,37 @@ export default function HistoryModal({ open, onClose }: Props) {
           <h2 style={{ margin: 0, fontSize: 16 }}>Version History</h2>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <input id="history-import" type="file" multiple style={{ display: 'none' }} accept=".json,.jsonl" />
-            <button className="btn-ghost" onClick={downloadAllSeparate} disabled={loading} title="Triggers per-file browser downloads (may fail for very large files)">Download All</button>
-            <button className="btn-ghost" onClick={downloadAllToFolderChunked} disabled={loading} title="Best for large data; writes files directly to a folder using chunks">Download All (folder)</button>
+            <button className="btn-ghost" onClick={downloadAllSeparate} disabled={loading} title="Triggers per-file browser downloads (may fail for very large files)">DL</button>
+            <button className="btn-ghost" onClick={downloadAllToFolderChunked} disabled={loading} title="Best for large data; writes files directly to a folder using chunks">DL (folder)</button>
             <button className="btn-ghost" onClick={wipeAll} disabled={loading}>Wipe All</button>
+            <button className="btn-ghost" onClick={async () => {
+              try {
+                setLoading(true);
+                const snapResp: any = await sendBg('backup/history/snapshotNow', { interactive: true } as any);
+                if (!snapResp?.ok) { alert(`Snapshot failed: ${snapResp?.error || 'unknown'}`); return; }
+                const snapName = String(snapResp?.name || '');
+                if (!snapName) { alert('Snapshot saved but name missing.'); return; }
+                // Find the just-created snapshot and download it
+                const filesResp: any = await sendBg('backup/listFiles', {} as any);
+                const list = Array.isArray(filesResp?.items) ? filesResp.items as Array<{ id: string; name: string }> : [];
+                const file = list.find(f => String(f.name || '') === snapName);
+                if (!file) { alert(`Snapshot created (${snapName}) but file not yet visible in Drive listing.`); return; }
+                const dl: any = await sendBg('backup/downloadFile', { id: (file as any).id } as any);
+                if (!dl?.ok || !dl?.contentB64) { alert('Failed to download snapshot file.'); return; }
+                const bytes = b64ToBytes(String(dl.contentB64));
+                const ab = new ArrayBuffer(bytes.byteLength); new Uint8Array(ab).set(bytes);
+                const blob = new Blob([ab], { type: dl?.mimeType || 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = snapName;
+                document.body.appendChild(a); a.click(); a.remove();
+                setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+              } catch (e: any) {
+                alert(`DL Snapshot failed: ${e?.message || e}`);
+              } finally {
+                setLoading(false);
+              }
+            }}>DL Snapshot</button>
             <button className="btn-ghost" onClick={async () => {
               const el = document.getElementById('history-import') as HTMLInputElement | null;
               if (!el) return;

@@ -14,7 +14,7 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-24
+**Verified As Of:** 2025-09-25
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -44,7 +44,7 @@
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
 
 ### Content
-- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting. `scrape/LOG` returns `dom.firstId` and accepts `stopAtId`, replying with `foundStopId`.
+- `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting. `scrape/LOG` returns `dom.firstId` and accepts `stopAtId`, replying with `foundStopId`. For `SubscriptionsFeed`, `dom.firstId` skips livestream tiles (identified by a `LIVE` badge) so the "latest" marker reflects the newest upload.
 - `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
 - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
 - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
@@ -83,7 +83,16 @@
 - Per-iteration page-console logs include anchors/withId/uniqueIds/noRoot/noId/seen(upserts)/pending(upserts)/cumulative(dom)/max/stall.
 
 - Sub Feed gating: Sub Feed scraping respects only presets with `scrape` enabled; content evaluates checkable predicates and only submits accepted tiles.
-- Sub Feed channels: for accepted Sub Feed tiles, content upserts channel stubs (`channels/upsertStub`) when an id is present, or pending entries (`channels/upsertPending`) when only a handle/name is available (per-page de‑duped).
+- Sub Feed channels: for Sub Feed tiles, content always upserts channels (non-preset-gated) and marks them as subscribed:
+  - Accepted tiles still gate video upserts by presets, but channel capture runs for all tiles.
+  - When a channel id is present, it upserts a stub and marks it `subscribed`.
+  - When only a handle/name is present, it upserts a pending entry with `subscribedPending: true` so resolution promotes `subscribed=true`.
+  - This behavior applies to both passive auto-scrape and the active Scrape Panel "Scrape Sub Feed" routine.
+- Latest marker: both active runs and passive auto-scrapes mark the top-most non‑livestream video as latest for Sub Feed (`latestFromSubFeed` and `meta['latestBy.SubscriptionsFeed']`).
+   - If the latest video is not yet in DB, a stub is created and flagged, tagged with `no fetch` and `hide` so it remains a lightweight sentinel.
+   - If it is already in DB, only the flag is set/updated.
+   - When a newer latest is set, the previous sentinel (tags include `no fetch`+`hide`, never fetched) is purged permanently.
+ - Sub Feed channels (passive): during passive auto-scrape on Sub Feed, content now upserts channel stubs/pending for all tiles (not gated by presets) and marks encountered channels as subscribed. For handle/name-only tiles, pending entries carry `subscribedPending: true` so resolution promotes the channel to subscribed.
 
 - Auto-scrape runs every ~2s only if user was active within the last 10s. Disabled on channel pages and all playlist pages.
 - Current watch page is always captured; other tiles are captured only if accepted by at least one enabled "Preset".
@@ -107,7 +116,7 @@
 - Video row highlights: `id`, `title`, `channelId`, `channelName`, `durationSec`, `uploadedAt`, `fetchedAt`, `ytTags[]`, `description`, `categoryId`, `languageCode`, `visibility`, `isLive`, `videoTopics[]`, `tags[]`, `flags.started/completed`, `progress{sec|pct|duration}`, `sources[{type,id?}]`, `lastSeenAt`.
   - New compact projections (replacing heavy raw `yt` usage): `type` (`short` | `video` | `livestream`), `transcript` ("" if captions available, "no transcript" if not), `views`, `likes`, `commentCount`, `liveViewers`, `rejectionReason`, `failureReason`, `premiereTime`, `customThumbnail`, `contentRating`, `regionRestriction`.
   - Removed redundant: `thumbUrl` (derivable from `id`). The raw `yt` payload is no longer stored.
-- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `videoTopics[]`, `keywords`, `topics[]`, `description`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
+- Channel row highlights: `id`, `name`, `subs`, `views`, `videos`, `country`, `publishedAt`, `subsHidden`, `tags[]`, derived `videoTags[]`, `videoTopics[]`, `keywords[]`, `channelTopics[]`, `description`, `fetchedAt`, `scrapedAt*` and per-tab counts, `subscribed?`, `unsubscribed?`.
   - New compact projection: `thumbnailID` (unique part of `yt3.ggpht.com` avatar URLs), `playlists` (from `contentDetails.relatedPlaylists`).
   - Removed redundant: `bannerUrl`, raw `yt` payload, and full `thumbnails` object.
 
@@ -121,15 +130,15 @@
   - Visibility/lang: `visibility?: 'public'|'unlisted'|'private'|null`, `languageCode?: 'en'|'de'|'other'|null`, `isLive?: boolean|null`
   - Topics: `videoTopics?: string[]`
   - Compact projections: `type?: 'video'|'short'|'livestream'`, `transcript?: ''|'no transcript'`, `views?: number`, `likes?: number`, `commentCount?: number`, `liveViewers?: number`, `rejectionReason?: string`, `failureReason?: string`, `premiereTime?: number|null`, `customThumbnail?: boolean`, `contentRating?: string`, `regionRestriction?: { allowed?: string[]; blocked?: string[] }`
-  - Recency/markers: `lastSeenAt?: number`, `latestFromSubFeed?: boolean`, `latestFromWatchHistory?: boolean`
+  - Recency/markers: `lastSeenAt?: number`, `latestFromSubFeed?: boolean`, `latestFromWatchHistory?: boolean` (Sub Feed latest excludes livestreams)
   - Removed in v14: `thumbUrl`, `yt`
 
 - Channel (store: `channels`, keyPath: `id`):
   - Identity: `id: string`, `name?: string`, `customUrl?: string|null`, `altHandles?: string[]`
   - Stats: `subs?: number|null`, `views?: number|null`, `videos?: number|null`, `subsHidden?: boolean`
-  - Locale/meta: `country?: string|null`, `publishedAt?: number|null`, `keywords?: string|null`
+  - Locale/meta: `country?: string|null`, `publishedAt?: number|null`, `keywords?: string[]`
   - Avatars/playlists: `thumbnailID?: string|null`, `playlists?: { uploads?: string; likes?: string; watchHistory?: string; watchLater?: string; favorites?: string } | null`
-  - Topics/descriptions: `topics?: string[]` (YouTube channel topics, URLs), `videoTopics?: string[]` (aggregated from videos), `description?: string|null`
+  - Topics/descriptions: `channelTopics?: string[]` (derived from YouTube channel topicCategories; readable labels), `videoTopics?: string[]` (aggregated from videos), `description?: string|null`
   - Tags: `tags?: string[]`, `videoTags?: string[]` (derived from videos’ tags)
   - Scrape markers: `scrapedAt?: number`, `scrapedAtVideos?: number`, `scrapedAtShorts?: number`, `scrapedAtLivestreams?: number`, `scrapedVideoCount?: number`, `scrapedShortsCount?: number`, `scrapedLivestreamCount?: number`, `totalVideoCountOnScrapeTime?: number|null`
   - Subscriptions: `subscribed?: boolean`, `unsubscribed?: boolean`
@@ -142,6 +151,7 @@
   - `cache/VIDEO_PROGRESS`, `cache/VIDEO_PROGRESS_PCT`
   - Scrape helpers (used by background routines): `scrape/SCROLL`, `scrape/LIST_SUBSCRIPTIONS`
   - `cache/VIDEO_SEEN_BATCH` (batched seeds for bulk DB write via single transaction)
+  - `channels/markSubscribed { ids: string[] }` (mark existing/new channel rows as `subscribed=true`, `unsubscribed=false`)
 
 - Background -> Content (scrape loop)
   - `scrape/NOW`, `scrape/LOG` (accepts `stopAtId`, returns `foundStopId` and `dom.firstId`), `scrape/SCROLL`, `scrape/SCROLL_BOTTOM`, `scrape/FINAL`
@@ -218,11 +228,12 @@
   - Buttons: `all` (select all matching current filter), `C` (clear all selection), `Inv` (invert selection within current filter), `D` (toggle display between normal filtered results and the disabled selection), `X` (delete/purge selected; disabled when no visible selection), `tags` (open tagger; disabled when no visible selection).
   - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible under the normal filter, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions in normal view and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
   - Display toggle `D`: when active, the list shows only the disabled selection (items currently hidden by the filter). Actions (`X`, `tags`, `Inv`, `all`) operate on the items visible in the current display mode. The `N -M` counter remains anchored to the normal filter (so `-M` always means "hidden by current filters").
- - Default tags (hardcoded): system tags shown like normal tags but not deletable/renamable. The default tag group `default tags` appears at the top for manual defaults.
-   - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel’s videos from video refresh.
-   - `subscribed` / `unsubscribed` (channels; automatic): set by Subscriptions Manager scraping; hidden from tag pickers but available in filters.
-   - `tagged` (channels; manual+auto): auto-applied when tagging a channel via Popup; also manually appliable under `default tags`.
-   - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
+- Default tags (hardcoded): system tags shown like normal tags but not deletable/renamable. The default tag group `default tags` appears at the top for manual defaults.
+  - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel’s videos from video refresh.
+  - `hide` (videos; manual): excluded from the Videos list by default; visible when filtering by the `hide` tag.
+  - `subscribed` / `unsubscribed` (channels; automatic): set by Subscriptions Manager scraping; hidden from tag pickers but available in filters.
+  - `tagged` (channels; manual+auto): auto-applied when tagging a channel via Popup; also manually appliable under `default tags`.
+  - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
  - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
@@ -234,8 +245,9 @@
 - Bulk actions: selection + bulk tagging; delete/restore; wipe duplicate sources.
   - Backup/History: Version History modal lists commits with sizes/weights, shows Drive usage, can download a commit (UTF-8 base64), download a bundle up to a commit (zip, UTF-8 base64 parts), delete up to a commit (commit-bounded). "Revert to here" and "Snapshot now" buttons added. Delete-up-to preflight warns if no baseline snapshot exists before the target commit.
   - Version History modal header also includes:
-    - "Download All": triggers per-file downloads (OK for small data).
-    - "Download All (folder)": uses chunked ranges (`backup/downloadFileRange`) to write all files to a chosen folder via File System Access API, avoiding OOM for large datasets.
+    - "DL": triggers per-file downloads (OK for small data).
+    - "DL (folder)": uses chunked ranges (`backup/downloadFileRange`) to write all files to a chosen folder via File System Access API, avoiding OOM for large datasets.
+    - "DL Snapshot": creates a new `snapshots/settings-YYYYMMDD-HHMMSS.json` and downloads it immediately.
     - "Wipe All": clears appDataFolder after confirmation.
 - Debug panels: per-video and per-channel raw record inspectors; channels list shows derived `videoTags`, `keywords`, `topics`.
 
@@ -335,6 +347,8 @@
   4) Document store schema in this file
 
 ## Changelog
+- 2025-09-25
+  - Sub Feed latest marker ignores livestreams: content selects the first non-livestream tile (skips tiles whose badge text reads `LIVE`) when computing `dom.firstId` for `scrape/LOG`. As a result, `latestFromSubFeed` and `meta['latestBy.SubscriptionsFeed']` reflect the latest uploaded video, not a live stream.
 - 2025-09-24
   - Data: stop storing raw `yt` payloads for videos/channels; add compact projections to video rows (`type`, `transcript`, `views`, `likes`, `commentCount`, `liveViewers`, `rejectionReason`, `failureReason`, `premiereTime`, `customThumbnail`, `contentRating`, `regionRestriction`).
   - Data: channels store `thumbnailID` (unique avatar hash), `playlists` (related playlists), and omit `thumbnails`/`bannerUrl`/raw `yt`.
@@ -347,13 +361,13 @@
 - 2025-09-23
   - DB_VERSION bumped to 13. Removed legacy `videos.byLastSeen` index during upgrade; no data loss.
   - History: added dedup-on-append guard to monthly JSONL (skip appending a commit if the same `commitId` already exists).
-  - Drive: implemented `backup/downloadFileRange` for chunked downloads (used by "Download All (folder)").
+  - Drive: implemented `backup/downloadFileRange` for chunked downloads (used by "DL (folder)").
   - Wipe All: fixed route implementation; now deletes Drive appData files and clears local IndexedDB.
   - Scrape: Sub Feed now respects enabled scrape presets (content-side gating) and upserts channel stubs/pending for accepted tiles.
 - 2025-09-21
   - DB_VERSION bumped to 12. `channels_pending` rows may include `subscribedPending` to record a pending "subscribed" state captured from Subscriptions Manager before a concrete channel id exists. On resolve, background promotes `subscribed=true` on the resolved channel id and clears the pending entry.
 - 2025-09-22
-  - Added `backup/wipeAll`. Version History modal gained "Download All" and chunked "Download All (folder)" (uses new `backup/downloadFileRange`).
+  - Added `backup/wipeAll`. Version History modal gained "DL" and chunked "DL (folder)" (uses new `backup/downloadFileRange`), plus "DL Snapshot" to create and download a settings snapshot.
 - 2025-09-06
   - Scrape Panel v1 integrated into Pending (debug): Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop. Shows last-run timestamps and supports max limits.
   - Sub Feed/History scrapers merge into existing videos, append sources (`SubscriptionsFeed`/`WatchHistory`), and bump `lastSeenAt`. History marks `flags.started=true`; explicit watch progress still wins.
