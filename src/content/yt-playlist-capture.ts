@@ -87,7 +87,7 @@ export function detectPageContext() {
   }
   if (location.pathname.startsWith('/@') || location.pathname.startsWith('/c/')) {
     out.page = 'channel';
-    // Try canonical link first (robust for @handle pages)
+    // Use only the canonical link in <head> to determine the owning channel id.
     try {
       const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
       if (link?.href) {
@@ -96,18 +96,7 @@ export function detectPageContext() {
         if (seg[1] === 'channel' && seg[2]) out.channelId = seg[2];
       }
     } catch {}
-    // Fallback to header links
-    if (!out.channelId) {
-      try {
-        const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/channel/"]') as HTMLAnchorElement | null
-               || document.querySelector('a[href^="/channel/"]') as HTMLAnchorElement | null;
-        if (a) {
-          const u = new URL(a.href, location.origin);
-          const seg = u.pathname.split('/');
-          if (seg[1] === 'channel' && seg[2]) out.channelId = seg[2];
-        }
-      } catch {}
-    }
+    // No other fallbacks on channel pages to avoid sidebar/other-channel mismatches
     return out;
   }
   // (Reverted) no generic vanity path detection here

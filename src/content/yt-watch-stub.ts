@@ -68,7 +68,7 @@ export async function scrapeWatchStub(): Promise<number> {
         return fromFlexy
           || (document.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null)
           || (document.querySelector('#owner a[href^="/channel/"]') as HTMLAnchorElement | null);
-      });
+      }, 20, 250);
       if (a?.href) {
         const u = new URL(a.href, location.origin);
         const seg = u.pathname.split('/');
@@ -79,11 +79,13 @@ export async function scrapeWatchStub(): Promise<number> {
       try {
         const el = await waitFor<HTMLElement>(() => {
           const fromFlexy = flexy
-            ? (flexy.querySelector('[data-channel-external-id]') as HTMLElement | null)
+            ? (flexy.querySelector('#subscribe-button .add-to-collection-button-new[data-channel-external-id], #subscribe-button [data-channel-external-id], [data-channel-external-id]') as HTMLElement | null)
             : null;
           return fromFlexy
+            || (document.querySelector('#subscribe-button .add-to-collection-button-new[data-channel-external-id]') as HTMLElement | null)
+            || (document.querySelector('#subscribe-button [data-channel-external-id]') as HTMLElement | null)
             || (document.querySelector('[data-channel-external-id]') as HTMLElement | null);
-        });
+        }, 20, 250);
         const val = el?.getAttribute('data-channel-external-id');
         if (val) channelId = val;
       } catch {}

@@ -371,31 +371,42 @@ chrome.runtime.onMessage.addListener((msg: any, _sender, sendResponse) => {
 
 function getChannelIdNow(): { id: string | null; from: string[] } {
   const from: string[] = [];
-  // canonical link
-  try {
-    const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
-    if (link?.href) {
-      const u = new URL(link.href);
-      const seg = u.pathname.split('/');
-      if (seg[1] === 'channel' && seg[2]) { from.push('canonical'); return { id: seg[2], from }; }
-    }
-  } catch {}
-  // data-channel-external-id
-  try {
-    const el = document.querySelector('[data-channel-external-id]') as HTMLElement | null;
-    const val = el?.getAttribute('data-channel-external-id');
-    if (val) { from.push('external-id'); return { id: val, from }; }
-  } catch {}
-  // header link
-  try {
-    const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/channel/"]') as HTMLAnchorElement | null
-           || document.querySelector('a[href^="/channel/"]') as HTMLAnchorElement | null;
-    if (a?.href) {
-      const u = new URL(a.href, location.origin);
-      const seg = u.pathname.split('/');
-      if (seg[1] === 'channel' && seg[2]) { from.push('header-link'); return { id: seg[2], from }; }
-    }
-  } catch {}
+  // Decide by page context
+  const ctx = (() => { try { return detectPageContext(); } catch { return { page: 'other' } as any; } })();
+  if (ctx?.page === 'channel') {
+    // Only use canonical link on channel pages to avoid sidebar/other-channel mismatches
+    try {
+      const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
+      if (link?.href) {
+        const u = new URL(link.href);
+        const seg = u.pathname.split('/');
+        if (seg[1] === 'channel' && seg[2]) { from.push('canonical'); return { id: seg[2], from }; }
+      }
+    } catch {}
+    return { id: null, from };
+  }
+  if (ctx?.page === 'watch') {
+    // Prefer subscribe-button holder with data-channel-external-id
+    try {
+      const el = (document.querySelector('#subscribe-button .add-to-collection-button-new[data-channel-external-id]') as HTMLElement | null)
+             || (document.querySelector('#subscribe-button [data-channel-external-id]') as HTMLElement | null)
+             || (document.querySelector('[data-channel-external-id]') as HTMLElement | null);
+      const val = el?.getAttribute('data-channel-external-id');
+      if (val) { from.push('subscribe-button'); return { id: val, from }; }
+    } catch {}
+    // Fallback: owner link
+    try {
+      const a = (document.querySelector('ytd-video-owner-renderer a[href^="/channel/"]') as HTMLAnchorElement | null)
+             || (document.querySelector('#owner a[href^="/channel/"]') as HTMLAnchorElement | null);
+      if (a?.href) {
+        const u = new URL(a.href, location.origin);
+        const seg = u.pathname.split('/');
+        if (seg[1] === 'channel' && seg[2]) { from.push('owner-link'); return { id: seg[2], from }; }
+      }
+    } catch {}
+    return { id: null, from };
+  }
+  // Other pages: no generic resolution
   return { id: null, from };
 }
 
@@ -454,29 +465,13 @@ try {
     if (ctx.page === 'channel') {
       const getIdNow = (): { id: string | null; from: string[] } => {
         const from: string[] = [];
-        // Prefer canonical link
+        // Only use canonical link while on channel pages
         try {
           const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
           if (link?.href) {
             const u = new URL(link.href);
             const seg = u.pathname.split('/');
             if (seg[1] === 'channel' && seg[2]) { from.push('canonical'); return { id: seg[2], from }; }
-          }
-        } catch {}
-        // data-channel-external-id
-        try {
-          const el = document.querySelector('[data-channel-external-id]') as HTMLElement | null;
-          const val = el?.getAttribute('data-channel-external-id');
-          if (val) { from.push('external-id'); return { id: val, from }; }
-        } catch {}
-        // Header link
-        try {
-          const a = document.querySelector('ytd-c4-tabbed-header-renderer a[href^="/channel/"]') as HTMLAnchorElement | null
-                 || document.querySelector('a[href^="/channel/"]') as HTMLAnchorElement | null;
-          if (a?.href) {
-            const u = new URL(a.href, location.origin);
-            const seg = u.pathname.split('/');
-            if (seg[1] === 'channel' && seg[2]) { from.push('header-link'); return { id: seg[2], from }; }
           }
         } catch {}
         return { id: null, from };
