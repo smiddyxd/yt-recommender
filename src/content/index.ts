@@ -420,10 +420,12 @@ async function resolveChannelIdWithRetries(maxTries: number, delayMs: number): P
   return { id: null, from: [] };
 }
 
-// Setting: auto-stub on watch pages
-let autoStubOnWatch = false;
+// Setting: auto-stub on watch pages (default ON)
+let autoStubOnWatch = true;
 try {
-  chrome.storage?.local?.get('autoStubOnWatch', (o) => { autoStubOnWatch = !!o?.autoStubOnWatch; });
+  chrome.storage?.local?.get('autoStubOnWatch', (o) => {
+    if (typeof o?.autoStubOnWatch === 'boolean') autoStubOnWatch = o.autoStubOnWatch; else autoStubOnWatch = true;
+  });
   chrome.storage?.onChanged?.addListener((changes, area) => {
     if (area === 'local' && changes?.autoStubOnWatch) {
       autoStubOnWatch = !!changes.autoStubOnWatch.newValue;

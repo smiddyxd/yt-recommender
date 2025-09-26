@@ -713,13 +713,27 @@ const channelsFiltered = useMemo(() => {
       { videos, resolveGroup: (id) => groups.find(g => g.id === id) }
     ));
   }
+  // Exclude channels tagged 'hide' by default unless the tag filter explicitly includes 'hide'
+  try {
+    const includesHide = chain.some(e => {
+      const p: any = e?.pred || {};
+      if (p?.kind === 'c_tags_any' || p?.kind === 'c_tags_all') {
+        const csv = String(p.tagsCsv || '').toLowerCase();
+        return csv.split(',').map(s=>s.trim()).includes('hide');
+      }
+      return false;
+    });
+    if (!includesHide) {
+      base = base.filter(ch => !(Array.isArray((ch as any).tags) && (ch as any).tags.some((t: string) => String(t||'').toLowerCase() === 'hide')));
+    }
+  } catch {}
   const needle = q.trim().toLowerCase();
   if (!needle) return base;
   return base.filter(ch =>
     (ch.name || '').toLowerCase().includes(needle) ||
-    ((ch.keywords || '') as string).toLowerCase().includes(needle) ||
-    (Array.isArray(ch.tags) && ch.tags.some(t => (t || '').toLowerCase().includes(needle))) ||
-    (Array.isArray(ch.videoTags) && ch.videoTags.some(t => (t || '').toLowerCase().includes(needle)))
+    ((ch as any).keywords || '' as string).toString().toLowerCase().includes(needle) ||
+    (Array.isArray((ch as any).tags) && (ch as any).tags.some((t: string) => (t || '').toLowerCase().includes(needle))) ||
+    (Array.isArray((ch as any).videoTags) && (ch as any).videoTags.some((t: string) => (t || '').toLowerCase().includes(needle)))
   );
 }, [channels, q, chain, videos, groups, showStubsOnly]);
 
@@ -1297,7 +1311,16 @@ const channelsFiltered = useMemo(() => {
                 <span className="muted">{stubCount} stubs</span>
               </span>
               <span className="muted" style={{ fontSize: 11, paddingLeft: 27 }}>
-                {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => !Number.isFinite((ch as any).fetchedAt || undefined)).length : filtered.filter(v => !Number.isFinite(v.fetchedAt || undefined)).length} in view
+                {(inChannels || inChannelsTrash)
+                  ? channelsFiltered.filter(ch => {
+                      const hidden = Array.isArray((ch as any).tags) && (ch as any).tags.some((t: string) => String(t||'').toLowerCase() === 'hide');
+                      return !hidden && !Number.isFinite(((ch as any).fetchedAt as any) || undefined);
+                    }).length
+                  : filtered.filter(v => {
+                      const hidden = Array.isArray(v.tags) && v.tags.some(t => String(t||'').toLowerCase() === 'hide');
+                      return !hidden && !Number.isFinite(v.fetchedAt || undefined);
+                    }).length}
+                in view
               </span>
             </label>
             <button

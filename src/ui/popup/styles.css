@@ -24,5 +24,5 @@ button.small { padding: 4px 8px; font-size: 12px; }
 .chip .x:hover { opacity: 1; }
 
 select { width: 100%; padding: 6px; border-radius: 6px; background: #121212; color: var(--fg); border: 1px solid #333; }
+input[type="text"], .side-input { width: 100%; padding: 6px; border-radius: 6px; background: #121212; color: var(--fg); border: 1px solid #333; }
 .empty { color: var(--muted); font-style: italic; }
-

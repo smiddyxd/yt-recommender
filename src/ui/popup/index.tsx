@@ -16,6 +16,7 @@ function useActiveTabContext() {
   const [ctx, setCtx] = useState<PageContext>({ page: 'other' });
   useEffect(() => {
     let alive = true;
+    let timer: number | null = null;
     (async () => {
       try {
         const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -28,11 +29,21 @@ function useActiveTabContext() {
           if (err) { setCtx({ page: 'other' }); return; }
           setCtx(resp as PageContext);
         });
+        // Poll for SPA context changes while popup is open
+        timer = setInterval(() => {
+          try {
+            chrome.tabs.sendMessage(t.id!, { type: 'page/GET_CONTEXT', payload: {} }, (resp) => {
+              const err2 = chrome.runtime.lastError; if (err2) return;
+              if (!alive) return;
+              setCtx(resp as PageContext);
+            });
+          } catch { /* ignore */ }
+        }, 1000) as unknown as number;
       } catch {
         setCtx({ page: 'other' });
       }
     })();
-    return () => { alive = false; };
+    return () => { alive = false; try { if (timer != null) clearInterval(timer as any); } catch {} };
   }, []);
   return { tabId, ctx };
 }
@@ -118,10 +129,12 @@ function PopupApp() {
   const effectiveChannelId = (ctx.channelId || resolvedChannelId || null) as (string | null);
   const channel = useRowRefresh<any>('channels', effectiveChannelId);
   const [scrapeCount, setScrapeCount] = useState<number | null>(null);
-  const [autoStubOnWatch, setAutoStubOnWatch] = useState<boolean>(false);
   const [resolveMsg, setResolveMsg] = useState<string | null>(null);
   const [origHandle, setOrigHandle] = useState<string>('');
   const [gateManual, setGateManual] = useState<boolean>(false);
+  const [newTagName, setNewTagName] = useState<string>('');
+  const [newTagGroupId, setNewTagGroupId] = useState<string>('');
+  const [showOrigHandle, setShowOrigHandle] = useState<boolean>(false);
 
   const byGroup = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -200,17 +213,11 @@ function PopupApp() {
   // Auto-stub toggle (read + write to storage)
   useEffect(() => {
     try {
-      chrome.storage?.local?.get(['autoStubOnWatch','popup.gateManual'], (o) => {
-        setAutoStubOnWatch(!!o?.autoStubOnWatch);
+      chrome.storage?.local?.get(['popup.gateManual'], (o) => {
         setGateManual(!!o?.['popup.gateManual']);
       });
     } catch {}
   }, []);
-  const toggleAutoStub = async () => {
-    const next = !autoStubOnWatch;
-    setAutoStubOnWatch(next);
-    try { chrome.storage?.local?.set({ autoStubOnWatch: next }); } catch {}
-  };
   const toggleGateManual = async () => {
     const next = !gateManual;
     setGateManual(next);
@@ -264,36 +271,83 @@ function PopupApp() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.page, ctx.channelId, ctx.videoId]);
 
+  // On channel pages, proactively resolve channel id if missing (SPA renders may delay canonical link)
+  useEffect(() => {
+    let tried = false;
+    if (ctx.page === 'channel' && !ctx.channelId && !resolvedChannelId) {
+      tried = true;
+      (async () => {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          const t = tabs?.[0];
+          if (!t?.id) return;
+          chrome.tabs.sendMessage(t.id, { type: 'channel/RESOLVE_ID_NOW', payload: {} }, (resp: any) => {
+            const err = chrome.runtime.lastError; if (err) return;
+            const id = (resp && resp.ok && resp.id) ? String(resp.id) : '';
+            if (id) try { setResolvedChannelId(id); } catch {}
+          });
+        } catch { /* ignore */ }
+      })();
+    }
+    return () => { void tried; };
+  }, [ctx.page, ctx.channelId]);
+
+  const createTag = async () => {
+    const name = (newTagName || '').trim();
+    if (!name) return;
+    try {
+      await sendBg('tags/create', { name });
+      const gid = (newTagGroupId || '').trim();
+      if (gid) { await sendBg('tags/assignGroup', { name, groupId: gid }); }
+      setNewTagName('');
+    } catch { /* ignore */ }
+  };
+
   // Reset any resolved channel id when navigating between different contexts
   useEffect(() => {
     setResolvedChannelId(null);
   }, [ctx.url]);
   return (
     <div className="wrap">
-      <h1>YT Manager</h1>
       <div className="row">
         <button onClick={onScrape}>Scrape current page</button>
-        {typeof scrapeCount === 'number' && <span className="meta">Captured: {scrapeCount}</span>}
-      </div>
-      <div className="row" style={{ marginTop: 6 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={autoStubOnWatch} onChange={toggleAutoStub} />
-          <span className="meta">Auto-capture stubs on watch pages</span>
-        </label>
-      </div>
-      <div className="row" style={{ marginTop: 6 }}>
         <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <input type="checkbox" checked={gateManual} onChange={toggleGateManual} />
-          <span className="meta">Use preset gating for manual scrapes (playlist & channel)</span>
+          <span className="meta">preset gate on PL & CH</span>
         </label>
+        {typeof scrapeCount === 'number' && <span className="meta">Captured: {scrapeCount}</span>}
       </div>
+      
+      
       <div className="row" style={{ marginTop: 6 }}>
         <span className="meta">{ctx.page === 'watch' ? `watch: ${ctx.videoId}${effectiveChannelId ? ` · channel: ${effectiveChannelId}` : ''}` : ctx.page === 'channel' ? `channel: ${effectiveChannelId || ctx.channelId || 'unknown'}` : 'Not on YouTube'}</span>
       </div>
-      <div className="row" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="row" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'nowrap' }}>
         <button onClick={scrapeChannelIdNow}>Scrape channel id</button>
-        <input type="text" className="side-input" placeholder="Original handle (from Pending)" value={origHandle} onChange={(e)=> setOrigHandle(e.currentTarget.value)} style={{ width: 240 }} />
+        {effectiveChannelId && <span className="meta" title="Channel ID">{effectiveChannelId}</span>}
+        <button className="btn-ghost small" title="Show original handle input" onClick={() => setShowOrigHandle(s => !s)}>@</button>
         {resolveMsg && <span className="meta">{resolveMsg}</span>}
+      </div>
+      {showOrigHandle && (
+        <div className="row" style={{ marginTop: 6 }}>
+          <input type="text" className="side-input" placeholder="Original handle (from Pending)" value={origHandle} onChange={(e)=> setOrigHandle(e.currentTarget.value)} style={{ width: 240 }} />
+        </div>
+      )}
+      <div className="row" style={{ marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'nowrap' }}>
+        <input
+          type="text"
+          placeholder="New tag name"
+          value={newTagName}
+          onChange={(e) => setNewTagName(e.currentTarget.value)}
+          style={{ flex: '1 1 auto', minWidth: 120 }}
+        />
+        <select value={newTagGroupId} onChange={(e) => setNewTagGroupId(e.currentTarget.value)} style={{ flex: '0 1 auto', minWidth: 120 }}>
+          <option value="">Ungrouped</option>
+          {tagGroups.map(g => (
+            <option key={g.id} value={g.id}>{g.name}</option>
+          ))}
+        </select>
+        <button className="secondary small" title="Create tag" onClick={createTag}>+</button>
       </div>
       {ctx.videoId && (
         <div className="section">

@@ -99,7 +99,25 @@ export function detectPageContext() {
     // No other fallbacks on channel pages to avoid sidebar/other-channel mismatches
     return out;
   }
-  // (Reverted) no generic vanity path detection here
+  // Vanity root channel URLs (e.g. "/SomeChannel"): detect via robust DOM markers
+  try {
+    const hasBanner = !!document.getElementById('page-header-banner');
+    const hasHeader = !!document.querySelector('ytd-c4-tabbed-header-renderer');
+    if (hasBanner || hasHeader) {
+      out.page = 'channel';
+      // Prefer canonical for id if available (SPA may populate it a bit later)
+      try {
+        const link = document.querySelector('link[rel="canonical"][href*="/channel/"]') as HTMLLinkElement | null;
+        if (link?.href) {
+          const u = new URL(link.href);
+          const seg = u.pathname.split('/');
+          if (seg[1] === 'channel' && seg[2]) out.channelId = seg[2];
+        }
+      } catch {}
+      return out;
+    }
+  } catch {}
+  // Not a recognized page type
   return out;
 }
 

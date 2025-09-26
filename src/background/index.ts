@@ -79,6 +79,91 @@ function utf8ToB64(s: string): string {
   return btoa(bin);
 }
 
+// ---- Channel lookup helpers (IDB) ----
+async function getChannelById(id: string): Promise<any | null> {
+  try {
+    const db = await openDB();
+    return await new Promise<any | null>((resolve, reject) => {
+      const tx = db.transaction('channels', 'readonly');
+      const os = tx.objectStore('channels');
+      const g = os.get(String(id));
+      g.onsuccess = () => resolve((g.result as any) || null);
+      g.onerror = () => reject(g.error);
+    });
+  } catch { return null; }
+}
+async function getChannelByHandle(handle: string): Promise<any | null> {
+  const h = (handle || '').trim();
+  if (!h) return null;
+  const norm = h.startsWith('@') ? h : ('@' + h);
+  try {
+    const db = await openDB();
+    return await new Promise<any | null>((resolve, reject) => {
+      const tx = db.transaction('channels', 'readonly');
+      const os = tx.objectStore('channels');
+      const cur = os.openCursor();
+      let found: any = null;
+      cur.onsuccess = () => {
+        const c = cur.result as IDBCursorWithValue | null;
+        if (!c) { resolve(found); return; }
+        const row: any = c.value || {};
+        const cu = String(row?.customUrl || '').trim().toLowerCase();
+        if (cu && (cu === norm.toLowerCase())) { found = row; resolve(found); return; }
+        c.continue();
+      };
+      cur.onerror = () => reject(cur.error);
+    });
+  } catch { return null; }
+}
+async function getChannelByNameExact(name: string): Promise<any | null> {
+  const nm = (name || '').trim();
+  if (!nm) return null;
+  try {
+    const db = await openDB();
+    return await new Promise<any | null>((resolve, reject) => {
+      const tx = db.transaction('channels', 'readonly');
+      const os = tx.objectStore('channels');
+      let idx: IDBIndex | null = null;
+      try { idx = os.index('byName'); } catch { idx = null; }
+      if (!idx) { resolve(null); return; }
+      const req = idx.get(nm);
+      req.onsuccess = () => resolve((req.result as any) || null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch { return null; }
+}
+async function setChannelHandleIfMissing(id: string, handle: string): Promise<void> {
+  const norm = (handle || '').trim();
+  if (!norm) return;
+  try {
+    const db = await openDB();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('channels', 'readwrite');
+      const os = tx.objectStore('channels');
+      const g = os.get(String(id));
+      g.onsuccess = () => {
+        const row = ((g.result as any) || {});
+        const cur = String(row?.customUrl || '').trim();
+        if (!cur) { row.customUrl = norm.startsWith('@') ? norm : ('@' + norm); os.put(row); }
+        (tx as any).commit?.();
+      };
+      g.onerror = () => reject(g.error);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch { /* ignore */ }
+}
+
+// Track a transient session for resolveBatch to avoid retrying same keys until idle
+let pendingResolveSession: { tried: Set<string>; timer?: number | null } | null = null;
+function ensureResolveSession(): { tried: Set<string> } {
+  if (!pendingResolveSession) pendingResolveSession = { tried: new Set<string>(), timer: null };
+  // bump idle-clear timer
+  try { if (pendingResolveSession.timer != null) { clearTimeout(pendingResolveSession.timer as any); } } catch {}
+  pendingResolveSession.timer = setTimeout(() => { try { pendingResolveSession = null; } catch {} }, 10000) as any;
+  return pendingResolveSession;
+}
+
 // --- Google Drive backup wiring ---
 registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
   const [tags, tagGroups, groups] = await Promise.all([
@@ -189,6 +274,15 @@ async function ensureBaselineSnapshot(opts?: { interactive?: boolean }) {
 }
 
 const autoResolveTabIds = new Set<number>();
+try {
+  chrome.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+    try {
+      if (changeInfo?.status === 'complete' && autoResolveTabIds.has(tabId)) {
+        chrome.tabs?.sendMessage?.(tabId, { type: 'channel/RESOLVE_ID_NOW', payload: {} } as any, () => void 0);
+      }
+    } catch { /* ignore */ }
+  });
+} catch { /* ignore */ }
 const autoResolveTabInfo = new Map<number, { origHandle?: string | null }>();
 
 // ---- Scrape session (Subscriptions Feed / Watch History) ----
@@ -844,10 +938,24 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         }
       } else if ((raw as any)?.type === 'channels/upsertPending') {
         const { key, name, handle, subscribedPending } = (raw as any).payload || {};
-        const changed = await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handle ?? null, subscribedPending: !!subscribedPending });
-        // optional UI could listen to a 'channels' change, but pending are background-only for now
-        if (changed) recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handle ?? null }, { impact: {} });
-        // Push a channels change because upsertPending may upgrade an existing channel's subscribed flag
+        const handleNorm: string | null = (handle ? (String(handle).startsWith('@') ? String(handle) : '@' + String(handle)) : null);
+        try {
+          // If a matching channel already exists, avoid creating a pending entry.
+          let found: any | null = null;
+          if (handleNorm) found = await getChannelByHandle(handleNorm);
+          if (!found && name) found = await getChannelByNameExact(String(name));
+          if (found && found.id) {
+            // Optionally promote subscribed flag
+            try { if (subscribedPending) await markChannelsSubscribed([String(found.id)]); } catch {}
+            // If we know the handle and the channel lacks it, attach it
+            if (handleNorm) { try { await setChannelHandleIfMissing(String(found.id), handleNorm); } catch {} }
+            try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
+            sendResponse?.({ ok: true, changed: false, skipped: true });
+            return;
+          }
+        } catch {}
+        const changed = await upsertPendingChannel(String(key || ''), { name: name ?? null, handle: handleNorm ?? null, subscribedPending: !!subscribedPending });
+        if (changed) recordEvent('pending/upsert', { key: String(key || ''), name: name ?? null, handle: handleNorm ?? null }, { impact: {} });
         try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch {}
         sendResponse?.({ ok: true, changed: !!changed });
       } else if ((raw as any)?.type === 'latest/mark') {
@@ -868,9 +976,15 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         sendResponse?.({ ok: true, count });
       } else if ((raw as any)?.type === 'channels/resolvePending') {
         const { id, name, handle } = (raw as any).payload || {};
-        await resolvePendingChannel(String(id || ''), { name: name ?? null, handle: handle ?? null });
+        const idStr = String(id || '');
+        const handleNorm: string | null = (handle ? (String(handle).startsWith('@') ? String(handle) : '@' + String(handle)) : null);
+        try {
+          const row = await getChannelById(idStr);
+          if (row && handleNorm) { await setChannelHandleIfMissing(idStr, handleNorm); }
+        } catch {}
+        await resolvePendingChannel(idStr, { name: name ?? null, handle: handleNorm ?? null });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
-        recordEvent('pending/resolve', { id: String(id || ''), name: name ?? null, handle: handle ?? null }, { impact: { channels: 1 } });
+        recordEvent('pending/resolve', { id: idStr, name: name ?? null, handle: handleNorm ?? null }, { impact: { channels: 1 } });
         // If this came from a tab we opened to resolve, close it
         try {
           const tabId = sender?.tab?.id;
@@ -1079,7 +1193,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               const c = cur.result as IDBCursorWithValue | null;
               if (!c) { resolve(); return; }
               const row: any = c.value;
-              if (!Number.isFinite(row?.fetchedAt)) count += 1;
+              const hidden = Array.isArray(row?.tags) && row.tags.some((t: any) => String(t||'').toLowerCase() === 'hide');
+              if (!hidden && !Number.isFinite(row?.fetchedAt)) count += 1;
               c.continue();
             };
             cur.onerror = () => reject(cur.error);
@@ -1100,7 +1215,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               const c = cur.result as IDBCursorWithValue | null;
               if (!c) { resolve(); return; }
               const row: any = c.value;
-              if (!Number.isFinite(row?.fetchedAt)) count += 1;
+              const hidden = Array.isArray(row?.tags) && row.tags.some((t: any) => String(t||'').toLowerCase() === 'hide');
+              if (!hidden && !Number.isFinite(row?.fetchedAt)) count += 1;
               c.continue();
             };
             cur.onerror = () => reject(cur.error);
@@ -1131,18 +1247,42 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         try {
           const limit = Math.max(1, Math.min(20, Number((raw as any)?.payload?.limit || 5)));
           const all = await listPendingChannels();
-          const handles = all.map(it => String(it.handle || '')).filter(h => !!h && h.startsWith('@'));
-          // Exclude handles already opening
+          const session = ensureResolveSession();
+          const candidates: Array<{ key: string; url: string }> = [];
+          for (const it of all) {
+            const key = String(it.key || '');
+            const handle = String(it.handle || '').trim();
+            const name = String(it.name || '').trim();
+            // Skip already tried in this session
+            if (session.tried.has(key)) continue;
+            // If we already have this channel with the same handle, drop pending immediately
+            if (handle) {
+              const hNorm = handle.startsWith('@') ? handle : ('@' + handle);
+              const existing = await getChannelByHandle(hNorm);
+              if (existing && String(existing.customUrl || '').trim()) {
+                try { await deletePendingChannel(key); } catch {}
+                session.tried.add(key);
+                continue;
+              }
+            }
+            if (handle) {
+              const h = handle.startsWith('@') ? handle : ('@' + handle);
+              candidates.push({ key, url: `https://www.youtube.com/${h}` });
+            } else if (name) {
+              // Try vanity root by stripping spaces
+              const vanity = name.replace(/\s+/g, '');
+              candidates.push({ key, url: `https://www.youtube.com/${encodeURIComponent(vanity)}` });
+            }
+          }
           let opened = 0;
-          for (const h of handles) {
+          for (const c of candidates) {
             if (opened >= limit) break;
-            const url = `https://www.youtube.com/${h}`;
-            const tab = await chrome.tabs?.create?.({ url, active: false });
+            session.tried.add(c.key);
+            const tab = await chrome.tabs?.create?.({ url: c.url, active: false });
             const tabId = tab?.id;
             if (typeof tabId === 'number') {
               autoResolveTabIds.add(tabId);
               opened++;
-              // Safety: auto-close after 25s if unresolved
               setTimeout(() => {
                 try {
                   if (autoResolveTabIds.has(tabId)) { autoResolveTabIds.delete(tabId); chrome.tabs?.remove?.(tabId); }
@@ -1150,7 +1290,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               }, 25000);
             }
           }
-          sendResponse?.({ ok: true, opened, remaining: Math.max(0, handles.length - opened) });
+          const remaining = Math.max(0, candidates.length - opened);
+          sendResponse?.({ ok: true, opened, remaining });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }

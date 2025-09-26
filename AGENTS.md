@@ -14,7 +14,7 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-25
+**Verified As Of:** 2025-09-26
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -45,7 +45,7 @@
 
 ### Content
 - `src/content/index.ts`: listens for `scrape/NOW`, tracks SPA navigation, auto-scrape ticker gated by presets, watch progress tracking toggle. Adds helpers for Scrape Panel: `scrape/SCROLL` (incremental scroll), `scrape/SCROLL_BOTTOM` (force bottom scroll for infinite loader), and `scrape/LIST_SUBSCRIPTIONS` (extract ids on `/feed/channels`). Provides detailed per-iteration logging/highlighting and a `scrape/FINAL` handler for end-of-run highlighting/reporting. `scrape/LOG` returns `dom.firstId` and accepts `stopAtId`, replying with `foundStopId`. For `SubscriptionsFeed`, `dom.firstId` skips livestream tiles (identified by a `LIVE` badge) so the "latest" marker reflects the newest upload.
-- `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback.
+- `src/content/yt-playlist-capture.ts`: page context detection, tile scanning, progress scraping, watch fallback. Channel page detection now also considers DOM markers (`#page-header-banner` or `ytd-c4-tabbed-header-renderer`) to recognize vanity root channel URLs (e.g., `/SomeChannel`). Channel id is resolved from the canonical `<link rel="canonical" href=".../channel/UC...">` when available.
 - `src/content/yt-watch-stub.ts`: robust watch-page stub capture (title/channel/channelId) with short waits for SPA render.
 - `src/content/yt-watch-progress.ts`: samples HTML5 player and sends periodic progress.
 - `src/content/yt-navigation.ts`: navigation hooks (yt-navigate-finish + URL polling fallback).
@@ -53,7 +53,10 @@
 ### UI
 - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
 - Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "×" button on the right to remove the entry.
-- Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch).
+- Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch). The popup now:
+  - Polls the active tab context every ~1s while open to reflect SPA navigation changes (e.g., channel → channel), updating video/channel id in place.
+  - Proactively resolves channel id on channel pages when not yet available (mirrors watch pages' behavior).
+  - Adds a quick "Create tag" row: input for tag name and a dropdown to choose a Tag Group (optional). Uses `tags/create` and `tags/assignGroup`.
 
 ### Shared / Types
 - `src/shared/conditions.ts`: Condition AST, evaluation for videos/channels; "Group" type (called "Preset" in UI).
@@ -230,7 +233,9 @@
   - Display toggle `D`: when active, the list shows only the disabled selection (items currently hidden by the filter). Actions (`X`, `tags`, `Inv`, `all`) operate on the items visible in the current display mode. The `N -M` counter remains anchored to the normal filter (so `-M` always means "hidden by current filters").
 - Default tags (hardcoded): system tags shown like normal tags but not deletable/renamable. The default tag group `default tags` appears at the top for manual defaults.
   - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel’s videos from video refresh.
-  - `hide` (videos; manual): excluded from the Videos list by default; visible when filtering by the `hide` tag.
+  - `hide` (videos/channels; manual):
+    - Videos: excluded from the Videos list by default; visible when filtering by the `hide` tag.
+    - Channels: excluded from the Channels list by default; visible when filtering by the `hide` tag.
   - `subscribed` / `unsubscribed` (channels; automatic): set by Subscriptions Manager scraping; hidden from tag pickers but available in filters.
   - `tagged` (channels; manual+auto): auto-applied when tagging a channel via Popup; also manually appliable under `default tags`.
   - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
