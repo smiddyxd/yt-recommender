@@ -353,6 +353,7 @@ const BACKUP_CFG = {
 
 async function runBackupTick(opts?: { interactive?: boolean }) {
   try {
+    try { chrome.storage?.local?.set?.({ 'backup.lastTickAt': Date.now() }); } catch {}
     const cfg = await new Promise<any>((res) => chrome.storage?.local?.get([BACKUP_CFG.driveEnabledKey, BACKUP_CFG.localEnabledKey], (o) => res(o)));
     const driveOn = cfg?.[BACKUP_CFG.driveEnabledKey] !== false; // default true
     const localOn = cfg?.[BACKUP_CFG.localEnabledKey] !== false; // default true
@@ -1513,12 +1514,13 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         }
       } else if ((raw as any)?.type === 'backup/config/get') {
         try {
-          const o = await new Promise<any>((res) => chrome.storage?.local?.get([BACKUP_CFG.driveEnabledKey, BACKUP_CFG.localEnabledKey, BACKUP_CFG.driveLastKey, BACKUP_CFG.localLastKey], (x)=>res(x)));
+          const o = await new Promise<any>((res) => chrome.storage?.local?.get([BACKUP_CFG.driveEnabledKey, BACKUP_CFG.localEnabledKey, BACKUP_CFG.driveLastKey, BACKUP_CFG.localLastKey, 'backup.lastTickAt'], (x)=>res(x)));
           const driveEnabled = o?.[BACKUP_CFG.driveEnabledKey] !== false;
           const localEnabled = o?.[BACKUP_CFG.localEnabledKey] !== false;
           const lastDriveUploadAt = Number.isFinite(o?.[BACKUP_CFG.driveLastKey]) ? Number(o[BACKUP_CFG.driveLastKey]) : null;
           const lastLocalDownloadAt = Number.isFinite(o?.[BACKUP_CFG.localLastKey]) ? Number(o[BACKUP_CFG.localLastKey]) : null;
-          sendResponse?.({ ok: true, driveEnabled, localEnabled, lastDriveUploadAt, lastLocalDownloadAt });
+          const lastTickAt = Number.isFinite(o?.['backup.lastTickAt']) ? Number(o['backup.lastTickAt']) : null;
+          sendResponse?.({ ok: true, driveEnabled, localEnabled, lastDriveUploadAt, lastLocalDownloadAt, lastTickAt });
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }

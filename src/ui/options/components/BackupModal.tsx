@@ -18,6 +18,7 @@ export default function BackupModal({ open, onClose }: Props) {
   const [lastDriveUploadAt, setLastDriveUploadAt] = React.useState<number | null>(null);
   const [lastLocalDownloadAt, setLastLocalDownloadAt] = React.useState<number | null>(null);
   const [usage, setUsage] = React.useState<{ files: number; totalBytes: number }>({ files: 0, totalBytes: 0 });
+  const [lastTickAt, setLastTickAt] = React.useState<number | null>(null);
 
   React.useEffect(() => {
     if (!open) return;
@@ -31,6 +32,7 @@ export default function BackupModal({ open, onClose }: Props) {
             setLocalEnabled(!!cfg.localEnabled);
             setLastDriveUploadAt(cfg.lastDriveUploadAt ?? null);
             setLastLocalDownloadAt(cfg.lastLocalDownloadAt ?? null);
+            setLastTickAt(cfg.lastTickAt ?? null);
           }
         } catch {}
         const r: any = await sendBg('backup/listFiles', {} as any);
@@ -61,6 +63,7 @@ export default function BackupModal({ open, onClose }: Props) {
         if (cfg?.ok) {
           setLastDriveUploadAt(cfg.lastDriveUploadAt ?? null);
           setLastLocalDownloadAt(cfg.lastLocalDownloadAt ?? null);
+          setLastTickAt(cfg.lastTickAt ?? null);
         }
       } catch {}
       try { const rr: any = await sendBg('backup/listFiles', {} as any); setFiles(Array.isArray(rr?.items) ? rr.items : []); } catch {}
@@ -179,6 +182,8 @@ export default function BackupModal({ open, onClose }: Props) {
           {lastDriveUploadAt ? `Last Drive upload: ${new Date(lastDriveUploadAt).toLocaleString()}` : 'Last Drive upload: (never)'}
           {'  '}•{'  '}
           {lastLocalDownloadAt ? `Last local download: ${new Date(lastLocalDownloadAt).toLocaleString()}` : 'Last local download: (never)'}
+          {'  '}•{'  '}
+          {lastTickAt ? `Last hourly tick: ${new Date(lastTickAt).toLocaleString()}` : 'Last hourly tick: (unknown)'}
         </div>
         {loading ? (
           <div className="muted">Loading...</div>

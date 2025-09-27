@@ -1332,7 +1332,7 @@ const channelsFiltered = useMemo(() => {
             <input
               id="q"
               type="search"
-              placeholder="Filter by title or channelâ€¦"
+              placeholder="Filter by title or channel..."
               value={q}
               onChange={e => setQ(e.target.value)}
             />

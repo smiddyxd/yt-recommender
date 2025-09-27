@@ -176,7 +176,7 @@ export default function Sidebar(props: Props) {
                           title="Assign to tag group"
                           disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
-                          <option value="">â€” no group â€”</option>
+                          <option value="">{"\u2014 no group \u2014"}</option>
                           {visibleTagGroups.map(g => (
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
