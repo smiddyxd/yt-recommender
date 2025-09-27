@@ -632,7 +632,19 @@ const groupsById = useMemo(() => {
       const list = grouped.get(key) || (grouped.set(key, []), grouped.get(key)!);
       list.push(t.name);
     }
-    for (const [k, list] of grouped) list.sort((a,b)=> a.localeCompare(b));
+    const numCmp = (a: string, b: string) => {
+      const ai = /^\d+$/.test(String(a)) ? parseInt(String(a), 10) : NaN;
+      const bi = /^\d+$/.test(String(b)) ? parseInt(String(b), 10) : NaN;
+      const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+      if (aNum && bNum) return ai - bi;
+      if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+      return String(a).localeCompare(String(b));
+    };
+    for (const [k, list] of grouped) {
+      const grp = byId.get(k);
+      const isRating = (k === 'tagGroup.rating') || (String(grp?.name || '').trim().toLowerCase() === 'rating');
+      list.sort((a,b) => isRating ? numCmp(a,b) : a.localeCompare(b));
+    }
     return { byId, grouped } as { byId: Map<string, TagGroupRec>; grouped: Map<string, string[]> };
   }, [tags, tagGroups]);
 
@@ -820,9 +832,23 @@ const channelsFiltered = useMemo(() => {
         counts.set(k, (counts.get(k) || 0) + 1);
       }
     }
+    // Ensure rating tags are visible even if count=0
+    try {
+      const ratingGid = 'tagGroup.rating';
+      const ratingNames = tags.filter(t => (t.groupId === ratingGid) || (String(tagGroups.find(g => g.id === (t.groupId||''))?.name||'').toLowerCase() === 'rating')).map(t => t.name);
+      for (const n of ratingNames) if (!counts.has(n)) counts.set(n, 0);
+    } catch {}
+    const numCmp = (a: string, b: string) => {
+      const ai = /^\d+$/.test(String(a)) ? parseInt(String(a), 10) : NaN;
+      const bi = /^\d+$/.test(String(b)) ? parseInt(String(b), 10) : NaN;
+      const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+      if (aNum && bNum) return ai - bi;
+      if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+      return String(a).localeCompare(String(b));
+    };
     return Array.from(counts, ([name, count]) => ({ name, count }))
-      .sort((a,b)=> a.name.localeCompare(b.name));
-  }, [videos, chain, q, groups, channels]);
+      .sort((a,b)=> numCmp(a.name, b.name));
+  }, [videos, chain, q, groups, channels, tags, tagGroups]);
 
   const channelTagOptions = useMemo((): Array<{ name: string; count: number }> => {
     // Build condition without channel tag predicates and without video tag predicates
@@ -857,9 +883,23 @@ const channelsFiltered = useMemo(() => {
         counts.set(k, (counts.get(k) || 0) + 1);
       }
     }
+    // Ensure rating tags are visible even if count=0
+    try {
+      const ratingGid = 'tagGroup.rating';
+      const ratingNames = tags.filter(t => (t.groupId === ratingGid) || (String(tagGroups.find(g => g.id === (t.groupId||''))?.name||'').toLowerCase() === 'rating')).map(t => t.name);
+      for (const n of ratingNames) if (!counts.has(n)) counts.set(n, 0);
+    } catch {}
+    const numCmp = (a: string, b: string) => {
+      const ai = /^\d+$/.test(String(a)) ? parseInt(String(a), 10) : NaN;
+      const bi = /^\d+$/.test(String(b)) ? parseInt(String(b), 10) : NaN;
+      const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+      if (aNum && bNum) return ai - bi;
+      if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+      return String(a).localeCompare(String(b));
+    };
     return Array.from(counts, ([name, count]) => ({ name, count }))
-      .sort((a,b)=> a.name.localeCompare(b.name));
-  }, [channels, chain, q, videos, groups]);
+      .sort((a,b)=> numCmp(a.name, b.name));
+  }, [channels, chain, q, videos, groups, tags, tagGroups]);
 
   // Apply sorting before pagination
   function applySort<A extends any>(arr: A[], fields: Array<{ field: string; dir: 'asc'|'desc' }>, kind: 'videos'|'channels'): A[] {
@@ -1224,6 +1264,26 @@ const channelsFiltered = useMemo(() => {
                 disabled={(inChannels || inChannelsTrash) ? displayChannels.length === 0 : displayVideos.length === 0}
               >
                 Inv
+              </button>
+
+              <button
+                type="button"
+                className="btn-ghost"
+                title="Open selected in new tabs"
+                onClick={async () => {
+                  const ids = Array.from(selectedVisibleSetDisplay);
+                  if (!ids.length) return;
+                  // Open channels or videos depending on current entity view
+                  const mkUrl = (id: string) => (inChannels || inChannelsTrash)
+                    ? `https://www.youtube.com/channel/${id}`
+                    : `https://www.youtube.com/watch?v=${id}`;
+                  for (const id of ids) {
+                    try { await chrome.tabs?.create?.({ url: mkUrl(id), active: false }); } catch { /* ignore */ }
+                  }
+                }}
+                disabled={selectedVisibleCountDisplay === 0}
+              >
+                T
               </button>
 
               <button

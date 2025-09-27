@@ -82,11 +82,11 @@ export default function Sidebar(props: Props) {
   const [groupEditName, setGroupEditName] = React.useState('');
 
   // Hide system default tags and the default tag group from the Sidebar (edit/delete area)
-  const defaultTagNames = React.useMemo(() => new Set(['no fetch','hide','subscribed','unsubscribed','tagged','scrape']), []);
-  const visibleTags = React.useMemo(() => (tags || []).filter(t => !defaultTagNames.has(String(t.name || '').toLowerCase())), [tags]);
+  const defaultTagNames = React.useMemo(() => new Set(['no fetch','hide','subscribed','unsubscribed','tagged','scrape','0','1','2','3','4','5','6','7','8','9','10']), []);
+  const visibleTags = React.useMemo(() => (tags || []).filter(t => !defaultTagNames.has(String(t.name || '').toLowerCase())), [tags, defaultTagNames]);
   const visibleTagGroups = React.useMemo(() => (tagGroups || []).filter(g => {
     const nm = String(g.name || '').trim().toLowerCase();
-    return g.id !== 'tagGroup.default' && nm !== 'default tags';
+    return g.id !== 'tagGroup.default' && nm !== 'default tags' && g.id !== 'tagGroup.rating' && nm !== 'rating';
   }), [tagGroups]);
 
   return (
@@ -181,8 +181,8 @@ export default function Sidebar(props: Props) {
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
                         </select>
-                        <button className="btn-ghost" onClick={() => startRename(t.name)} disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>R</button>
-                        <button className="btn-ghost" onClick={() => removeTag(t.name)} disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}>x</button>
+                        <button className="btn-ghost" onClick={() => startRename(t.name)} disabled={defaultTagNames.has(String(t.name).toLowerCase())}>R</button>
+                        <button className="btn-ghost" onClick={() => removeTag(t.name)} disabled={defaultTagNames.has(String(t.name).toLowerCase())}>x</button>
                       </>
                     )}
                   </div>

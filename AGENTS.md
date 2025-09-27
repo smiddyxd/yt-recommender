@@ -1,4 +1,4 @@
-﻿# AGENTS - YT Manager
+# AGENTS - YT Manager
 
 - 2025-09-22
   - Scrape loop stops on content-reported DOM-unique; added `scrape/SCROLL_BOTTOM` stall recovery; finalization waits until DB writes are flushed and closes tabs.
@@ -52,9 +52,9 @@
 
 ### UI
 - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
-- Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "×" button on the right to remove the entry.
+- Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "�" button on the right to remove the entry.
 - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch). The popup now:
-  - Polls the active tab context every ~1s while open to reflect SPA navigation changes (e.g., channel → channel), updating video/channel id in place.
+  - Polls the active tab context every ~1s while open to reflect SPA navigation changes (e.g., channel ? channel), updating video/channel id in place.
   - Proactively resolves channel id on channel pages when not yet available (mirrors watch pages' behavior).
   - Adds a quick "Create tag" row: input for tag name and a dropdown to choose a Tag Group (optional). Uses `tags/create` and `tags/assignGroup`.
 
@@ -72,9 +72,9 @@
 5) On mutations, background records lightweight events -> commits; appends to `events-YYYY-MM.jsonl` in Drive and occasionally saves snapshots.
 
 ## Auto-Scrape & Presets
-- Passive scraping runs on Home (`/`), Sub Feed (`/feed/subscriptions`), Watch pages (side suggestions), and Search results (`/results`) — disabled on channel and playlist pages.
-- Frequency: every ~2s; if the total (non‑gated) result signature is unchanged 3 consecutive ticks, slow to every ~4s; if unchanged 3 more ticks at 4s, pause until scroll passes a page‑specific threshold to reactivate at 4s:
-  - Search ≥99%, Sub Feed ≥89%, Home ≥81%, Watch ≥40%.
+- Passive scraping runs on Home (`/`), Sub Feed (`/feed/subscriptions`), Watch pages (side suggestions), and Search results (`/results`) � disabled on channel and playlist pages.
+- Frequency: every ~2s; if the total (non-gated) result signature is unchanged 3 consecutive ticks, slow to every ~4s; if unchanged 3 more ticks at 4s, pause until scroll passes a page-specific threshold to reactivate at 4s:
+  - Search =99%, Sub Feed =89%, Home =81%, Watch =40%.
 - Preset gating only controls what is upserted, not the stop/slowdown logic.
 - The current watch video is always upserted regardless of presets; side tiles are gated by presets.
 ## Scrape Panel (Sub Feed / Watch History)
@@ -91,7 +91,7 @@
   - When a channel id is present, it upserts a stub and marks it `subscribed`.
   - When only a handle/name is present, it upserts a pending entry with `subscribedPending: true` so resolution promotes `subscribed=true`.
   - This behavior applies to both passive auto-scrape and the active Scrape Panel "Scrape Sub Feed" routine.
-- Latest marker: both active runs and passive auto-scrapes mark the top-most non‑livestream video as latest for Sub Feed (`latestFromSubFeed` and `meta['latestBy.SubscriptionsFeed']`).
+- Latest marker: both active runs and passive auto-scrapes mark the top-most non-livestream video as latest for Sub Feed (`latestFromSubFeed` and `meta['latestBy.SubscriptionsFeed']`).
    - If the latest video is not yet in DB, a stub is created and flagged, tagged with `no fetch` and `hide` so it remains a lightweight sentinel.
    - If it is already in DB, only the flag is set/updated.
    - When a newer latest is set, the previous sentinel (tags include `no fetch`+`hide`, never fetched) is purged permanently.
@@ -142,7 +142,7 @@
   - Locale/meta: `country?: string|null`, `publishedAt?: number|null`, `keywords?: string[]`
   - Avatars/playlists: `thumbnailID?: string|null`, `playlists?: { uploads?: string; likes?: string; watchHistory?: string; watchLater?: string; favorites?: string } | null`
   - Topics/descriptions: `channelTopics?: string[]` (derived from YouTube channel topicCategories; readable labels), `videoTopics?: string[]` (aggregated from videos), `description?: string|null`
-  - Tags: `tags?: string[]`, `videoTags?: string[]` (derived from videos’ tags)
+  - Tags: `tags?: string[]`, `videoTags?: string[]` (derived from videos� tags)
   - Scrape markers: `scrapedAt?: number`, `scrapedAtVideos?: number`, `scrapedAtShorts?: number`, `scrapedAtLivestreams?: number`, `scrapedVideoCount?: number`, `scrapedShortsCount?: number`, `scrapedLivestreamCount?: number`, `totalVideoCountOnScrapeTime?: number|null`
   - Subscriptions: `subscribed?: boolean`, `unsubscribed?: boolean`
   - Timestamps: `fetchedAt?: number|null`
@@ -232,13 +232,15 @@
   - Count display shows visible and disabled selection: `N -M` where `N` is the number of selected items currently visible under the normal filter, and `M` is the number of selected items hidden by active filters (temporarily disabled). Hidden selections are ignored by actions in normal view and automatically re-enable if they become visible again. `C` clears both visible and hidden selections.
   - Display toggle `D`: when active, the list shows only the disabled selection (items currently hidden by the filter). Actions (`X`, `tags`, `Inv`, `all`) operate on the items visible in the current display mode. The `N -M` counter remains anchored to the normal filter (so `-M` always means "hidden by current filters").
 - Default tags (hardcoded): system tags shown like normal tags but not deletable/renamable. The default tag group `default tags` appears at the top for manual defaults.
-  - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel’s videos from video refresh.
+  - `no fetch` (videos/channels; manual): excludes tagged videos from API refresh; on channels, excludes that channel�s videos from video refresh.
   - `hide` (videos/channels; manual):
     - Videos: excluded from the Videos list by default; visible when filtering by the `hide` tag.
     - Channels: excluded from the Channels list by default; visible when filtering by the `hide` tag.
   - `subscribed` / `unsubscribed` (channels; automatic): set by Subscriptions Manager scraping; hidden from tag pickers but available in filters.
   - `tagged` (channels; manual+auto): auto-applied when tagging a channel via Popup; also manually appliable under `default tags`.
   - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
+  - `0`..`10` (videos/channels; manual): Rating tags grouped under the `Rating` tag group (default). These are default tags and are not deletable/renamable.
+ - Default tag group (additional): `Rating` � contains rating tags `0`..`10` and is not deletable/renamable.
  - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
@@ -361,7 +363,7 @@
   - Refresh: channel fetch now requests `contentDetails` and `topicDetails`; selective diffs updated (`thumbnailID` instead of `avatarUrl`/`bannerUrl`). Video fetch no longer requests the `player` part.
   - Derived: added per-channel `videoTopics[]` aggregation after video refresh.
   - History: exclude pending channel operations from version history (`pending/*` are ignored by the event recorder) to reduce noise in Version History and snapshots.
-  - Scrape: Sub Feed and Watch History routines now scroll aggressively — background sends `scrape/SCROLL_BOTTOM` every iteration to reach the bottom faster and load more items.
+  - Scrape: Sub Feed and Watch History routines now scroll aggressively � background sends `scrape/SCROLL_BOTTOM` every iteration to reach the bottom faster and load more items.
   - Scrape Panel: Added per-source toggles to "stop at previous most recent video" for Sub Feed and Watch History. Each run marks the top-most item as latest for that source (stored in `meta` and flagged on the video), and early-stops when enabled.
 - 2025-09-23
   - DB_VERSION bumped to 13. Removed legacy `videos.byLastSeen` index during upgrade; no data loss.
@@ -395,4 +397,5 @@ Use this section as an "inbox" for future patch notes. After integrating updates
 
 ## Removed From Project Overview
 - Original preface line: "tell me when you're ready to work on my project, here's my project_ovierview.md:" (removed to keep this doc focused on actionable project context).
+
 

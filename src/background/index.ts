@@ -11,6 +11,8 @@ import { applyRestore, dryRunRestoreApply } from './restore';
 // ---- Default Tags / Groups ----
 const DEFAULT_TAG_GROUP_ID = 'tagGroup.default';
 const DEFAULT_TAG_GROUP_NAME = 'default tags';
+const DEFAULT_RATING_TAG_GROUP_ID = 'tagGroup.rating';
+const DEFAULT_RATING_TAG_GROUP_NAME = 'Rating';
 const DEFAULT_TAGS = [
   { name: 'no fetch', manual: true, scope: 'both' as const },
   { name: 'hide', manual: true, scope: 'video' as const },
@@ -18,6 +20,18 @@ const DEFAULT_TAGS = [
   { name: 'unsubscribed', manual: false, scope: 'channel' as const },
   { name: 'tagged', manual: true, scope: 'channel' as const },
   { name: 'scrape', manual: true, scope: 'channel' as const },
+  // Rating defaults (manual, both scopes)
+  { name: '0', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '1', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '2', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '3', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '4', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '5', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '6', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '7', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '8', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '9', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
+  { name: '10', manual: true, scope: 'both' as const, groupId: DEFAULT_RATING_TAG_GROUP_ID },
 ];
 const DEFAULT_PRESET_ID = 'group.default.scrapable';
 const DEFAULT_PRESET_NAME = 'scrapable channels';
@@ -761,7 +775,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const overlay: any[] = [];
         for (const t of DEFAULT_TAGS) {
           if (!present.has(t.name)) {
-            overlay.push({ name: t.name, createdAt: 0, ...(t.manual ? { groupId: DEFAULT_TAG_GROUP_ID } : {}) });
+            const gid = (t as any).groupId ? (t as any).groupId : (t.manual ? DEFAULT_TAG_GROUP_ID : undefined);
+            overlay.push({ name: t.name, createdAt: 0, ...(gid ? { groupId: gid } : {}) });
           }
         }
         sendResponse?.({ ok: true, items: [...overlay, ...items] });
@@ -817,7 +832,11 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
       } else if (raw.type === 'tagGroups/list') {
         const items = await listTagGroups();
         const hasDefault = items.some(g => String(g.id) === DEFAULT_TAG_GROUP_ID) || items.some(g => (g.name || '').toLowerCase() === DEFAULT_TAG_GROUP_NAME);
-        const out = hasDefault ? items : [{ id: DEFAULT_TAG_GROUP_ID, name: DEFAULT_TAG_GROUP_NAME, createdAt: 0 }, ...items];
+        const hasRating = items.some(g => String(g.id) === DEFAULT_RATING_TAG_GROUP_ID) || items.some(g => (g.name || '').toLowerCase() === DEFAULT_RATING_TAG_GROUP_NAME.toLowerCase());
+        const overlay: any[] = [];
+        if (!hasDefault) overlay.push({ id: DEFAULT_TAG_GROUP_ID, name: DEFAULT_TAG_GROUP_NAME, createdAt: 0 });
+        if (!hasRating) overlay.push({ id: DEFAULT_RATING_TAG_GROUP_ID, name: DEFAULT_RATING_TAG_GROUP_NAME, createdAt: 0 });
+        const out = overlay.length ? [...overlay, ...items] : items;
         sendResponse?.({ ok: true, items: out });
       } else if (raw.type === 'tagGroups/create') {
         const id = await createTagGroup(String(raw.payload?.name || ''));

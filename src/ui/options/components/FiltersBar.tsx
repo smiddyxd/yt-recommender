@@ -767,7 +767,18 @@ export default function FiltersBar({
             const bn = b[0] ? (byId.get(b[0])?.name || '') : 'Ungrouped';
             return an.localeCompare(bn);
           });
-          for (const [, arr] of entries) arr.sort((a,b)=> a.name.localeCompare(b.name));
+          for (const [gid, arr] of entries) {
+            const isRating = gid && ((byId.get(gid)?.name || '').trim().toLowerCase() === 'rating' || gid === 'tagGroup.rating');
+            const numCmp = (a: string, b: string) => {
+              const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
+              const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+              const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+              if (aNum && bNum) return ai - bi;
+              if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+              return a.localeCompare(b);
+            };
+            arr.sort((a,b)=> isRating ? numCmp(a.name, b.name) : a.name.localeCompare(b.name));
+          }
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -897,7 +908,18 @@ export default function FiltersBar({
             const bn = b[0] ? (byId.get(b[0])?.name || '') : 'Ungrouped';
             return an.localeCompare(bn);
           });
-          for (const [, arr] of entries) arr.sort((a,b)=> a.name.localeCompare(b.name));
+          for (const [gid, arr] of entries) {
+            const isRating = gid && ((byId.get(gid)?.name || '').trim().toLowerCase() === 'rating' || gid === 'tagGroup.rating');
+            const numCmp = (a: string, b: string) => {
+              const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
+              const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+              const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+              if (aNum && bNum) return ai - bi;
+              if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+              return a.localeCompare(b);
+            };
+            arr.sort((a,b)=> isRating ? numCmp(a.name, b.name) : a.name.localeCompare(b.name));
+          }
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -1071,6 +1093,18 @@ export default function FiltersBar({
         }}
       >
         <option value="">+ Add filter...</option>
+        <optgroup label="Channel filters">
+          <option value="channel">Channel (IDs)</option>
+          <option value="c_country">Country</option>
+          <option value="c_subs">Subscribers (min/max)</option>
+          <option value="c_views">Views (min/max)</option>
+          <option value="c_videos">Video count (min/max)</option>
+          <option value="c_createdAge">Creation age</option>
+          <option value="c_subsHidden">Subscribers hidden</option>
+          <option value="c_tags_any">Tags (any)</option>
+          <option value="c_tags_all">Tags (all)</option>
+          <option value="c_tags_none">Tags (none)</option>
+        </optgroup>
         <optgroup label="Video filters">
           <option value="duration">Duration range</option>
           <option value="age">Age</option>
@@ -1088,18 +1122,6 @@ export default function FiltersBar({
           <option value="v_flag">Flag (started/completed)</option>
           <option value="v_topics_any">Topics (any)</option>
           <option value="v_topics_all">Topics (all)</option>
-        </optgroup>
-        <optgroup label="Channel filters">
-          <option value="channel">Channel (IDs)</option>
-          <option value="c_country">Country</option>
-          <option value="c_subs">Subscribers (min/max)</option>
-          <option value="c_views">Views (min/max)</option>
-          <option value="c_videos">Video count (min/max)</option>
-          <option value="c_createdAge">Creation age</option>
-          <option value="c_subsHidden">Subscribers hidden</option>
-          <option value="c_tags_any">Tags (any)</option>
-          <option value="c_tags_all">Tags (all)</option>
-          <option value="c_tags_none">Tags (none)</option>
         </optgroup>
         <optgroup label="Other">
           <option value="group">Preset</option>

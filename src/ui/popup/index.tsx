@@ -148,7 +148,19 @@ function PopupApp() {
       const list = map.get(key) || (map.set(key, []), map.get(key)!);
       list.push(t.name);
     }
-    for (const [k, list] of map) list.sort((a,b)=> a.localeCompare(b));
+    const numCmp = (a: string, b: string) => {
+      const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
+      const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+      const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+      if (aNum && bNum) return ai - bi;
+      if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
+      return a.localeCompare(b);
+    };
+    for (const [k, list] of map) {
+      const grp = groupById.get(k);
+      const isRating = (k === 'tagGroup.rating') || (String(grp?.name || '').trim().toLowerCase() === 'rating');
+      list.sort((a,b)=> isRating ? numCmp(a,b) : a.localeCompare(b));
+    }
     return { map, groupById };
   }, [allTags, tagGroups]);
 
