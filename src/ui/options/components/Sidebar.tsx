@@ -23,7 +23,7 @@ type Props = {
   onDeleteTagGroup: (id: string)=>void;
   onAssignTagToGroup: (tagName: string, groupId: string | null)=>void;
   // One-time import: channel tags JSON
-  importing?: boolean;
+  Importing...
   importMessage?: string | null;
   onImportFile?: (file: File) => void;
 
@@ -108,7 +108,7 @@ export default function Sidebar(props: Props) {
                 <input
                   className="side-input"
                   type="text"
-                  placeholder="New tagâ€¦"
+                  placeholder="New tag..."
                   value={newTag}
                   onChange={(e) => setNewTag(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') addTag(); }}
@@ -136,12 +136,12 @@ export default function Sidebar(props: Props) {
                   className="btn-ghost"
                   onClick={() => fileRef.current?.click()}
                   disabled={!!importing}
-                  title="Import a JSON mapping: { tagName: [channelId,â€¦] }"
+                  title="Import a JSON mapping: { tagName: [channelId,...] }"
                 >
                   Import JSON
                 </button>
                 {importing && (
-                  <span className="muted" style={{ marginLeft: 8 }}>{importMessage || 'Importingâ€¦'}</span>
+                  <span className="muted" style={{ marginLeft: 8 }}>{importMessage || 'Importing...'}</span>
                 )}
               </div>
 
@@ -196,7 +196,7 @@ export default function Sidebar(props: Props) {
                 <input
                   className="side-input"
                   type="text"
-                  placeholder="New groupâ€¦"
+                  placeholder="New group..."
                   value={newGroup}
                   onChange={(e)=> setNewGroup(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && newGroup.trim()) { onCreateTagGroup(newGroup.trim()); setNewGroup(''); } }}
@@ -274,7 +274,7 @@ export default function Sidebar(props: Props) {
           <div className="side-title">Backup</div>
           <div className="side-row" title={driveClientId ? driveClientId : ''}>
             <span className="muted" style={{ flex: 1 }}>
-              Client ID: {driveClientId ? `${driveClientId.slice(0,6)}â€¦${driveClientId.slice(-10)}` : '(not set)'}
+              Client ID:  {driveClientId ? `${driveClientId.slice(0,6)}...${driveClientId.slice(-10)}` : '(not set)'}
             </span>
           </div>
           <div className="side-row" style={{ gap: 8 }}>
@@ -289,4 +289,5 @@ export default function Sidebar(props: Props) {
       </aside>
   );
 }
+
 
