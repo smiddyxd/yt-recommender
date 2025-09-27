@@ -1,4 +1,4 @@
-// src/ui/options/components/Sidebar.tsx
+﻿// src/ui/options/components/Sidebar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { TagRec } from '../../../types/messages';
@@ -108,7 +108,7 @@ export default function Sidebar(props: Props) {
                 <input
                   className="side-input"
                   type="text"
-                  placeholder="New tag…"
+                  placeholder="New tagâ€¦"
                   value={newTag}
                   onChange={(e) => setNewTag(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') addTag(); }}
@@ -136,12 +136,12 @@ export default function Sidebar(props: Props) {
                   className="btn-ghost"
                   onClick={() => fileRef.current?.click()}
                   disabled={!!importing}
-                  title="Import a JSON mapping: { tagName: [channelId,…] }"
+                  title="Import a JSON mapping: { tagName: [channelId,â€¦] }"
                 >
                   Import JSON
                 </button>
                 {importing && (
-                  <span className="muted" style={{ marginLeft: 8 }}>{importMessage || 'Importing…'}</span>
+                  <span className="muted" style={{ marginLeft: 8 }}>{importMessage || 'Importingâ€¦'}</span>
                 )}
               </div>
 
@@ -176,7 +176,7 @@ export default function Sidebar(props: Props) {
                           title="Assign to tag group"
                           disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
-                          <option value="">— no group —</option>
+                          <option value="">â€” no group â€”</option>
                           {visibleTagGroups.map(g => (
                             <option key={g.id} value={g.id}>{g.name}</option>
                           ))}
@@ -196,7 +196,7 @@ export default function Sidebar(props: Props) {
                 <input
                   className="side-input"
                   type="text"
-                  placeholder="New group…"
+                  placeholder="New groupâ€¦"
                   value={newGroup}
                   onChange={(e)=> setNewGroup(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && newGroup.trim()) { onCreateTagGroup(newGroup.trim()); setNewGroup(''); } }}
@@ -274,13 +274,13 @@ export default function Sidebar(props: Props) {
           <div className="side-title">Backup</div>
           <div className="side-row" title={driveClientId ? driveClientId : ''}>
             <span className="muted" style={{ flex: 1 }}>
-              Client ID: {driveClientId ? `${driveClientId.slice(0,6)}…${driveClientId.slice(-10)}` : '(not set)'}
+              Client ID: {driveClientId ? `${driveClientId.slice(0,6)}â€¦${driveClientId.slice(-10)}` : '(not set)'}
             </span>
           </div>
           <div className="side-row" style={{ gap: 8 }}>
             <button className="btn-ghost" onClick={onSetDriveClientId}>Set Client ID</button>
             <button className="btn-ghost" onClick={onBackupNow}>Backup Settings</button>
-            <button className="btn-ghost" onClick={onOpenHistory}>Version History</button>
+            <button className="btn-ghost" onClick={onOpenHistory}>Backups</button>
           </div>
           <div className="muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
             Uses Google Drive appDataFolder. During backup you may be asked to sign in.
@@ -289,3 +289,4 @@ export default function Sidebar(props: Props) {
       </aside>
   );
 }
+

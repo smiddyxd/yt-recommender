@@ -218,7 +218,24 @@ function PopupApp() {
   };
 
   const videoTags = Array.isArray((video as any)?.tags) ? (video as any).tags as string[] : [];
-  const channelTags = Array.isArray((channel as any)?.tags) ? (channel as any).tags as string[] : [];
+  const [channelTags, setChannelTags] = useState<string[]>([]);
+
+  // Load channel tags from background (local settings), not from IDB row
+  useEffect(() => {
+    let alive = true;
+    async function refreshChannelTags() {
+      const id = effectiveChannelId;
+      if (!id) { if (alive) setChannelTags([]); return; }
+      try {
+        const r: any = await sendBg('channels/getTags', { id } as any);
+        if (alive) setChannelTags(Array.isArray(r?.tags) ? r.tags : []);
+      } catch { if (alive) setChannelTags([]); }
+    }
+    refreshChannelTags();
+    const handler = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'channels') refreshChannelTags(); };
+    chrome.runtime.onMessage.addListener(handler);
+    return () => { alive = false; chrome.runtime.onMessage.removeListener(handler); };
+  }, [ctx.channelId, resolvedChannelId]);
 
   // Suggestions removed per user preference; show only registry tags for both video and channel.
 

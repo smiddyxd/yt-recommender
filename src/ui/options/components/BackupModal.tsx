@@ -13,15 +13,30 @@ export default function BackupModal({ open, onClose }: Props) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [files, setFiles] = React.useState<FileEntry[]>([]);
+  const [driveEnabled, setDriveEnabled] = React.useState<boolean>(true);
+  const [localEnabled, setLocalEnabled] = React.useState<boolean>(true);
+  const [lastDriveUploadAt, setLastDriveUploadAt] = React.useState<number | null>(null);
+  const [lastLocalDownloadAt, setLastLocalDownloadAt] = React.useState<number | null>(null);
+  const [usage, setUsage] = React.useState<{ files: number; totalBytes: number }>({ files: 0, totalBytes: 0 });
 
   React.useEffect(() => {
     if (!open) return;
     (async () => {
       setLoading(true); setError(null);
       try {
+        try {
+          const cfg: any = await sendBg('backup/config/get', {} as any);
+          if (cfg?.ok) {
+            setDriveEnabled(!!cfg.driveEnabled);
+            setLocalEnabled(!!cfg.localEnabled);
+            setLastDriveUploadAt(cfg.lastDriveUploadAt ?? null);
+            setLastLocalDownloadAt(cfg.lastLocalDownloadAt ?? null);
+          }
+        } catch {}
         const r: any = await sendBg('backup/listFiles', {} as any);
         const items: FileEntry[] = Array.isArray(r?.items) ? r.items : [];
         setFiles(items);
+        try { const u: any = await sendBg('backup/history/usage', {} as any); if (u?.ok) setUsage({ files: u.files || 0, totalBytes: u.totalBytes || 0 }); } catch {}
       } catch (e: any) {
         setError(e?.message || String(e));
       } finally {
@@ -29,6 +44,31 @@ export default function BackupModal({ open, onClose }: Props) {
       }
     })();
   }, [open]);
+
+  async function saveConfig(nextDrive: boolean, nextLocal: boolean) {
+    try { await sendBg('backup/config/set', { driveEnabled: nextDrive, localEnabled: nextLocal } as any); }
+    catch {}
+  }
+
+  async function runBackupNow() {
+    try {
+      setLoading(true); setError(null);
+      const r: any = await sendBg('backup/runNow', {} as any);
+      if (!r?.ok) throw new Error(r?.error || 'Backup failed');
+      // Refresh timestamps and usage list
+      try {
+        const cfg: any = await sendBg('backup/config/get', {} as any);
+        if (cfg?.ok) {
+          setLastDriveUploadAt(cfg.lastDriveUploadAt ?? null);
+          setLastLocalDownloadAt(cfg.lastLocalDownloadAt ?? null);
+        }
+      } catch {}
+      try { const rr: any = await sendBg('backup/listFiles', {} as any); setFiles(Array.isArray(rr?.items) ? rr.items : []); } catch {}
+      try { const u: any = await sendBg('backup/history/usage', {} as any); if (u?.ok) setUsage({ files: u.files || 0, totalBytes: u.totalBytes || 0 }); } catch {}
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally { setLoading(false); }
+  }
 
   async function download(id: string, suggestedName?: string | null) {
     try {
@@ -114,12 +154,31 @@ export default function BackupModal({ open, onClose }: Props) {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 99999 }}>
       <div style={{ background: '#111', color: '#eee', border: '1px solid #333', borderRadius: 6, width: 600, maxWidth: '95vw', maxHeight: '80vh', overflow: 'auto', padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 16 }}>Backups (appDataFolder)</h2>
+          <h2 style={{ margin: 0, fontSize: 16 }}>Backups</h2>
           <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-ghost" onClick={runBackupNow} disabled={loading}>Backup</button>
             <button className="btn-ghost" onClick={downloadAllZip} disabled={loading || (files.length === 0)}>Download All (zip)</button>
             <button className="btn-ghost" onClick={wipeAll} disabled={loading}>Wipe All</button>
             <button className="btn-ghost" onClick={onClose}>Close</button>
           </div>
+        </div>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 8 }}>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={driveEnabled} onChange={(e)=>{ const v=e.currentTarget.checked; setDriveEnabled(v); saveConfig(v, localEnabled); }} />
+            <span>Hourly upload to Drive</span>
+          </label>
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={localEnabled} onChange={(e)=>{ const v=e.currentTarget.checked; setLocalEnabled(v); saveConfig(driveEnabled, v); }} />
+            <span>Hourly local download</span>
+          </label>
+          <span className="muted" style={{ marginLeft: 'auto', fontSize: 12 }}>
+            Drive files: {usage.files} • {formatBytes(usage.totalBytes)}
+          </span>
+        </div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+          {lastDriveUploadAt ? `Last Drive upload: ${new Date(lastDriveUploadAt).toLocaleString()}` : 'Last Drive upload: (never)'}
+          {'  '}•{'  '}
+          {lastLocalDownloadAt ? `Last local download: ${new Date(lastLocalDownloadAt).toLocaleString()}` : 'Last local download: (never)'}
         </div>
         {loading ? (
           <div className="muted">Loading...</div>

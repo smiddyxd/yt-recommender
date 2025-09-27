@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { dlog, derr } from '../../types/debug';
 import { matches, matchesChannel, type Condition, type Group as GroupRec } from '../../shared/conditions';
 import FiltersBar from './components/FiltersBar';
@@ -354,7 +354,7 @@ function startEditFromGroup(g: GroupRec) {
 }
 
 // Simple: supports single-level all/any or a single predicate; NOT on a leaf.
-// (We’ll extend this when we add explicit parentheses in the editor.)
+// (Weâ€™ll extend this when we add explicit parentheses in the editor.)
 
   function addTag() {
     const name = newSidebarTag.trim();
@@ -464,7 +464,7 @@ function startEditFromGroup(g: GroupRec) {
   }
   function openBackups() { try { console.log('[UI] openBackups'); } catch {} setShowBackups(true); }
   function closeBackups() { setShowBackups(false); }
-  function openHistory() { setShowHistory(true); }
+  function openHistory() { setShowBackups(true); }
   function closeHistory() { setShowHistory(false); }
 
 
@@ -670,7 +670,7 @@ const groupsById = useMemo(() => {
     }
     const count = tagCounts.get(tag) || 0;
     const allHave = count === selectedCount && selectedCount > 0;
-    // If all have it → remove from all; otherwise add to all
+    // If all have it â†’ remove from all; otherwise add to all
     sendBg('videos/applyTags', {
       ids: Array.from(selected),
       addIds: allHave ? [] : [tag],
@@ -1032,7 +1032,7 @@ const channelsFiltered = useMemo(() => {
       throw new Error(`Invalid JSON: ${e?.message || e}`);
     }
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-      throw new Error('Expected an object: { "tag name": ["UC…", …], … }');
+      throw new Error('Expected an object: { "tag name": ["UCâ€¦", â€¦], â€¦ }');
     }
 
     // Build map tag -> unique channel ids
@@ -1050,7 +1050,7 @@ const channelsFiltered = useMemo(() => {
 
     // Create tags first
     const allTags = Array.from(tagToIds.keys());
-    setImportMessage(`Creating ${allTags.length} tag${allTags.length === 1 ? '' : 's'}…`);
+    setImportMessage(`Creating ${allTags.length} tag${allTags.length === 1 ? '' : 's'}â€¦`);
     for (const t of allTags) {
       try { await sendBg('tags/create', { name: t }); } catch {/* ignore individual failures */}
     }
@@ -1058,7 +1058,7 @@ const channelsFiltered = useMemo(() => {
     // Apply channel tags in chunks per tag
     const allImportedIds = new Set<string>();
     for (const [tag, ids] of tagToIds.entries()) {
-      setImportMessage(`Applying tag "${tag}" to ${ids.length} channel${ids.length === 1 ? '' : 's'}…`);
+      setImportMessage(`Applying tag "${tag}" to ${ids.length} channel${ids.length === 1 ? '' : 's'}â€¦`);
       const groups = chunk(ids, 200); // avoid large messages
       for (const g of groups) {
         await sendBg('channels/applyTags', { ids: g, addIds: [tag] });
@@ -1083,7 +1083,7 @@ const channelsFiltered = useMemo(() => {
     if (!file) return;
     try {
       setImporting(true);
-      setImportMessage('Reading file…');
+      setImportMessage('Reading fileâ€¦');
       const text = await file.text();
       await importChannelTagsFromText(text);
       setImportMessage('Done');
@@ -1184,7 +1184,7 @@ const channelsFiltered = useMemo(() => {
   driveClientId={driveClientId}
   onSetDriveClientId={setDriveClientIdInteractive}
   onBackupNow={backupSettingsInteractive}
-  onOpenHistory={openHistory}
+  onOpenHistory={openBackups}
   viewLabel={viewLabel}
 />
       <div className="content">
@@ -1332,12 +1332,12 @@ const channelsFiltered = useMemo(() => {
             <input
               id="q"
               type="search"
-              placeholder="Filter by title or channel…"
+              placeholder="Filter by title or channelâ€¦"
               value={q}
               onChange={e => setQ(e.target.value)}
             />
-            <button id="refresh" onClick={refresh} disabled={loading} title="Reload list from local database">{loading ? 'Loading…' : 'Refresh DB'}</button>
-            {/* Entity toggle (Videos ↔ Channels, aware of trash) */}
+            <button id="refresh" onClick={refresh} disabled={loading} title="Reload list from local database">{loading ? 'Loadingâ€¦' : 'Refresh DB'}</button>
+            {/* Entity toggle (Videos â†” Channels, aware of trash) */}
             <button
               type="button"
               className="btn-ghost"
@@ -1363,7 +1363,7 @@ const channelsFiltered = useMemo(() => {
               onClick={refreshData}
               disabled={refreshing}
             >
-              {refreshing ? 'Refreshing…' : 'Fetch video data'}
+              {refreshing ? 'Refreshingâ€¦' : 'Fetch video data'}
             </button>
             <label style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginLeft: 8 }} title="Show only items without fetched metadata">
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -1401,7 +1401,7 @@ const channelsFiltered = useMemo(() => {
                 <span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>
               )}
               {backupInProgress ? (
-                <span className="muted" aria-live="polite" title="Backup in progress">Backing up…</span>
+                <span className="muted" aria-live="polite" title="Backup in progress">Backing upâ€¦</span>
               ) : unsyncedCount > 0 ? (
                 <span className="badge" title={`${unsyncedCount} commit(s) pending upload to Drive`}>
                   Drive backlog: {unsyncedCount}
@@ -1575,7 +1575,7 @@ const channelsFiltered = useMemo(() => {
       disabled={page <= 1}
       title="Previous page"
     >
-      ← Prev
+      â† Prev
     </button>
     <span className="page-info">Page {page} / {totalPages}</span>
     <button
@@ -1585,7 +1585,7 @@ const channelsFiltered = useMemo(() => {
       disabled={page >= totalPages}
       title="Next page"
     >
-      Next →
+      Next â†’
     </button>
   </div>
 
@@ -1673,6 +1673,7 @@ const channelsFiltered = useMemo(() => {
     </div>
   );
 }
+
 
 
 

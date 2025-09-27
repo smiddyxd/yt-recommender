@@ -1,10 +1,10 @@
-import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, applyChannelTags, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, listTagGroups, createTagGroup, renameTagGroup, deleteTagGroup, setTagGroup, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
+﻿import { renameTag as renameTagInDB, deleteTag as deleteTagInDB } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
-import { listTags, createTag, renameTag, deleteTag } from './db';
-import { listGroups, createGroup, updateGroup, deleteGroup } from './db';
+import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload } from './settingsStorage';
 import { matches, type Group as GroupRec } from '../shared/conditions';
-import { registerSettingsProducer, saveSettingsNow, initDriveBackupAlarms, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
+import { registerSettingsProducer, saveSettingsNow, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
 import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
 import { applyRestore, dryRunRestoreApply } from './restore';
 
@@ -53,24 +53,13 @@ function sanitizeChannelTagRemoves(names: string[]): string[] {
   return Array.from(new Set((names || []).map(s => String(s || '').trim()).filter(Boolean))).filter(n => !banned.has(n));
 }
 async function channelIdsWithTag(tagName: string): Promise<Set<string>> {
-  const tag = String(tagName || '').toLowerCase();
-  const set = new Set<string>();
-  const db = await openDB();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('channels', 'readonly');
-    const os = tx.objectStore('channels');
-    const cur = os.openCursor();
-    cur.onsuccess = () => {
-      const c = cur.result as IDBCursorWithValue | null;
-      if (!c) { resolve(); return; }
-      const row: any = c.value || {};
-      const tags: string[] = Array.isArray(row.tags) ? row.tags : [];
-      if (tags.map((t: string)=> String(t||'').toLowerCase()).includes(tag)) set.add(String(row.id || ''));
-      c.continue();
-    };
-    cur.onerror = () => reject(cur.error);
-  });
-  return set;
+  const needle = String(tagName || '').toLowerCase();
+  const map = await getChannelTagsMap();
+  const out = new Set<string>();
+  for (const [id, tags] of Object.entries(map)) {
+    if ((tags || []).some(t => String(t || '').toLowerCase() === needle)) out.add(id);
+  }
+  return out;
 }
 
 // Click the extension icon to trigger scrape in active tab
@@ -180,15 +169,17 @@ function ensureResolveSession(): { tried: Set<string> } {
 
 // --- Google Drive backup wiring ---
 registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
-  const [tags, tagGroups, groups] = await Promise.all([
+  const [tags, tagGroups, groups, chTags] = await Promise.all([
     listTags().catch(() => []),
     listTagGroups().catch(() => []),
     listGroups().catch(() => []),
+    getChannelTagsMap().catch(() => ({} as Record<string, string[]>)),
   ]);
   const db = await openDB();
   const videoIndex: Array<{ id: string; tags?: string[]; sources?: Array<{ type: string; id?: string | null }>; progressSec?: number | null; channelId?: string | null }> = [];
   const channelIndex: Array<{ id: string; tags?: string[] }> = [];
   const pendingChannels: Array<{ key: string; name?: string | null; handle?: string | null }> = [];
+  const seenChannelIds = new Set<string>();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(['videos', 'channels', 'channels_pending'] as any, 'readonly');
     // videos
@@ -219,7 +210,7 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
       };
       curV.onerror = () => reject(curV.error);
     } catch {}
-    // channels
+    // channels (ids only; tags will be overlaid from local)
     try {
       const cs = tx.objectStore('channels');
       const curC = cs.openCursor();
@@ -227,9 +218,8 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
         const c = curC.result as IDBCursorWithValue | null;
         if (!c) return;
         const r: any = c.value || {};
-        const entry: any = { id: r.id };
-        if (Array.isArray(r.tags) && r.tags.length) entry.tags = r.tags.slice();
-        channelIndex.push(entry);
+        const id = String(r.id || '');
+        if (id) { seenChannelIds.add(id); channelIndex.push({ id, tags: chTags[id] || [] }); }
         c.continue();
       };
       curC.onerror = () => reject(curC.error);
@@ -250,6 +240,10 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+  // Include any channel ids present only in local channelTags map
+  for (const id of Object.keys(chTags || {})) {
+    if (!seenChannelIds.has(id)) channelIndex.push({ id, tags: chTags[id] || [] });
+  }
   return {
     version: 1 as const,
     at: Date.now(),
@@ -261,9 +255,11 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
     pendingChannels,
   };
 });
-initDriveBackupAlarms();
+// Hourly backup alarm initialized below
 // Try to ensure a baseline snapshot silently on startup (ignored if Drive not configured yet)
 try { void ensureBaselineSnapshot({ interactive: false }); } catch {}
+try { void migrateSettingsFromIDBIfNeeded(); } catch {}
+try { initHourlyBackupAlarm(); } catch {}
 
 async function scheduleBackup() {
   try { queueCommitFlush(3000); } catch {}
@@ -285,6 +281,106 @@ async function ensureBaselineSnapshot(opts?: { interactive?: boolean }) {
   } catch (e) {
     // Silent failure is ok (e.g., Drive not configured yet)
   }
+}
+
+// --- Settings migration to chrome.storage.local ---
+async function migrateSettingsFromIDBIfNeeded() {
+  await ensureUseLocalDefault();
+  const useLocal = await isUseLocalEnabled();
+  if (!useLocal) return;
+  const hasInit = await hasLocalSettingsInitialized();
+  if (hasInit) return;
+  try {
+    const db = await openDB();
+    const tags: any[] = await new Promise((res, rej) => {
+      try {
+        const tx = db.transaction('tags', 'readonly');
+        const os = tx.objectStore('tags');
+        const req = os.getAll();
+        req.onsuccess = () => res((req.result || []).map((r: any) => ({ name: r.name, color: r.color, createdAt: r.createdAt, groupId: r.groupId })));
+        req.onerror = () => rej(req.error);
+      } catch { res([]); }
+    });
+    const tagGroups: any[] = await new Promise((res, rej) => {
+      try {
+        const tx = db.transaction('tag_groups', 'readonly');
+        const os = tx.objectStore('tag_groups');
+        const req = os.getAll();
+        req.onsuccess = () => res((req.result || []).map((r: any) => ({ id: r.id, name: r.name, createdAt: r.createdAt })));
+        req.onerror = () => rej(req.error);
+      } catch { res([]); }
+    });
+    const groups: any[] = await new Promise((res, rej) => {
+      try {
+        const tx = db.transaction('groups', 'readonly');
+        const os = tx.objectStore('groups');
+        const req = os.getAll();
+        req.onsuccess = () => res((req.result || []).map((r: any) => ({ id: r.id, name: r.name, condition: r.condition, createdAt: r.createdAt, updatedAt: r.updatedAt, scrape: r.scrape === true })));
+        req.onerror = () => rej(req.error);
+      } catch { res([]); }
+    });
+    const channelTagsById: Record<string, string[]> = await new Promise((res, rej) => {
+      try {
+        const map: Record<string, string[]> = {};
+        const tx = db.transaction('channels', 'readonly');
+        const os = tx.objectStore('channels');
+        const cur = os.openCursor();
+        cur.onsuccess = () => {
+          const c = cur.result as IDBCursorWithValue | null;
+          if (!c) { res(map); return; }
+          const row: any = c.value || {};
+          const id = String(row.id || '');
+          const tagsArr: string[] = Array.isArray(row.tags) ? row.tags.slice() : [];
+          if (id && tagsArr.length) map[id] = Array.from(new Set(tagsArr));
+          c.continue();
+        };
+        cur.onerror = () => rej(cur.error);
+      } catch { res({}); }
+    });
+    await writeInitialLocalSettings({ tags, tagGroups, groups, channelTagsById });
+  } catch {
+    // ignore
+  }
+}
+
+// --- Hourly backup tick (Drive upload and/or local download) ---
+const BACKUP_CFG = {
+  driveEnabledKey: 'backup.drive.enabled',
+  localEnabledKey: 'backup.local.enabled',
+  driveLastKey: 'backup.drive.lastUploadAt',
+  localLastKey: 'backup.local.lastDownloadAt',
+};
+
+async function runBackupTick(opts?: { interactive?: boolean }) {
+  try {
+    const cfg = await new Promise<any>((res) => chrome.storage?.local?.get([BACKUP_CFG.driveEnabledKey, BACKUP_CFG.localEnabledKey], (o) => res(o)));
+    const driveOn = cfg?.[BACKUP_CFG.driveEnabledKey] !== false; // default true
+    const localOn = cfg?.[BACKUP_CFG.localEnabledKey] !== false; // default true
+    const snap = await getCurrentSettingsSnapshot();
+    if (driveOn) {
+      try { await saveSettingsNow(snap, { interactive: !!opts?.interactive }); } catch {}
+      try { chrome.storage?.local?.set({ [BACKUP_CFG.driveLastKey]: Date.now(), lastBackupAt: Date.now() }); } catch {}
+    }
+    if (localOn) {
+      try { await triggerLocalDownload(snap); chrome.storage?.local?.set({ [BACKUP_CFG.localLastKey]: Date.now() }); } catch {}
+    }
+  } catch {}
+}
+
+function initHourlyBackupAlarm() {
+  try { chrome.alarms.create('backup.hourly', { periodInMinutes: 60 }); } catch {}
+  try {
+    chrome.alarms.onAlarm.addListener((a) => { if (a?.name === 'backup.hourly') { void runBackupTick({ interactive: false }); } });
+  } catch {}
+}
+
+async function triggerLocalDownload(snapshot: SettingsSnapshot) {
+  // Download to default Downloads folder without prompting
+  const name = `settings-${new Date().toISOString().replace(/[:.]/g,'').replace('T','-').slice(0,15)}.json`;
+  const text = JSON.stringify(snapshot, null, 2);
+  const b64 = utf8ToB64(text);
+  const url = `data:application/json;base64,${b64}`;
+  try { await chrome.downloads.download({ url, filename: name, saveAs: false }); } catch {}
 }
 
 const autoResolveTabIds = new Set<number>();
@@ -687,8 +783,29 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           sendResponse?.(out);
         } catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if (raw.type === 'channels/list') {
-        const items = await listChannels();
+        let items = await listChannels();
+        try {
+          const map = await getChannelTagsMap();
+          items = items.map((it: any) => {
+            const local = Array.isArray((map as any)[it.id]) ? (map as any)[it.id] : [];
+            const base: string[] = Array.isArray(it.tags) ? it.tags : [];
+            const sys = new Set<string>();
+            if (base.includes('subscribed')) sys.add('subscribed');
+            if (base.includes('unsubscribed')) sys.add('unsubscribed');
+            return { ...it, tags: Array.from(new Set<string>([...local, ...Array.from(sys.values())])) };
+          });
+        } catch {}
         sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'channels/getTags') {
+        try {
+          const id = String((raw as any)?.payload?.id || '');
+          if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
+          const map = await getChannelTagsMap();
+          const tags = Array.isArray((map as any)[id]) ? (map as any)[id] : [];
+          sendResponse?.({ ok: true, tags });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e), tags: [] });
+        }
       } else if (raw.type === 'channels/trashList') {
         const items = await listChannelsTrash();
         sendResponse?.({ ok: true, items });
@@ -813,7 +930,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const from = String(raw.payload?.oldName || '');
         const to = String(raw.payload?.newName || '');
         if (isDefaultTag(from) || isDefaultTag(to)) { sendResponse?.({ ok: false, error: 'Default tag cannot be renamed' }); return; }
-        await renameTag(from, to);
+        await renameTag(from, to); await renameTagInDB(from, to);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); // videos updated too
         try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{}
@@ -823,7 +940,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
   } else if (raw.type === 'tags/delete') {
         const nm = String(raw.payload?.name || '');
         const cascade = raw.payload?.cascade ?? true;
-        if (!isDefaultTag(nm)) await deleteTag(nm, cascade);
+        if (!isDefaultTag(nm)) { await deleteTag(nm, cascade); await deleteTagInDB(nm, cascade); }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
       if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
       recordEvent('tags/delete', { name: raw.payload?.name, cascade }, { impact: { tags: 1 } });
@@ -916,7 +1033,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const add = sanitizeChannelTagAdds(addIds);
         const rem = sanitizeChannelTagRemoves(removeIds);
         dlog('channels/applyTags', { ids: ids?.length || 0, add: add.length, remove: rem.length });
-        await applyChannelTags(ids || [], add, rem);
+        await applyChannelTagsLocal(ids || [], add, rem);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } });
         const affectsScrape = (add.includes('scrape') || rem.includes('scrape'));
         if (affectsScrape) { try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'groups' } }); } catch {} }
@@ -1394,6 +1511,32 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
           try { chrome.runtime.sendMessage({ type: 'backup/error', payload: { message: e?.message || String(e) } }); } catch {}
           sendResponse?.({ ok: false, error: e?.message || String(e) });
         }
+      } else if ((raw as any)?.type === 'backup/config/get') {
+        try {
+          const o = await new Promise<any>((res) => chrome.storage?.local?.get([BACKUP_CFG.driveEnabledKey, BACKUP_CFG.localEnabledKey, BACKUP_CFG.driveLastKey, BACKUP_CFG.localLastKey], (x)=>res(x)));
+          const driveEnabled = o?.[BACKUP_CFG.driveEnabledKey] !== false;
+          const localEnabled = o?.[BACKUP_CFG.localEnabledKey] !== false;
+          const lastDriveUploadAt = Number.isFinite(o?.[BACKUP_CFG.driveLastKey]) ? Number(o[BACKUP_CFG.driveLastKey]) : null;
+          const lastLocalDownloadAt = Number.isFinite(o?.[BACKUP_CFG.localLastKey]) ? Number(o[BACKUP_CFG.localLastKey]) : null;
+          sendResponse?.({ ok: true, driveEnabled, localEnabled, lastDriveUploadAt, lastLocalDownloadAt });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/config/set') {
+        try {
+          const driveEnabled = !!((raw as any)?.payload?.driveEnabled ?? true);
+          const localEnabled = !!((raw as any)?.payload?.localEnabled ?? true);
+          await chrome.storage?.local?.set?.({ [BACKUP_CFG.driveEnabledKey]: driveEnabled, [BACKUP_CFG.localEnabledKey]: localEnabled });
+          sendResponse?.({ ok: true });
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if ((raw as any)?.type === 'backup/runNow') {
+        try { await runBackupTick({ interactive: true }); sendResponse?.({ ok: true }); }
+        catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
+      } else if ((raw as any)?.type === 'backup/local/downloadNow') {
+        try { const snap = await getCurrentSettingsSnapshot(); await triggerLocalDownload(snap); chrome.storage?.local?.set?.({ [BACKUP_CFG.localLastKey]: Date.now() }); sendResponse?.({ ok: true }); }
+        catch (e: any) { sendResponse?.({ ok: false, error: e?.message || String(e) }); }
       } else if ((raw as any)?.type === 'backup/getClientId') {
         try {
           const id = await getClientIdState();
@@ -1899,7 +2042,7 @@ function bestThumb(thumbs: any): string | null {
     return (thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null) as (string | null);
   } catch { return null; }
 }
-function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + '…' : (s || ''); }
+function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + 'â€¦' : (s || ''); }
 
 async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
@@ -1999,3 +2142,6 @@ async function channelIdsForVideos(ids: string[]): Promise<string[]> {
   });
   return Array.from(set);
 }
+
+
+
