@@ -23,7 +23,7 @@ type Props = {
   onDeleteTagGroup: (id: string)=>void;
   onAssignTagToGroup: (tagName: string, groupId: string | null)=>void;
   // One-time import: channel tags JSON
-  Importing...
+  importing?: boolean;
   importMessage?: string | null;
   onImportFile?: (file: File) => void;
 
