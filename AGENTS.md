@@ -14,7 +14,57 @@
   3. Reflect new or changed message contracts under Messaging Protocol.
   4. Capture any user-visible changes in UI sections.
 
-**Verified As Of:** 2025-09-27
+### Editing Policy for AGENTS.md (Do Not Remove)
+
+Purpose
+- Protect this document from accidental rewrites, truncation, or destructive edits.
+- Permit autonomous, surgical edits while preserving the document's integrity.
+
+Non-Negotiable Rules (MUST)
+- Never rewrite, replace, shorten, or summarize this file wholesale. Do not remove sections unless explicitly requested.
+- Perform only surgical edits targeted to the requested change. Preserve all other content, order, headings, anchors, encoding, and line endings.
+- Apply the minimum patch necessary; do not reorder content or 'clean up' formatting unless requested.
+- If any constraint prevents a safe, surgical edit (encoding, tool limits, sandbox), stop and report. Do not work around by creating a new shortened file or by replacing the entire file.
+- Keep this policy section intact and visible near the top of the file.
+
+Allowed Changes (SHOULD)
+- Update the 'Verified As Of' date.
+- Append items to 'Recent Changes'.
+- Append bullets/notes to existing sections (Architecture, Storage Model, Messaging Protocol, UI Highlights, Backups).
+- Add new section anchors when necessary (no removal of existing content).
+
+Prohibited Changes
+- Removing sections or large blocks without explicit user request.
+- Moving or splitting the document into separate files without request.
+- Converting file encoding or line endings silently (ask first if conversion is required).
+- Incidental whitespace, numbering, or formatting changes unless requested.
+
+Edit Workflow (Autonomous, Surgical)
+1) Read the entire file and locate precise insertion/edit anchors (section headers, bullet lists). If anchors are ambiguous or missing, ask the user where to insert.
+2) Compute a minimal patch (only the necessary hunks) that touches as few lines as possible and avoids unrelated changes.
+3) Apply the patch.
+4) Re-open and verify that only the intended lines changed. Report a short summary (anchors used and lines touched).
+
+Patch Requirements
+- Minimal, focused hunks with context lines.
+- Preserve encoding and line endings exactly as found.
+- Avoid incidental trailing-space or numbering changes unless requested.
+
+Failure Contingencies (Ask, Don't Guess)
+- Encoding issue (e.g., not UTF-8): ask the user to re-save as UTF-8 (no BOM) or paste the exact text to patch. Do not convert silently.
+- Tool/size limits: ask for smaller anchor snippets or permission to split the patch into multiple hunks.
+- Sandbox/permission denial: ask for approval to escalate or provide the patch for the user to apply manually.
+
+Pre-Edit Checklist
+- Confirm encoding and line endings will be preserved.
+- Confirm exact insertion anchors and scope.
+- Ensure the patch removes nothing except explicitly requested lines.
+- Dry-run mentally (or via diff) to confirm minimal blast radius.
+
+Global Reminder
+- Treat AGENTS.md as canonical. Always favor minimal, surgical edits. If in doubt, stop and ask.
+
+**Verified As Of:** 2025-09-29
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -35,6 +85,11 @@
 
 ## Architecture Overview
 - Manifest V3: background service worker, one content script, Options page (React), Popup (React).
+
+### Recent Changes (2025-09-29)
+- Channel highlight: Across YouTube, channel anchors for channels tagged with the default channel tag `tagged` are outlined (`border: 3px solid #5edf8b`). Implemented in content via `chrome.storage.local.settings.channelTagsById`, MutationObserver, and navigation hooks; channel page headers are also marked when applicable.
+  - Handle links: `@handle` anchors are resolved to channel IDs via a background route (`channels/lookupByHandle`) that queries the local DB’s `customUrl`; resolved matches are highlighted the same as `/channel/UC...` links.
+  - Name-only elements (watch suggestions): when only a channel name is rendered without a link, content resolves the name to a channel id via `channels/lookupByName` (exact match on the `byName` index) and highlights the name element if the channel is tagged.
 
 ### Recent Changes (2025-09-27)
 - Settings storage swap: Tags, Tag Groups, Presets (Groups), and Channel Tags are stored in `chrome.storage.local` and managed by the background. Video tag assignments remain in IndexedDB.

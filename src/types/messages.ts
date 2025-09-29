@@ -42,6 +42,8 @@ export type Msg =
   | { type: 'channels/restore'; payload: { ids: string[] } }
   | { type: 'channels/purge'; payload: { ids: string[] } }
   | { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } }
+  | { type: 'channels/lookupByHandle'; payload: { handle: string } }
+  | { type: 'channels/lookupByName'; payload: { name: string } }
   | { type: 'latest/mark'; payload: { source: 'SubscriptionsFeed'|'WatchHistory'; id: string | null; createIfMissing?: boolean } }
   | { type: 'channels/markSubscribed'; payload: { ids: string[] } }
   // TAGS (you already added earlier)

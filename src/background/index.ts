@@ -807,6 +807,33 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         } catch (e: any) {
           sendResponse?.({ ok: false, error: e?.message || String(e), tags: [] });
         }
+      } else if (raw.type === 'channels/lookupByHandle') {
+        try {
+          const handleRaw = String((raw as any)?.payload?.handle || '').trim();
+          const handle = handleRaw ? (handleRaw.startsWith('@') ? handleRaw : '@' + handleRaw) : '';
+          if (!handle) { sendResponse?.({ ok: true, found: false }); return; }
+          const row = await getChannelByHandle(handle);
+          if (row && row.id) {
+            sendResponse?.({ ok: true, found: true, id: String(row.id), name: row.name ?? null, customUrl: row.customUrl ?? null });
+          } else {
+            sendResponse?.({ ok: true, found: false });
+          }
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
+      } else if (raw.type === 'channels/lookupByName') {
+        try {
+          const name = String((raw as any)?.payload?.name || '').trim();
+          if (!name) { sendResponse?.({ ok: true, found: false }); return; }
+          const row = await getChannelByNameExact(name);
+          if (row && row.id) {
+            sendResponse?.({ ok: true, found: true, id: String(row.id), name: row.name ?? null, customUrl: row.customUrl ?? null });
+          } else {
+            sendResponse?.({ ok: true, found: false });
+          }
+        } catch (e: any) {
+          sendResponse?.({ ok: false, error: e?.message || String(e) });
+        }
       } else if (raw.type === 'channels/trashList') {
         const items = await listChannelsTrash();
         sendResponse?.({ ok: true, items });

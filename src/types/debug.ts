@@ -1,4 +1,4 @@
-export const DEBUG = true; // set to false to silence all logs
+export const DEBUG = false; // set to false to silence all logs
 
 export function dlog(...a: any[])  { if (DEBUG) console.log('[dbg]', ...a); }
 export function dwarn(...a: any[]) { if (DEBUG) console.warn('[dbg]', ...a); }
