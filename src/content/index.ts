@@ -120,10 +120,7 @@ async function markChannelAnchorsIn(root: ParentNode | null) {
   try {
     // Anchors to /channel/ or /@handle
     const anchors = Array.from(root.querySelectorAll('a[href*="/channel/"], a[href^="/@"]')) as HTMLAnchorElement[];
-    const seenHref = new Set<string>();
     for (const a of anchors) {
-      const hrefVal = (a.getAttribute('href') || a.href || '').trim();
-      if (hrefVal && seenHref.has(hrefVal)) continue; if (hrefVal) seenHref.add(hrefVal);
       // Direct channel id link
       if (!isHandleAnchor(a)) {
         const id = channelIdFromAnchor(a);
