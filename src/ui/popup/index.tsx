@@ -395,6 +395,18 @@ function PopupApp() {
           </div>
           <TagChips labels={videoTags} onRemove={removeVideoTag} />
           <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn-ghost small"
+              title="Expand all groups"
+              aria-label="Expand all groups"
+              onClick={(e) => {
+                try {
+                  const section = (e.currentTarget as HTMLElement).closest('.section');
+                  if (!section) return;
+                  section.querySelectorAll('details').forEach(d => { (d as HTMLDetailsElement).open = true; });
+                } catch {}
+              }}
+            >⮟</button>
             {Array.from(byGroup.map.entries()).map(([gid, names]) => (
               <details key={gid || 'ungrouped-v'}>
                 <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
@@ -419,6 +431,18 @@ function PopupApp() {
           <h2>Channel Tags</h2>
           <TagChips labels={channelTags} onRemove={removeChannelTag} />
           <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn-ghost small"
+              title="Expand all groups"
+              aria-label="Expand all groups"
+              onClick={(e) => {
+                try {
+                  const section = (e.currentTarget as HTMLElement).closest('.section');
+                  if (!section) return;
+                  section.querySelectorAll('details').forEach(d => { (d as HTMLDetailsElement).open = true; });
+                } catch {}
+              }}
+            >⮟</button>
             {Array.from(byGroup.map.entries()).map(([gid, names]) => (
               <details key={gid || 'ungrouped-c'}>
                 <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
