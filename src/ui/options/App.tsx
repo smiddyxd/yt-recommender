@@ -86,6 +86,7 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
 
 // ---- React component ----
 export default function App() {
+  const [mode, setMode] = useState<'manager' | 'subs' | 'recommender'>('manager');
   const [videos, setVideos] = useState<Video[]>([]);
   const [q, setQ] = useState('');
   const [loading, setLoading] = useState(true);
@@ -1159,8 +1160,48 @@ const channelsFiltered = useMemo(() => {
     loadTags();
   }
 
+  // ---- Mode persistence (storage + URL hash) ----
+  function parseHashMode(): 'manager' | 'subs' | 'recommender' | null {
+    try {
+      const h = String(window.location.hash || '').toLowerCase();
+      if (h.includes('mode=subs')) return 'subs';
+      if (h.includes('mode=recommender')) return 'recommender';
+      if (h.includes('mode=manager')) return 'manager';
+    } catch {}
+    return null;
+  }
+  useEffect(() => {
+    // Prefer URL hash deep-link; fallback to storage
+    const fromHash = parseHashMode();
+    if (fromHash) setMode(fromHash);
+    else {
+      try {
+        chrome.storage?.local?.get('options.mode', (obj) => {
+          const m = String((obj as any)?.['options.mode'] || '').toLowerCase();
+          if (m === 'subs' || m === 'recommender' || m === 'manager') setMode(m as any);
+        });
+      } catch {}
+    }
+    // Hash change listener
+    const onHash = () => {
+      const m = parseHashMode();
+      if (m && m !== mode) setMode(m);
+    };
+    try { window.addEventListener('hashchange', onHash); } catch {}
+    return () => { try { window.removeEventListener('hashchange', onHash); } catch {} };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    // Persist to storage and reflect in hash
+    try { chrome.storage?.local?.set({ 'options.mode': mode }); } catch {}
+    try {
+      const next = `#mode=${mode}`;
+      if (window.location.hash !== next) window.location.hash = next;
+    } catch {}
+  }, [mode]);
+
   return (
-    <div className="page">
+    <div className="page" data-mode={mode}>
 <Sidebar
   tags={tags}
   newTag={newSidebarTag}
@@ -1191,10 +1232,26 @@ const channelsFiltered = useMemo(() => {
   onSetDriveClientId={setDriveClientIdInteractive}
   onBackupNow={backupSettingsInteractive}
   onOpenHistory={openBackups}
-  viewLabel={viewLabel}
+  mode={mode}
+  onModeChange={setMode}
 />
       <div className="content">
-        <header>
+        {/* Non-manager placeholder content */}
+        <div className="non-manager-only">
+          <header>
+            <h1 style={{ margin: 0, fontSize: 18 }}>{mode === 'subs' ? 'Subs' : (mode === 'recommender' ? 'Recommender' : 'Manager')}</h1>
+          </header>
+          <div className="filters">
+            <span className="muted">{mode === 'subs' ? 'Chronological subscriptions feed (filtered) will appear here.' : 'Multi-source recommendations will appear here.'}</span>
+          </div>
+          <div style={{ padding: 16 }}>
+            <div className="card" style={{ padding: 12 }}>
+              <div className="muted">This section is scaffolded. Detailed features will be implemented next.</div>
+            </div>
+          </div>
+        </div>
+        <div className="manager-only">
+          <header>
 
           <div className="controls">
             {/* View toggle (single button) */}
@@ -1743,6 +1800,7 @@ const channelsFiltered = useMemo(() => {
     <button className="btn-link" onClick={undoDelete}>Undo</button>
   </div>
 )}
+        </div>
       </div>{/* .content */}
       <BackupModal open={showBackups} onClose={closeBackups} />
       <HistoryModal open={showHistory} onClose={closeHistory} />

@@ -290,6 +290,7 @@ Global Reminder
 - Post-apply: emit `db/change` for affected entities, queue commit flush, and queue settings backup.
 
 ## Options UI Highlights
+- Top-level tabs: Manager (current Options UI), Subs (chronological feed view), Recommender (multi-source recommendations). Manager contains the existing views and toolbars below. Subs shows the Presets section in the sidebar for parity with Manager.
 - Views: Videos, Trash, Channels, Channels Trash, and Pending (debug). A view header shows the current view ("Videos", "Videos Trash", "Channels", "Channels Trash", or "Pending (debug)").
 - Top bar toggles (single buttons):
   - List <-> Grid view
@@ -479,3 +480,4 @@ Use this section as an "inbox" for future patch notes. After integrating updates
   - Video/Channel views: tag badges use their parent tag group color as background, darker 1px border, and opposite text color.
   - Popup: mirrors the Options Tagger grouping and colors (parent summaries colored; buttons use nested group colors).
   - Filters: tag filter chips group by parent -> nested tag group; parent summaries use parent color; individual checkboxes use nested group color with opposite text color.
+ - Options (top-level tabs): Sidebar now shows three tabs at the very top — "Manager", "Subs", and "Recommender" — spanning the full sidebar width. The active tab uses normal interface colors and the bottom border disappears (tab look); inactive tabs use slightly muted background/text. Selecting a tab switches the entire Options layout: Manager shows the existing Options UI; Subs renders placeholders for now but exposes Presets in the sidebar (same as Manager); Recommender renders placeholders for now.

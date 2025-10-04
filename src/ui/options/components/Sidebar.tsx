@@ -38,8 +38,9 @@ type Props = {
   onSetDriveClientId?: () => void;
   onBackupNow?: () => void;
   onOpenHistory?: () => void;
-  // Current view label (e.g., Videos, Videos Trash, Channels, Channels Trash, Pending)
-  viewLabel?: string;
+  // Top-level Options mode
+  mode: 'manager' | 'subs' | 'recommender';
+  onModeChange: (m: 'manager' | 'subs' | 'recommender') => void;
 };
 
 export default function Sidebar(props: Props) {
@@ -74,7 +75,8 @@ export default function Sidebar(props: Props) {
   onSetDriveClientId,
   onBackupNow,
   onOpenHistory,
-  viewLabel,
+  mode,
+  onModeChange,
 } = props;
 
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -93,11 +95,38 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside className="sidebar">
-        {viewLabel && (
-          <div className="side-section">
-            <div className="side-title">{viewLabel}</div>
-          </div>
-        )}
+        {/* Top-level tabs: Manager / Subs / Recommender */}
+        <div className="top-tabs" role="tablist" aria-label="Options sections">
+          <button
+            className="top-tab"
+            role="tab"
+            aria-selected={mode === 'manager'}
+            aria-current={mode === 'manager'}
+            onClick={() => onModeChange('manager')}
+          >
+            Manager
+          </button>
+          <button
+            className="top-tab"
+            role="tab"
+            aria-selected={mode === 'subs'}
+            aria-current={mode === 'subs'}
+            onClick={() => onModeChange('subs')}
+          >
+            Subs
+          </button>
+          <button
+            className="top-tab"
+            role="tab"
+            aria-selected={mode === 'recommender'}
+            aria-current={mode === 'recommender'}
+            onClick={() => onModeChange('recommender')}
+          >
+            Recommender
+          </button>
+        </div>
+
+        {mode === 'manager' ? (
         <div className="side-section">
           <div className="side-title" style={{ display: 'flex', gap: 8 }}>
             <button className="btn-ghost" aria-pressed={tab==='tags'} onClick={()=>setTab('tags')}>Tags</button>
@@ -257,23 +286,43 @@ export default function Sidebar(props: Props) {
           )}
 
         </div>
+        ) : null}
+        {mode === 'subs' ? (
           <div className="side-section">
-          <div className="side-title">Presets</div>
+            <div className="side-title">Subs</div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              This panel will host subscription feed filters and options.
+            </div>
+          </div>
+        ) : null}
+        {mode === 'recommender' ? (
+          <div className="side-section">
+            <div className="side-title">Recommender</div>
+            <div className="muted" style={{ fontSize: 13 }}>
+              This panel will host recommendation sources and settings.
+            </div>
+          </div>
+        ) : null}
+          <div className="side-section">
+          {(mode === 'manager' || mode === 'subs') ? <div className="side-title">Presets</div> : <div className="side-title">Presets (manager)</div>}
 
-          
-
+          {mode === 'recommender' && (
+            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+              Presets editing is available under Manager/Subs.
+            </div>
+          )}
           {/* Preset list (click to load into form) */}
           <div className="group-list">
             {groups.length === 0 && <div className="muted">No presets yet.</div>}
             {groups.map((g) => (
               <div className="group-row" key={g.id}>
                 <button
-  className="side-btn"
-  onClick={() => startEditFromGroup(g)}
-  title="Edit preset in Filters"
->
-  {g.name}
-</button>
+                  className="side-btn"
+                  onClick={() => startEditFromGroup(g)}
+                  title="Edit preset in Filters"
+                >
+                  {g.name}
+                </button>
                 <button
                   className="btn-ghost"
                   title={g.id === 'group.default.scrapable' ? 'Always enabled for default preset' : (isPresetScrapeCheckable && !isPresetScrapeCheckable(g.id) ? 'Contains unsupported predicates for scrape-time; cannot enable' : 'Toggle scrape flag (S)')}
@@ -289,31 +338,35 @@ export default function Sidebar(props: Props) {
           </div>
         </div>
 
-        <div className="side-section">
-          <div className="side-title">Coming up</div>
-          <ul className="side-list">
-            <li>Tags</li>
-            <li>Rules</li>
-            <li>Presets</li>
-          </ul>
-        </div>
+        {mode === 'manager' && (
+          <div className="side-section">
+            <div className="side-title">Coming up</div>
+            <ul className="side-list">
+              <li>Tags</li>
+              <li>Rules</li>
+              <li>Presets</li>
+            </ul>
+          </div>
+        )}
 
-        <div className="side-section">
-          <div className="side-title">Backup</div>
-          <div className="side-row" title={driveClientId ? driveClientId : ''}>
-            <span className="muted" style={{ flex: 1 }}>
-              Client ID:  {driveClientId ? `${driveClientId.slice(0,6)}...${driveClientId.slice(-10)}` : '(not set)'}
-            </span>
+        {mode === 'manager' && (
+          <div className="side-section">
+            <div className="side-title">Backup</div>
+            <div className="side-row" title={driveClientId ? driveClientId : ''}>
+              <span className="muted" style={{ flex: 1 }}>
+                Client ID:  {driveClientId ? `${driveClientId.slice(0,6)}...${driveClientId.slice(-10)}` : '(not set)'}
+              </span>
+            </div>
+            <div className="side-row" style={{ gap: 8 }}>
+              <button className="btn-ghost" onClick={onSetDriveClientId}>Set Client ID</button>
+              <button className="btn-ghost" onClick={onBackupNow}>Backup Settings</button>
+              <button className="btn-ghost" onClick={onOpenHistory}>Backups</button>
+            </div>
+            <div className="muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
+              Uses Google Drive appDataFolder. During backup you may be asked to sign in.
+            </div>
           </div>
-          <div className="side-row" style={{ gap: 8 }}>
-            <button className="btn-ghost" onClick={onSetDriveClientId}>Set Client ID</button>
-            <button className="btn-ghost" onClick={onBackupNow}>Backup Settings</button>
-            <button className="btn-ghost" onClick={onOpenHistory}>Backups</button>
-          </div>
-          <div className="muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
-            Uses Google Drive appDataFolder. During backup you may be asked to sign in.
-          </div>
-        </div>
+        )}
       </aside>
   );
 }

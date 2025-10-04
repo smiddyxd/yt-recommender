@@ -344,6 +344,40 @@ footer {
   min-height: 100vh;
 }
 
+/* ==== Top-level tabs in sidebar (Manager | Subs | Recommender) ==== */
+.top-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  margin: -14px -12px 12px -12px; /* extend to full sidebar width */
+  border-bottom: 1px solid var(--border);
+}
+.top-tab {
+  padding: 10px 8px;
+  border: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-right: none;
+  background: #17202b;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 0; /* square */
+}
+.top-tab:first-child { border-left: none; }
+.top-tab[aria-current="true"], .top-tab[aria-selected="true"] {
+  background: #1b2430; /* normal interface tone for active */
+  color: var(--text);
+  border-bottom-color: transparent; /* tab look: active appears connected */
+}
+.top-tab[aria-current="false"], .top-tab[aria-selected="false"] {
+  background: #121820; /* slightly muted */
+  color: var(--muted);
+}
+
+/* Toggle visibility for modes */
+.non-manager-only { display: block; }
+.page[data-mode='manager'] .non-manager-only { display: none; }
+.page[data-mode='subs'] .manager-only,
+.page[data-mode='recommender'] .manager-only { display: none; }
+
 /* Sidebar bits */
 .side-section + .side-section {
   margin-top: 16px;
