@@ -1,6 +1,21 @@
 ﻿// add near top
 import type { Condition, Group } from '../shared/conditions';
 
+// ---- Rules ----
+export type RuleAction =
+  | { kind: 'tags'; add?: string[]; remove?: string[] };
+
+export interface RuleRec {
+  id: string;
+  name: string;
+  groupId: string; // preset id to match against
+  channelIds?: string[]; // optional channel scope
+  action: RuleAction;
+  enabled?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 export type Msg =
   | { type: 'cache/VIDEO_SEEN'; payload: VideoSeed }
   | { type: 'cache/VIDEO_SEEN_BATCH'; payload: { items: VideoSeed[] } }
@@ -67,8 +82,8 @@ export type Msg =
   | { type: 'topics/list'; payload: {} }
   // RULES (stubs for next step)
   | { type: 'rules/list';    payload: {} }
-  | { type: 'rules/create';  payload: any }
-  | { type: 'rules/update';  payload: any }
+  | { type: 'rules/create';  payload: { name: string; groupId: string; action: RuleAction; channelIds?: string[]; enabled?: boolean } }
+  | { type: 'rules/update';  payload: { id: string; patch: Partial<RuleRec> } }
   | { type: 'rules/delete';  payload: { id: string } }
   | { type: 'rules/runAll';  payload: { onlyEnabled?: boolean } }
   | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } }

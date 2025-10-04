@@ -2,7 +2,8 @@
 import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
-import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload } from './settingsStorage';
+import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload, listRulesLocal as listRulesCfg, createRuleLocal as createRuleCfg, updateRuleLocal as updateRuleCfg, deleteRuleLocal as deleteRuleCfg } from './settingsStorage';
+import type { RuleRec } from '../types/messages';
 import { matches, type Group as GroupRec } from '../shared/conditions';
 import { registerSettingsProducer, saveSettingsNow, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
 import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
@@ -157,6 +158,76 @@ async function setChannelHandleIfMissing(id: string, handle: string): Promise<vo
   } catch { /* ignore */ }
 }
 
+// ---- Video lookup helper ----
+async function getVideoById(id: string): Promise<any | null> {
+  try {
+    const db = await openDB();
+    return await new Promise<any | null>((resolve, reject) => {
+      const tx = db.transaction('videos', 'readonly');
+      const os = tx.objectStore('videos');
+      const g = os.get(String(id));
+      g.onsuccess = () => resolve((g.result as any) || null);
+      g.onerror = () => reject(g.error);
+    });
+  } catch { return null; }
+}
+
+// ---- Rules engine (tags action only for now) ----
+async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean }): Promise<{ affected: number }> {
+  const onlyEnabled = opts?.onlyEnabled !== false;
+  if (!ids?.length) return { affected: 0 };
+  let affected = 0;
+  try {
+    const [rules, groups] = await Promise.all([
+      listRulesCfg().catch(() => []),
+      listGroups().catch(() => []),
+    ]);
+    if (!rules.length || !groups.length) return { affected: 0 };
+    const groupById = new Map<string, GroupRec>(groups.map(g => [g.id, g] as [string, GroupRec]));
+    for (const vid of ids) {
+      const v = await getVideoById(vid);
+      if (!v) continue;
+      // Evaluate rules for this video
+      let add: string[] = [];
+      const remSet = new Set<string>();
+      const chId = String(v?.channelId || '');
+      let chRow: any | undefined = undefined;
+      try { if (chId) chRow = await getChannelById(chId); } catch {}
+      for (const r of rules) {
+        if (onlyEnabled && r?.enabled === false) continue;
+        if (!r?.groupId) continue;
+        if (Array.isArray(r.channelIds) && r.channelIds.length) {
+          if (!chId || !r.channelIds.includes(chId)) continue;
+        }
+        const g = groupById.get(String(r.groupId));
+        if (!g) continue;
+        const matched = matches(v as any, g.condition, {
+          resolveGroup: (gid) => groupById.get(gid),
+          resolveChannel: (id) => ((id === chId) ? (chRow as any) : undefined),
+        } as any);
+        if (!matched) continue;
+        if (r.action?.kind === 'tags') {
+          const a = Array.isArray(r.action.add) ? r.action.add.filter(Boolean) : [];
+          const d = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean) : [];
+          if (a.length) add.push(...a);
+          for (const t of d) remSet.add(String(t));
+        }
+      }
+      // Sanitize & diff vs current
+      add = sanitizeVideoTagAdds(Array.from(new Set(add)));
+      const remove = Array.from(remSet.values());
+      const curTags: string[] = Array.isArray(v.tags) ? v.tags : [];
+      const addFinal = add.filter(t => !curTags.includes(t));
+      const remFinal = remove.filter(t => curTags.includes(t));
+      if (addFinal.length || remFinal.length) {
+        try { await applyTags([vid], addFinal, remFinal); affected += 1; } catch {}
+      }
+    }
+  } catch {}
+  try { if (affected > 0) chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); } catch {}
+  return { affected };
+}
+
 // Track a transient session for resolveBatch to avoid retrying same keys until idle
 let pendingResolveSession: { tried: Set<string>; timer?: number | null } | null = null;
 function ensureResolveSession(): { tried: Set<string> } {
@@ -169,10 +240,11 @@ function ensureResolveSession(): { tried: Set<string> } {
 
 // --- Google Drive backup wiring ---
 registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
-  const [tags, tagGroups, groups, chTags] = await Promise.all([
+  const [tags, tagGroups, groups, rules, chTags] = await Promise.all([
     listTags().catch(() => []),
     listTagGroups().catch(() => []),
     listGroups().catch(() => []),
+    listRulesCfg().catch(() => []),
     getChannelTagsMap().catch(() => ({} as Record<string, string[]>)),
   ]);
   const db = await openDB();
@@ -250,6 +322,7 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
     tags: (tags as any) || [],
     tagGroups: (tagGroups as any) || [],
     groups: (groups as any) || [],
+    rules: (rules as any) || [],
     videoIndex,
     channelIndex,
     pendingChannels,
@@ -457,6 +530,7 @@ async function handleVideoUpsert(kind: 'SEEN'|'STUB', payload: any, sender?: chr
   await upsertVideo(incoming);
   try { pendingUpserts = Math.max(0, pendingUpserts - 1); } catch {}
   try { if (session && incoming?.id) session.seen.add(String(incoming.id)); } catch {}
+  try { if (incoming?.id) await applyRulesForIds([String(incoming.id)], { onlyEnabled: true }); } catch {}
 }
 
 async function getDefaultMax(kind: 'subFeed'|'history'): Promise<number> {
@@ -854,6 +928,50 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('groups/create', { name }, { impact: { groups: 1 } });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'rules/list') {
+        const items = await listRulesCfg();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'rules/create') {
+        const { name, groupId, action, channelIds = [], enabled = true } = raw.payload || {};
+        const id = await createRuleCfg({ name, groupId, action, channelIds, enabled });
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'rules' } }); } catch {}
+        recordEvent('rules/create', { id, name, groupId }, { impact: {} });
+        scheduleBackup();
+        sendResponse?.({ ok: true, id });
+      } else if (raw.type === 'rules/update') {
+        const { id, patch } = raw.payload || {};
+        await updateRuleCfg(String(id || ''), patch || {});
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'rules' } }); } catch {}
+        recordEvent('rules/update', { id, patch }, { impact: {} });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'rules/delete') {
+        const { id } = raw.payload || {};
+        await deleteRuleCfg(String(id || ''));
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'rules' } }); } catch {}
+        recordEvent('rules/delete', { id }, { impact: {} });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'rules/runAll') {
+        // Evaluate across all videos (best-effort). Includes those with no fetch tags.
+        const db = await openDB();
+        const ids: string[] = await new Promise((resolve, reject) => {
+          const out: string[] = [];
+          try {
+            const tx = db.transaction('videos', 'readonly');
+            const os = tx.objectStore('videos');
+            const cur = os.openCursor();
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(out); return; }
+              try { const row: any = c.value || {}; if (row?.id) out.push(String(row.id)); } catch {}
+              c.continue();
+            };
+            cur.onerror = () => reject(cur.error);
+          } catch (e) { resolve(out); }
+        });
+        const r = await applyRulesForIds(ids, { onlyEnabled: !!raw.payload?.onlyEnabled });
+        sendResponse?.({ ok: true, ...r });
       } else if (raw.type === 'groups/update') {
         const { id, patch } = raw.payload || {};
         await updateGroup(id, patch);
@@ -1199,10 +1317,12 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/applyYTBatch') {
         const items: any[] = raw.payload?.items || [];
+        const changedIds: string[] = [];
         for (const it of items) {
-          try { await applyYouTubeVideo(it); } catch { /* ignore individual item errors */ }
+          try { await applyYouTubeVideo(it); if (it?.id) changedIds.push(String(it.id)); } catch { /* ignore individual item errors */ }
         }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        try { if (changedIds.length) await applyRulesForIds(changedIds, { onlyEnabled: true }); } catch {}
         scheduleBackup();
         sendResponse?.({ ok: true, count: items.length });
       } else if (raw.type === 'videos/refreshAll') {
@@ -1260,6 +1380,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                 await applyYouTubeVideo(it);
               } catch { /* ignore */ }
             }
+            try { const changedIds = items.map((it: any) => String(it?.id || '')).filter(Boolean); if (changedIds.length) await applyRulesForIds(changedIds, { onlyEnabled: true }); } catch {}
           } catch (e: any) {
             failedBatches += 1;
             const msg = e?.message || String(e);

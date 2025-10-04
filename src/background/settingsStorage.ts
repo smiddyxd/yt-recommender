@@ -1,11 +1,12 @@
 import type { Group as GroupRec, Condition } from '../shared/conditions';
-import type { TagRec, TagGroupRec } from '../types/messages';
+import type { TagRec, TagGroupRec, RuleRec } from '../types/messages';
 
 // Chrome storage keys
 const KEY = {
   tags: 'settings.tags',
   tagGroups: 'settings.tagGroups',
   groups: 'settings.groups',
+  rules: 'settings.rules',
   channelTagsById: 'settings.channelTagsById',
   rev: 'settings.rev',
   updatedAt: 'settings.updatedAt',
@@ -19,6 +20,7 @@ type SettingsBundle = {
   tags: TagRec[];
   tagGroups: TagGroupRec[];
   groups: GroupRec[];
+  rules: RuleRec[];
   channelTagsById: ChannelTagsMap;
   rev: number;
   updatedAt: number;
@@ -35,14 +37,15 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function readAll(): Promise<SettingsBundle> {
-  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
+  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.rules, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
   const tags: TagRec[] = Array.isArray(o[KEY.tags]) ? o[KEY.tags] : [];
   const tagGroups: TagGroupRec[] = Array.isArray(o[KEY.tagGroups]) ? o[KEY.tagGroups] : [];
   const groups: GroupRec[] = Array.isArray(o[KEY.groups]) ? o[KEY.groups] : [];
+  const rules: RuleRec[] = Array.isArray(o[KEY.rules]) ? o[KEY.rules] : [];
   const channelTagsById: ChannelTagsMap = o[KEY.channelTagsById] && typeof o[KEY.channelTagsById] === 'object' ? (o[KEY.channelTagsById] as ChannelTagsMap) : {};
   const rev: number = Number.isFinite(o[KEY.rev]) ? Number(o[KEY.rev]) : 0;
   const updatedAt: number = Number.isFinite(o[KEY.updatedAt]) ? Number(o[KEY.updatedAt]) : 0;
-  return { tags, tagGroups, groups, channelTagsById, rev, updatedAt };
+  return { tags, tagGroups, groups, rules, channelTagsById, rev, updatedAt };
 }
 
 async function writeAll(next: SettingsBundle): Promise<void> {
@@ -50,6 +53,7 @@ async function writeAll(next: SettingsBundle): Promise<void> {
     [KEY.tags]: next.tags,
     [KEY.tagGroups]: next.tagGroups,
     [KEY.groups]: next.groups,
+    [KEY.rules]: next.rules,
     [KEY.channelTagsById]: next.channelTagsById,
     [KEY.rev]: next.rev,
     [KEY.updatedAt]: next.updatedAt,
@@ -216,6 +220,69 @@ export async function listGroupsLocal(): Promise<GroupRec[]> {
   return groups.slice().sort((a,b)=> String(a.name).localeCompare(String(b.name)));
 }
 
+// ---- Rules (local: chrome.storage.local) ----
+export async function listRulesLocal(): Promise<RuleRec[]> {
+  const { rules } = await readAll();
+  // Keep original order; newest last
+  return rules.slice();
+}
+
+export async function createRuleLocal(input: { name: string; groupId: string; action: RuleRec['action']; channelIds?: string[]; enabled?: boolean }): Promise<string> {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const rec: RuleRec = {
+    id,
+    name: (input.name || '').trim() || 'rule',
+    groupId: String(input.groupId || ''),
+    action: input.action,
+    channelIds: Array.isArray(input.channelIds) ? Array.from(new Set(input.channelIds.map(s => String(s || '').trim()).filter(Boolean))) : undefined,
+    enabled: input.enabled !== false,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await withLock(async () => {
+    const cur = await readAll();
+    cur.rules.push(rec);
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+  return id;
+}
+
+export async function updateRuleLocal(id: string, patch: Partial<RuleRec>): Promise<void> {
+  const rid = (id || '').trim(); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const idx = cur.rules.findIndex(r => String(r.id) === rid);
+    if (idx === -1) return;
+    const prev = cur.rules[idx];
+    const next: RuleRec = {
+      ...prev,
+      ...patch,
+      id: prev.id,
+      name: (patch.name ?? prev.name),
+      groupId: (patch.groupId ?? prev.groupId) as string,
+      channelIds: Array.isArray(patch.channelIds) ? Array.from(new Set(patch.channelIds.map(s => String(s || '').trim()).filter(Boolean))) : prev.channelIds,
+      action: (patch.action ? patch.action as any : prev.action),
+      enabled: (patch.enabled ?? prev.enabled),
+      updatedAt: Date.now(),
+    };
+    cur.rules[idx] = next;
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+}
+
+export async function deleteRuleLocal(id: string): Promise<void> {
+  const rid = (id || '').trim(); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    cur.rules = cur.rules.filter(r => String(r.id) !== rid);
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+}
+
 export async function createGroupLocal(name: string, condition: Condition): Promise<string> {
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -294,12 +361,14 @@ export async function writeInitialLocalSettings(payload: Partial<SettingsBundle>
   const tags = Array.isArray(payload.tags) ? payload.tags : [];
   const tagGroups = Array.isArray(payload.tagGroups) ? payload.tagGroups : [];
   const groups = Array.isArray(payload.groups) ? payload.groups : [];
+  const rules = Array.isArray(payload.rules) ? payload.rules : [];
   const channelTagsById = (payload.channelTagsById || {}) as ChannelTagsMap;
   const now = Date.now();
   await chrome.storage.local.set({
     [KEY.tags]: tags,
     [KEY.tagGroups]: tagGroups,
     [KEY.groups]: groups,
+    [KEY.rules]: rules,
     [KEY.channelTagsById]: channelTagsById,
     [KEY.rev]: 1,
     [KEY.updatedAt]: now,
@@ -313,6 +382,7 @@ export async function getSettingsSnapshotForDownload(extra?: Partial<SettingsBun
     tags: cur.tags,
     tagGroups: cur.tagGroups,
     groups: cur.groups,
+    rules: cur.rules,
     channelTagsById: cur.channelTagsById,
     rev: cur.rev,
     updatedAt: cur.updatedAt,

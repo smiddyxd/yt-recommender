@@ -100,6 +100,7 @@ Global Reminder
   - Download settings snapshot locally to the Downloads folder
   - Manual “Backup” button runs the enabled actions immediately
   - Backups modal shows Drive file count and total size, timestamps for last Drive upload, last local download, and last hourly tick.
+  - Rules: stored in `chrome.storage.local.settings.rules`; included in settings backup/restore snapshot.
 - Manifest: adds `downloads` permission for automatic local saves.
 
 
@@ -233,6 +234,7 @@ Global Reminder
   - Tag Groups: `tagGroups/list`, `tagGroups/create`, `tagGroups/rename`, `tagGroups/delete`
   - Tag Groups (update): `tagGroups/update { id, patch }` (supports `parentId`, `color`)
   - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
+  - Rules: `rules/list`, `rules/create { name, groupId, action, channelIds?, enabled? }`, `rules/update { id, patch }`, `rules/delete { id }`, `rules/runAll { onlyEnabled? }`
   - Topics: `topics/list`
 - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`, `channels/pending/delete`
   - Scrape Panel: `scrape/status`, `scrape/stop`, `scrape/resolveIds`, `scrape/subFeed`, `scrape/subscriptionsManager`, `scrape/history`, `scrape/runAll`
@@ -265,6 +267,7 @@ Global Reminder
   - `snapshots/settings-YYYYMMDD-HHMMSS.json` (dynamic checkpoints). Background ensures a baseline snapshot exists after Drive is configured.
   - `events-YYYY-MM.jsonl` (monthly append-only history with a JSON header line).
   - Optional `cutoff.json` markers after "Delete up to here".
+  - Settings content includes: `tags`, `tagGroups`, `groups/presets`, `rules`, `videoIndex`, `channelIndex`, and `pendingChannels`.
 - Dynamic checkpoints: when commit processing weight >= 10,000 or month file size >= 20 MB, background saves a snapshot and resets counters; a daily alarm also saves settings.
 - Event history: call `recordEvent` for meaningful mutations (tag ops, delete/restore, assign group, channel tag ops, etc.) and include an `impact` estimate for snapshot thresholds. Ephemeral pending-channels operations (`pending/upsert`, `pending/resolve`, `pending/delete`) are excluded from version history and do not create events/commits.
 - Commit flush: `queueCommitFlush(3000)` batches events; `finalizeCommitAndFlushIfAny()` runs during backup schedule.
@@ -314,9 +317,10 @@ Global Reminder
   - `scrape` (channels; manual): when applied, the channel is included in the `scrapable channels` default preset.
   - `0`..`10` (videos/channels; manual): Rating tags grouped under the `Rating` tag group (default). These are default tags and are not deletable/renamable.
  - Default tag group (additional): `Rating` — contains rating tags `0`..`10` and is not deletable/renamable.
- - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
+- Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
+ - Rules: A section below Presets lists all rules and provides a creator form with fields: `name`, `preset` (existing Group/Presets), `action` (initially supports tags add/remove), optional `channelIds` (comma/space‑separated), and an `enabled` toggle. Buttons: `Create`, `Run` (apply all enabled rules now). Each rule row shows enable/disable and delete controls.
   - "Fetch video data" calls YouTube API to fetch video metadata.
   - "Fetch channels (unfetched)" fetches channels that were never fetched.
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
@@ -466,7 +470,7 @@ Global Reminder
   - Restore & Apply (dry run/apply) added; pending channels pipeline refined (gated, de-duped, batch resolver); Drive auth made silent by default; backlog replay and "Drive backlog" badge added; history routes and UI extended; selective API-change events logged on refresh.
 
 ## Notes / TODO
-- `rules` store and `rules/*` message types remain stubs; no background routes yet.
+- Rules: first-pass implemented (local storage `settings.rules`, background routes, Options Rules section). Engine currently supports tag add/remove actions on preset matches; additional actions can be added next.
 - Consider optional "visible folder" backup mode (Drive `drive.file`) if needed later; current implementation targets appData only.
 
 ## Update Inbox

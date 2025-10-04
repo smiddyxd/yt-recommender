@@ -1,7 +1,8 @@
 ﻿// src/ui/options/components/Sidebar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
-import type { TagRec, TagGroupRec } from '../../../types/messages';
+import type { TagRec, TagGroupRec, RuleRec } from '../../../types/messages';
+import { send as sendBg } from '../../lib/messaging';
 
 // NOTE: "Groups" are called "Presets" in the UI. Keep this comment forever.
 // The underlying storage/type is still named Group for compatibility.
@@ -333,16 +334,8 @@ export default function Sidebar(props: Props) {
           </div>
         </div>
 
-        {mode === 'manager' && (
-          <div className="side-section">
-            <div className="side-title">Coming up</div>
-            <ul className="side-list">
-              <li>Tags</li>
-              <li>Rules</li>
-              <li>Presets</li>
-            </ul>
-          </div>
-        )}
+        {/* Rules section (below Presets) */}
+        <RulesSection tags={tags} groups={groups} />
 
         {mode === 'manager' && (
           <div className="side-section">
@@ -364,6 +357,116 @@ export default function Sidebar(props: Props) {
         )}
         </div>
       </aside>
+  );
+}
+
+// ---- Rules UI ----
+function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) {
+  const [rules, setRules] = React.useState<RuleRec[]>([]);
+  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true });
+
+  const load = React.useCallback(async () => {
+    try { const r: any = await sendBg('rules/list', {} as any); setRules(Array.isArray(r?.items) ? r.items as RuleRec[] : []); } catch { setRules([]); }
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    const h = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'rules') load(); };
+    chrome.runtime.onMessage.addListener(h);
+    return () => chrome.runtime.onMessage.removeListener(h);
+  }, [load]);
+
+  const allTagNames = React.useMemo(() => (tags || []).map(t => String(t.name)).filter(Boolean), [tags]);
+
+  function addTo(list: 'add'|'remove', name: string) {
+    if (!name) return;
+    setCreating(prev => ({ ...prev, [list]: Array.from(new Set([...(prev as any)[list], name])) } as any));
+  }
+  function removeFrom(list: 'add'|'remove', name: string) {
+    setCreating(prev => ({ ...prev, [list]: (prev as any)[list].filter((t: string) => t !== name) } as any));
+  }
+
+  async function onCreate() {
+    const name = creating.name.trim();
+    const groupId = creating.groupId.trim();
+    if (!name || !groupId) return;
+    const channelIds = creating.channelsText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+    const action = { kind: 'tags', add: creating.add, remove: creating.remove } as const;
+    const r: any = await sendBg('rules/create', { name, groupId, action, channelIds, enabled: creating.enabled } as any);
+    if (r?.ok) {
+      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true });
+      load();
+    }
+  }
+  async function onToggle(rule: RuleRec, next: boolean) {
+    await sendBg('rules/update', { id: rule.id, patch: { enabled: !!next } });
+  }
+  async function onDelete(rule: RuleRec) {
+    if (!confirm(`Delete rule "${rule.name}"?`)) return;
+    await sendBg('rules/delete', { id: rule.id } as any);
+  }
+  async function runAll() {
+    await sendBg('rules/runAll', { onlyEnabled: true } as any);
+  }
+
+  return (
+    <div className="side-section">
+      <div className="side-title" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span>Rules</span>
+        <button className="btn-ghost" title="Run all enabled rules now" onClick={runAll}>Run</button>
+      </div>
+      {/* Creator */}
+      <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <input className="side-input" style={{ flex: 1 }} placeholder="Rule name" value={creating.name} onChange={(e)=> setCreating(p=> ({ ...p, name: e.currentTarget.value }))} />
+        <select className="side-input" value={creating.groupId} onChange={(e)=> setCreating(p=> ({ ...p, groupId: e.currentTarget.value }))}>
+          <option value="">— preset —</option>
+          {groups.map(g => (<option key={g.id} value={g.id}>{g.name}</option>))}
+        </select>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={creating.enabled} onChange={(e)=> setCreating(p=> ({ ...p, enabled: e.currentTarget.checked }))} />
+          enabled
+        </label>
+      </div>
+      <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
+        <span className="muted" style={{ width: 60 }}>Add</span>
+        <select className="side-input" value="" onChange={(e) => { const v = e.currentTarget.value; (e.currentTarget as HTMLSelectElement).value=''; if (v) addTo('add', v); }}>
+          <option value="">+ tag</option>
+          {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
+        </select>
+        <span className="muted" style={{ width: 60 }}>Remove</span>
+        <select className="side-input" value="" onChange={(e) => { const v = e.currentTarget.value; (e.currentTarget as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
+          <option value="">- tag</option>
+          {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
+        </select>
+      </div>
+      {(creating.add.length > 0 || creating.remove.length > 0) && (
+        <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
+          {creating.add.map(n => (
+            <span key={`+${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('add', n)}>+{n}</span>
+          ))}
+          {creating.remove.map(n => (
+            <span key={`-${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('remove', n)}>-{n}</span>
+          ))}
+        </div>
+      )}
+      <div className="side-row" style={{ gap: 6 }}>
+        <input className="side-input" style={{ flex: 1 }} placeholder="Channel IDs (optional, comma/space-separated)" value={creating.channelsText} onChange={(e)=> setCreating(p=> ({ ...p, channelsText: e.currentTarget.value }))} />
+        <button className="btn-ghost" disabled={!creating.name.trim() || !creating.groupId} onClick={onCreate}>Create</button>
+      </div>
+      {/* List */}
+      <div className="group-list">
+        {rules.length === 0 && <div className="muted">No rules yet.</div>}
+        {rules.map(r => {
+          const preset = groups.find(g => g.id === r.groupId);
+          return (
+            <div className="group-row" key={r.id}>
+              <button className="side-btn" title={preset ? `Preset: ${preset.name}` : 'Preset not found'}>{r.name}</button>
+              <button className="btn-ghost" aria-pressed={r.enabled !== false} title="Enable/disable rule" onClick={() => onToggle(r, (r.enabled === false))}>E</button>
+              <button className="btn-ghost" onClick={() => onDelete(r)}>x</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
