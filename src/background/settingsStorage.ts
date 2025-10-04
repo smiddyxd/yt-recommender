@@ -197,6 +197,20 @@ export async function deleteTagGroupLocal(id: string): Promise<void> {
   });
 }
 
+export async function updateTagGroupLocal(id: string, patch: Partial<TagGroupRec>): Promise<void> {
+  const gid = (id || '').trim();
+  if (!gid || !patch || typeof patch !== 'object') return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const idx = cur.tagGroups.findIndex(g => String(g.id) === gid);
+    if (idx === -1) return;
+    const next = { ...cur.tagGroups[idx], ...patch, id: gid } as TagGroupRec;
+    cur.tagGroups[idx] = next;
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+}
+
 export async function listGroupsLocal(): Promise<GroupRec[]> {
   const { groups } = await readAll();
   return groups.slice().sort((a,b)=> String(a.name).localeCompare(String(b.name)));
@@ -305,4 +319,3 @@ export async function getSettingsSnapshotForDownload(extra?: Partial<SettingsBun
     ...(extra || {}),
   } as SettingsBundle;
 }
-

@@ -1,7 +1,7 @@
 ﻿// src/ui/options/components/Sidebar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
-import type { TagRec } from '../../../types/messages';
+import type { TagRec, TagGroupRec } from '../../../types/messages';
 
 // NOTE: "Groups" are called "Presets" in the UI. Keep this comment forever.
 // The underlying storage/type is still named Group for compatibility.
@@ -17,10 +17,11 @@ type Props = {
   commitRename: ()=>void;
   addTag: ()=>void;
   removeTag: (name:string)=>void;
-  tagGroups: Array<{ id: string; name: string }>;
+  tagGroups: TagGroupRec[];
   onCreateTagGroup: (name: string)=>void;
   onRenameTagGroup: (id: string, name: string)=>void;
   onDeleteTagGroup: (id: string)=>void;
+  onUpdateTagGroup?: (id: string, patch: Partial<TagGroupRec>)=>void;
   onAssignTagToGroup: (tagName: string, groupId: string | null)=>void;
   // One-time import: channel tags JSON
   importing?: boolean;
@@ -58,6 +59,7 @@ export default function Sidebar(props: Props) {
   onCreateTagGroup,
   onRenameTagGroup,
   onDeleteTagGroup,
+  onUpdateTagGroup,
   onAssignTagToGroup,
   importing,
   importMessage,
@@ -207,8 +209,13 @@ export default function Sidebar(props: Props) {
               </div>
               <div className="group-list">
                 {visibleTagGroups.length === 0 && <div className="muted">No groups yet.</div>}
-                {visibleTagGroups.map(g => (
-                  <div className="group-row" key={g.id}>
+                {visibleTagGroups.map(g => {
+                  const isParent = !g.parentId;
+                  const parentOptions = (tagGroups || []).filter(pg => (!pg.parentId) && pg.id !== g.id);
+                  const parentTitle = 'Assign parent tag group (select "parent" to make this a parent)';
+                  const color = (g.color && /^#?[0-9a-fA-F]{6}$/.test(g.color)) ? (g.color.startsWith('#') ? g.color : `#${g.color}`) : undefined;
+                  return (
+                  <div className="group-row" key={g.id} style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap' }}>
                     {editingGroupId === g.id ? (
                       <>
                         <input className="side-input" value={groupEditName} onChange={(e)=> setGroupEditName(e.target.value)} onKeyDown={(e)=>{ if(e.key==='Enter'){ onRenameTagGroup(g.id, groupEditName.trim()); setEditingGroupId(null); setGroupEditName(''); } if(e.key==='Escape'){ setEditingGroupId(null); setGroupEditName(''); } }} autoFocus />
@@ -218,12 +225,33 @@ export default function Sidebar(props: Props) {
                     ) : (
                       <>
                         <span className="tag-name">{g.name}</span>
-                        <button className="btn-ghost" onClick={()=>{ setEditingGroupId(g.id); setGroupEditName(g.name); }} disabled={g.id === 'tagGroup.default'}>Rename</button>
-                        <button className="btn-ghost" onClick={()=> onDeleteTagGroup(g.id)} disabled={g.id === 'tagGroup.default'}>Delete</button>
+                        {/* Parent selector */}
+                        <select
+                          className="side-input"
+                          title={parentTitle}
+                          value={isParent ? '' : (g.parentId as string)}
+                          onChange={(e) => onUpdateTagGroup?.(g.id, { parentId: e.currentTarget.value ? e.currentTarget.value : null })}
+                          style={{ minWidth: 110 }}
+                        >
+                          <option value="">parent</option>
+                          {parentOptions.map(pg => (
+                            <option key={pg.id} value={pg.id}>{pg.name}</option>
+                          ))}
+                        </select>
+                        {/* Color picker */}
+                        <input
+                          type="color"
+                          title="Tag group color"
+                          value={color || '#888888'}
+                          onChange={(e) => onUpdateTagGroup?.(g.id, { color: e.currentTarget.value })}
+                          style={{ width: 23, height: 26, padding: 0, border: '1px solid var(--border)', background: '#111' }}
+                        />
+                        <button className="btn-ghost" onClick={()=>{ setEditingGroupId(g.id); setGroupEditName(g.name); }} disabled={g.id === 'tagGroup.default'} style={{ width: 22, height: 22, lineHeight: '20px', padding: 0 }}>R</button>
+                        <button className="btn-ghost" onClick={()=> onDeleteTagGroup(g.id)} disabled={g.id === 'tagGroup.default'} style={{ width: 22, height: 22, lineHeight: '20px', padding: 0 }}>x</button>
                       </>
                     )}
                   </div>
-                ))}
+                ); })}
               </div>
             </>
           )}

@@ -62,6 +62,7 @@ export type Msg =
   | { type: 'tagGroups/create'; payload: { name: string } }
   | { type: 'tagGroups/rename'; payload: { id: string; name: string } }
   | { type: 'tagGroups/delete'; payload: { id: string } }
+  | { type: 'tagGroups/update'; payload: { id: string; patch: Partial<TagGroupRec> } }
   // META
   | { type: 'topics/list'; payload: {} }
   // RULES (stubs for next step)
@@ -113,6 +114,6 @@ export interface VideoSeed {
 export type ChannelUpsertStubMsg = { type: 'channels/upsertStub'; payload: { id: string; name?: string | null; handle?: string | null } };
 
 export interface TagRec { name: string; color?: string; createdAt?: number; groupId?: string | null }
-export interface TagGroupRec { id: string; name: string; createdAt?: number }
+export interface TagGroupRec { id: string; name: string; createdAt?: number; color?: string; parentId?: string | null }
 
 

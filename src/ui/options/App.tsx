@@ -8,6 +8,7 @@ import { getAll as idbGetAll } from '../lib/idb';
 import { send as sendBg } from '../lib/messaging';
 import type { TagRec, TagGroupRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
+import { toHex6, darken, textColorBW } from '../lib/colors';
 import VideoList from './components/VideoList';
 import BackupModal from './components/BackupModal';
 import HistoryModal from './components/HistoryModal';
@@ -1149,6 +1150,10 @@ const channelsFiltered = useMemo(() => {
     loadTagGroups();
     loadTags(); // tags changed group binding
   }
+  async function updateTagGroup(id: string, patch: Partial<TagGroupRec>) {
+    await sendBg('tagGroups/update', { id, patch } as any);
+    loadTagGroups();
+  }
   async function assignTagToGroup(tagName: string, groupId: string | null) {
     await sendBg('tags/assignGroup', { name: tagName, groupId });
     loadTags();
@@ -1175,6 +1180,7 @@ const channelsFiltered = useMemo(() => {
   onCreateTagGroup={createTagGroup}
   onRenameTagGroup={renameTagGroup}
   onDeleteTagGroup={deleteTagGroup}
+  onUpdateTagGroup={updateTagGroup}
   onAssignTagToGroup={assignTagToGroup}
   groups={groups}
   startEditFromGroup={startEditFromGroup}
@@ -1442,41 +1448,98 @@ const channelsFiltered = useMemo(() => {
               </div>
             )}
             <span style={{ marginRight: 8 }}>Apply tag:</span>
-            {/* Grouped dropdowns */}
-            {Array.from(tagsByGroup.grouped.entries()).map(([gid, names]) => {
-              const grp = gid ? tagsByGroup.byId.get(gid) : null;
-              const title = grp ? grp.name : 'Ungrouped';
-              if (names.length === 0) return null;
-              return (
-                <details key={gid || 'ungrouped'} className="tag-dropdown">
-                  <summary>{title}</summary>
-                  <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
-                    {names.map(tag => {
-                      const nm = String(tag || '').toLowerCase();
-                      // Hide non-manual system defaults from tagger
-                      if (nm === 'subscribed' || nm === 'unsubscribed') return null;
-                      // Hide channel-only defaults in video context
-                      if (!inChannels && (nm === 'scrape' || nm === 'tagged')) return null;
-                      const haveAll = inChannels
-                        ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0)
-                        : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);
-                      return (
-                        <button
-                          key={tag}
-                          type="button"
-                          className="btn-ghost"
-                          onClick={() => applyTagToSelection(tag)}
-                          style={{ background: haveAll ? '#203040' : undefined }}
-                          title={haveAll ? 'Remove from all selected' : 'Add to all selected'}
-                        >
-                          {tag}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </details>
-              );
-            })}
+            {/* Grouped by parent and nested tag groups */}
+            {(() => {
+              // Build parent -> child -> tags structure
+              const groupById = new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
+              const parentBuckets = new Map<string, Map<string, string[]>>(); // parentId('' for none) -> childId('' if none) -> tags
+              for (const t of tags) {
+                const gid = (t.groupId || '') as string;
+                if (!gid || !groupById.has(gid)) {
+                  const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
+                  const cList = pMap.get('') || (pMap.set('', []), pMap.get('')!);
+                  cList.push(t.name);
+                  continue;
+                }
+                const g = groupById.get(gid)!;
+                const parentId = g.parentId ? String(g.parentId) : String(g.id);
+                const childKey = g.parentId ? String(g.id) : '';
+                const pMap = parentBuckets.get(parentId) || (parentBuckets.set(parentId, new Map()), parentBuckets.get(parentId)!);
+                const list = pMap.get(childKey) || (pMap.set(childKey, []), pMap.get(childKey)!);
+                list.push(t.name);
+              }
+              // Order parents: ungrouped first, then by name
+              const parentEntries = Array.from(parentBuckets.entries()).sort((a,b) => {
+                if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+                const an = a[0] ? (groupById.get(a[0])?.name || '') : 'Ungrouped';
+                const bn = b[0] ? (groupById.get(b[0])?.name || '') : 'Ungrouped';
+                return an.localeCompare(bn);
+              });
+              const numCmp = (a: string, b: string) => {
+                const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN; const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+                const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+                if (aNum && bNum) return ai - bi; if (aNum && !bNum) return -1; if (!aNum && bNum) return 1; return a.localeCompare(b);
+              };
+              return parentEntries.map(([parentId, childMap]) => {
+                const parent = parentId ? groupById.get(parentId) : null;
+                const parentTitle = parent ? parent.name : 'Ungrouped';
+                const parentBg = parent?.color ? toHex6(parent.color) : null;
+                const parentFg = textColorBW(parentBg || undefined);
+                // Sort child buckets: '' first (no nested), then by nested name
+                const childEntries = Array.from(childMap.entries()).sort((a,b) => {
+                  if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+                  const an = a[0] ? (groupById.get(a[0])?.name || '') : '';
+                  const bn = b[0] ? (groupById.get(b[0])?.name || '') : '';
+                  return an.localeCompare(bn);
+                });
+                return (
+                  <details key={parentId || 'ungrouped'} className="tag-dropdown">
+                    <summary style={{ background: parentBg || undefined, color: parentFg, paddingInline: 6, border: parentBg ? `1px solid ${darken(parentBg, 0.25)}` : undefined }}>
+                      {parentTitle}
+                    </summary>
+                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                      {childEntries.map(([childId, names]) => {
+                        // Sort names inside child; rating numeric ordering if Rating group or nested under Rating parent
+                        const parentIsRating = parentId && ((groupById.get(parentId)?.name || '').trim().toLowerCase() === 'rating' || parentId === 'tagGroup.rating');
+                        const childIsRating = childId && ((groupById.get(childId)?.name || '').trim().toLowerCase() === 'rating' || childId === 'tagGroup.rating');
+                        const isRating = parentIsRating || childIsRating;
+                        names.sort((a,b)=> isRating ? numCmp(a,b) : a.localeCompare(b));
+                        const childColor = childId ? (groupById.get(childId)?.color ? toHex6(groupById.get(childId)!.color) : null) : null;
+                        return (
+                          <div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {names.map(tag => {
+                              const nm = String(tag || '').toLowerCase();
+                              if (nm === 'subscribed' || nm === 'unsubscribed') return null;
+                              if (!inChannels && (nm === 'scrape' || nm === 'tagged')) return null;
+                              const haveAll = inChannels
+                                ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0)
+                                : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);
+                              const bg = childColor || undefined; const fg = textColorBW(bg); const br = bg ? darken(bg, 0.25) : undefined;
+                              return (
+                                <button
+                                  key={tag}
+                                  type="button"
+                                  className="btn-ghost"
+                                  onClick={() => applyTagToSelection(tag)}
+                                  style={{
+                                    background: bg || (haveAll ? '#203040' : undefined),
+                                    color: fg,
+                                    border: bg ? `1px solid ${br}` : undefined,
+                                  }}
+                                  title={haveAll ? 'Remove from all selected' : 'Add to all selected'}
+                                >
+                                  {tag}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                );
+              });
+            })()}
             {availableTags.length === 0 && (
               <span className="muted">No tags yet. Add tags in the sidebar.</span>
             )}
@@ -1623,7 +1686,18 @@ const channelsFiltered = useMemo(() => {
           </strong>
           <span className="muted" style={{ fontSize: 12 }}>{ch.subs ? `${ch.subs.toLocaleString()} subscribers` : ''}</span>
           {Array.isArray((ch as any).tags) && (ch as any).tags.length > 0 && (
-            <span className="badge">{(ch as any).tags.join(', ')}</span>
+            <span className="badges">
+              {((ch as any).tags as string[]).map((t) => {
+                const rec = tags.find(x => x.name === t);
+                const gid = (rec?.groupId || '') as string;
+                const grp = gid ? tagGroups.find(g => g.id === gid) : undefined;
+                const parent = grp ? (grp.parentId ? tagGroups.find(g => g.id === grp.parentId) || grp : grp) : undefined;
+                const bg = parent?.color ? toHex6(parent.color) : null;
+                const fg = textColorBW(bg || undefined);
+                const br = bg ? darken(bg, 0.25) : undefined;
+                return <span key={t} className="badge" style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}` : undefined }}>{t}</span>;
+              })}
+            </span>
           )}
           {Array.isArray((ch as any).videoTags) && (ch as any).videoTags.length > 0 && (
             <span className="badge">Video tags: {(ch as any).videoTags.join(', ')}</span>
@@ -1657,6 +1731,8 @@ const channelsFiltered = useMemo(() => {
     loading={loading}
     selected={selected}
     onToggle={toggleSelect}
+    tagGroups={tagGroups}
+    tagsRegistry={tags}
   />
 )}
 

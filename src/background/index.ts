@@ -2,7 +2,7 @@
 import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
-import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload } from './settingsStorage';
+import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload } from './settingsStorage';
 import { matches, type Group as GroupRec } from '../shared/conditions';
 import { registerSettingsProducer, saveSettingsNow, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
 import { recordEvent, finalizeCommitAndFlushIfAny, listCommits as listHistoryCommits, getCommitEvents as getHistoryCommitEvents, getCommit as getHistoryCommit, queueCommitFlush, purgeHistoryUpToTs, replayUnsyncedCommitsToDrive } from './events';
@@ -997,6 +997,15 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('tagGroups/rename', { id: String(raw.payload?.id || ''), name: String(raw.payload?.name || '') }, { impact: {} });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'tagGroups/update') {
+        const id = String(raw.payload?.id || '');
+        if (!id) { sendResponse?.({ ok: false, error: 'Missing id' }); return; }
+        const patch = (raw.payload?.patch || {}) as any;
+        await updateTagGroup(id, patch);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tagGroups' } });
+        recordEvent('tagGroups/update', { id, patch }, { impact: {} });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
       } else if (raw.type === 'tagGroups/delete') {
         const id = String(raw.payload?.id || '');
         if (id === DEFAULT_TAG_GROUP_ID) { sendResponse?.({ ok: false, error: 'Default tag group cannot be deleted' }); return; }
@@ -1774,6 +1783,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               else if (k === 'tags/assignGroup') { const name=String(p?.name||''); const gid = (p?.groupId ?? null) as (string|null); const t = tagByName.get(name); if (t) { t.groupId = gid || undefined; } }
               else if (k === 'tagGroups/create') { const id=String(p?.id||''); const name=String(p?.name||''); if (id && name && !tgById.has(id)) { const rec:any={ id, name, createdAt: Date.now() }; (result.tagGroups||(result.tagGroups=[])).push(rec); tgById.set(id, rec); } }
               else if (k === 'tagGroups/rename') { const id=String(p?.id||''); const name=String(p?.name||''); const g=tgById.get(id); if (g) g.name=name; }
+              else if (k === 'tagGroups/update') { const id=String(p?.id||''); const patch=p?.patch||{}; const g=tgById.get(id); if (g) Object.assign(g, patch); }
               else if (k === 'tagGroups/delete') { const id=String(p?.id||''); if (id) { (result.tagGroups||[]).splice((result.tagGroups||[]).findIndex(g=>g.id===id),1); tgById.delete(id); (result.tags||[]).forEach(t=>{ if ((t as any).groupId===id) delete (t as any).groupId; }); } }
               else if (k === 'groups/create') { const id=String(p?.id||''); if (id && !groupsById.has(id)) { const rec:any={ id, name: p?.name||id, condition: p?.condition, createdAt: Date.now(), updatedAt: Date.now(), scrape: !!p?.scrape }; (result.groups||(result.groups=[])).push(rec); groupsById.set(id, rec); } }
               else if (k === 'groups/update') { const id=String(p?.id||''); const g=groupsById.get(id); if (g) { const patch=p?.patch||{}; Object.assign(g, patch, { updatedAt: Date.now() }); } }

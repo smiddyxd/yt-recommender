@@ -1,7 +1,9 @@
 // src/ui/options/components/VideoList.tsx
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { fmtDate, secToClock, thumbUrl, watchUrl } from '../../lib/format';
 import { getOne as idbGetOne } from '../../lib/idb';
+import type { TagGroupRec, TagRec } from '../../../types/messages';
+import { toHex6, darken, textColorBW } from '../../lib/colors';
 
 type Video = {
   id: string;
@@ -21,11 +23,24 @@ type Props = {
   loading: boolean;
   selected: Set<string>;
   onToggle: (id: string)=>void;
+  tagGroups?: TagGroupRec[];
+  tagsRegistry?: TagRec[];
 };
 
-export default function VideoList({ items, layout, loading, selected, onToggle }: Props) {
+export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [] }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
   const [fullData, setFullData] = useState<Record<string, any>>({});
+  const groupById = useMemo(() => new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec])), [tagGroups]);
+  const tagReg = useMemo(() => new Map<string, TagRec>(tagsRegistry.map(t => [t.name, t] as [string, TagRec])), [tagsRegistry]);
+  const getParentColor = (tag: string): { bg?: string; fg?: string; br?: string } => {
+    const t = tagReg.get(tag);
+    const gid = (t?.groupId || '') as string;
+    const g = gid ? groupById.get(gid) : undefined;
+    const parent = g ? (g.parentId ? groupById.get(String(g.parentId)) || g : g) : undefined;
+    const bg = parent?.color ? toHex6(parent.color) : null;
+    if (!bg) return {};
+    return { bg, fg: textColorBW(bg || undefined), br: darken(bg, 0.25) } as any;
+  };
   const toggleDebug = (id: string) => {
     setOpenDebug(prev => {
       const next = new Set(prev);
@@ -96,7 +111,16 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
               <div className="badges">
                 {v.flags?.started && <span className="badge">started</span>}
                 {v.flags?.completed && <span className="badge">completed</span>}
-                {v.tags && v.tags.length > 0 && <span className="badge">{v.tags.join(', ')}</span>}
+                {Array.isArray(v.tags) && v.tags.length > 0 && (
+                  <>
+                    {v.tags.map(tag => {
+                      const c = getParentColor(tag);
+                      return (
+                        <span key={tag} className="badge" style={{ background: c.bg, color: c.fg, border: c.br ? `1px solid ${c.br}` : undefined }}>{tag}</span>
+                      );
+                    })}
+                  </>
+                )}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
                 <button
@@ -128,4 +152,3 @@ export default function VideoList({ items, layout, loading, selected, onToggle }
     </main>
   );
 }
-

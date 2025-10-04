@@ -4,6 +4,7 @@ import type { TagRec, TagGroupRec } from '../../../types/messages';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { FilterEntry, FilterNode, DurationUI } from '../lib/filters';
 import { VIDEO_CATEGORIES } from '../lib/videoCategories';
+import { toHex6, darken, textColorBW } from '../../lib/colors';
 export type ChannelOption = { id: string; name: string };
 type TagOption = { name: string; count: number };
 type SourceOption = { type: string; id: string | null; count: number };
@@ -749,36 +750,39 @@ export default function FiltersBar({
           }));
           const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && (e.pred.kind==='c_tags_any' || e.pred.kind==='c_tags_all' || e.pred.kind==='c_tags_none') ? { ...e, pred: { ...e.pred, tagsCsv: '' } } : e));
           const all = Array.isArray(channelTagOptions) ? channelTagOptions : [];
-          // Group options by tagGroups using tagsRegistry's groupId
+          // Build parent -> child -> TagOption[]
           const tg = Array.isArray(tagGroups) ? tagGroups : [];
           const byId = new Map<string, TagGroupRec>(tg.map(g => [g.id, g] as [string, TagGroupRec]));
           const reg = new Map<string, TagRec>((Array.isArray(tagsRegistry) ? tagsRegistry : []).map(t => [t.name, t] as [string, TagRec]));
-          const grouped = new Map<string, TagOption[]>(); // key: groupId or ''
+          const parentBuckets = new Map<string, Map<string, TagOption[]>>();
           for (const opt of all) {
             const rec = reg.get(opt.name);
-            const key = (rec?.groupId && byId.has(String(rec.groupId))) ? String(rec!.groupId) : '';
-            const arr = grouped.get(key) || (grouped.set(key, []), grouped.get(key)!);
-            arr.push(opt);
+            const gid = (rec?.groupId || '') as string;
+            if (!gid || !byId.has(gid)) {
+              const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
+              const list = pMap.get('') || (pMap.set('', []), pMap.get('')!);
+              list.push(opt);
+              continue;
+            }
+            const g = byId.get(gid)!;
+            const pid = g.parentId ? String(g.parentId) : String(g.id);
+            const cid = g.parentId ? String(g.id) : '';
+            const pMap = parentBuckets.get(pid) || (parentBuckets.set(pid, new Map()), parentBuckets.get(pid)!);
+            const list = pMap.get(cid) || (pMap.set(cid, []), pMap.get(cid)!);
+            list.push(opt);
           }
-          const entries = Array.from(grouped.entries()).sort((a,b) => {
-            if (a[0] === '' && b[0] !== '') return -1;
-            if (a[0] !== '' && b[0] === '') return 1;
+          const entries = Array.from(parentBuckets.entries()).sort((a,b)=>{
+            if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
             const an = a[0] ? (byId.get(a[0])?.name || '') : 'Ungrouped';
             const bn = b[0] ? (byId.get(b[0])?.name || '') : 'Ungrouped';
             return an.localeCompare(bn);
           });
-          for (const [gid, arr] of entries) {
-            const isRating = gid && ((byId.get(gid)?.name || '').trim().toLowerCase() === 'rating' || gid === 'tagGroup.rating');
-            const numCmp = (a: string, b: string) => {
-              const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
-              const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
-              const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
-              if (aNum && bNum) return ai - bi;
-              if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
-              return a.localeCompare(b);
-            };
-            arr.sort((a,b)=> isRating ? numCmp(a.name, b.name) : a.name.localeCompare(b.name));
-          }
+          const numCmp = (a: string, b: string) => {
+            const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
+            const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+            const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+            if (aNum && bNum) return ai - bi; if (aNum && !bNum) return -1; if (!aNum && bNum) return 1; return a.localeCompare(b);
+          };
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -796,19 +800,45 @@ export default function FiltersBar({
                 </div>
                 {all.length > 0 ? (
                   <div className="chip-list" style={{ display: 'grid', gap: 6 }}>
-                    {entries.map(([gid, list]) => (
-                      <details key={gid || 'ungrouped'}>
-                        <summary>{gid ? (byId.get(gid)?.name || gid) : 'Ungrouped'}</summary>
-                        <div className="chip-list" style={{ paddingTop: 6 }}>
-                          {list.map(opt => (
-                            <label key={opt.name} className="chip-check">
-                              <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
-                              <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </details>
-                    ))}
+                    {entries.map(([pid, cmap]) => {
+                      const p = pid ? byId.get(pid) : null;
+                      const pBg = p?.color ? toHex6(p.color) : null;
+                      const pFg = textColorBW(pBg || undefined); const pBr = pBg ? darken(pBg, 0.25) : undefined;
+                      const childEntries = Array.from(cmap.entries()).sort((a,b)=>{
+                        if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+                        const an = a[0] ? (byId.get(a[0])?.name || '') : '';
+                        const bn = b[0] ? (byId.get(b[0])?.name || '') : '';
+                        return an.localeCompare(bn);
+                      });
+                      // sort names inside each child group (numeric for rating)
+                      for (const [cid, list] of childEntries) {
+                        const parentIsRating = pid && ((byId.get(pid)?.name || '').trim().toLowerCase() === 'rating' || pid === 'tagGroup.rating');
+                        const childIsRating = cid && ((byId.get(cid)?.name || '').trim().toLowerCase() === 'rating' || cid === 'tagGroup.rating');
+                        const isRating = parentIsRating || childIsRating;
+                        list.sort((a,b)=> isRating ? numCmp(a.name, b.name) : a.name.localeCompare(b.name));
+                      }
+                      return (
+                        <details key={pid || 'ungrouped'}>
+                          <summary style={{ background: pBg || undefined, color: pFg, border: pBr ? `1px solid ${pBr}` : undefined }}>{p ? p.name : 'Ungrouped'}</summary>
+                          <div className="chip-list" style={{ paddingTop: 6 }}>
+                            {childEntries.map(([cid, list]) => {
+                              const cBg = cid ? (byId.get(cid)?.color ? toHex6(byId.get(cid)!.color!) : null) : null;
+                              const cFg = textColorBW(cBg || undefined); const cBr = cBg ? darken(cBg, 0.25) : undefined;
+                              return (
+                                <div key={cid || 'none'}>
+                                  {list.map(opt => (
+                                    <label key={opt.name} className="chip-check" style={{ background: cBg || undefined, color: cFg, border: cBr ? `1px solid ${cBr}` : undefined }}>
+                                      <input type="checkbox" checked={selected.has(opt.name)} onChange={() => toggle(opt.name)} />
+                                      <span>{opt.name}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </details>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="muted">No tags yet. Add tags in the sidebar.</div>

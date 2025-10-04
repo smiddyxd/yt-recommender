@@ -64,7 +64,7 @@ Pre-Edit Checklist
 Global Reminder
 - Treat AGENTS.md as canonical. Always favor minimal, surgical edits. If in doubt, stop and ask.
 
-**Verified As Of:** 2025-09-29
+**Verified As Of:** 2025-10-04
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -231,6 +231,7 @@ Global Reminder
   - Trash purge: `videos/purge` (delete permanently from videos trash), `channels/purge` (delete permanently from channels trash)
   - Tags: `tags/list`, `tags/create`, `tags/rename`, `tags/delete`, `tags/assignGroup`
   - Tag Groups: `tagGroups/list`, `tagGroups/create`, `tagGroups/rename`, `tagGroups/delete`
+  - Tag Groups (update): `tagGroups/update { id, patch }` (supports `parentId`, `color`)
   - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
   - Topics: `topics/list`
 - Pending (debug): `channels/upsertPending`, `channels/resolvePending`, `channels/pending/list`, `channels/pending/resolveBatch`, `channels/pending/delete`
@@ -316,6 +317,9 @@ Global Reminder
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
   - Images: the Options UI uses lowest-resolution thumbnails/avatars for efficiency.
 - Sidebar: Tag CRUD, Tag Groups CRUD, assign tags to groups; tag pickers grouped by Tag Group.
+  - Tag Groups: one-level nesting via parent selector ("parent" makes a group a parent); each row includes a 26px color picker. Rename (R) and delete (x) mirror tag controls.
+- Tagger (top bar): groups are shown per parent tag group. Parent headers use the parent color with opposite text; tag buttons inherit the nested tag group color (if set). Within a parent, nested groups are ordered alphabetically, then tags inside each nested group are sorted (numeric for Rating).
+- Video/Channel list badges: each applied tag renders as a mini-badge colored by its parent tag group (background + darker 1px border, opposite text color).
 - Bulk actions: selection + bulk tagging; delete/restore; wipe duplicate sources.
   - Backup/History: Version History modal lists commits with sizes/weights, shows Drive usage, can download a commit (UTF-8 base64), download a bundle up to a commit (zip, UTF-8 base64 parts), delete up to a commit (commit-bounded). "Revert to here" and "Snapshot now" buttons added. Delete-up-to preflight warns if no baseline snapshot exists before the target commit.
   - Version History modal header also includes:
@@ -328,6 +332,7 @@ Global Reminder
 ## Popup Highlights
 - Shows current page context (watch/channel/other); "Scrape current page"; toggle "Auto-capture stubs on watch pages".
 - Tag current video/channel using grouped tag pickers; non-manual default tags are hidden. Applying any channel tag auto-applies the `tagged` default tag.
+ - Parent/nested tag group presentation mirrors Options: parent headers use parent color; tag buttons use nested group colors.
 
 ## Core Invariants
 - Background is the only writer to IndexedDB; UI and content scripts perform read-only transactions and close DB connections after `oncomplete`.
@@ -466,3 +471,11 @@ Use this section as an "inbox" for future patch notes. After integrating updates
 - Original preface line: "tell me when you're ready to work on my project, here's my project_ovierview.md:" (removed to keep this doc focused on actionable project context).
 
 
+### Recent Changes (2025-10-04)
+- Tag Groups: add one-level nesting and colors.
+  - Sidebar: each tag group row includes a parent selector (option "parent" makes a group a parent) and a native color picker (26px width). Buttons mirror tag buttons: rename=R, delete=x.
+  - Messaging: new `tagGroups/update { id, patch }` route to set `parentId` and `color`.
+  - Options Tagger (top bar): tags are grouped under parent tag groups; within each parent, tags are ordered by nested tag group (alphabetically) and then by tag (numeric for Rating). Parent `<summary>` uses the parent group color; tag buttons use their nested group color; text uses the exact opposite color; borders use a darker shade.
+  - Video/Channel views: tag badges use their parent tag group color as background, darker 1px border, and opposite text color.
+  - Popup: mirrors the Options Tagger grouping and colors (parent summaries colored; buttons use nested group colors).
+  - Filters: tag filter chips group by parent -> nested tag group; parent summaries use parent color; individual checkboxes use nested group color with opposite text color.

@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { send as sendBg } from '../lib/messaging';
 import { getOne } from '../lib/idb';
 import type { TagRec, TagGroupRec } from '../../types/messages';
+import { toHex6, darken, textColorBW } from '../lib/colors';
 
 type PageContext = {
   page: 'watch' | 'channel' | 'other';
@@ -136,32 +137,41 @@ function PopupApp() {
   const [newTagGroupId, setNewTagGroupId] = useState<string>('');
   const [showOrigHandle, setShowOrigHandle] = useState<boolean>(false);
 
-  const byGroup = useMemo(() => {
-    const map = new Map<string, string[]>();
+  const tree = useMemo(() => {
     const groupById = new Map(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
+    const parentBuckets = new Map<string, Map<string, string[]>>();
     for (const t of allTags) {
-      // Hide non-manual default tags from manual apply lists
       const nm = String(t.name || '').toLowerCase();
       if (nm === 'subscribed' || nm === 'unsubscribed') continue;
       const gid = (t.groupId || '') as string;
-      const key = gid && groupById.has(gid) ? gid : '';
-      const list = map.get(key) || (map.set(key, []), map.get(key)!);
+      if (!gid || !groupById.has(gid)) {
+        const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
+        const cList = pMap.get('') || (pMap.set('', []), pMap.get('')!);
+        cList.push(t.name);
+        continue;
+      }
+      const g = groupById.get(gid)!;
+      const parentId = g.parentId ? String(g.parentId) : String(g.id);
+      const childKey = g.parentId ? String(g.id) : '';
+      const pMap = parentBuckets.get(parentId) || (parentBuckets.set(parentId, new Map()), parentBuckets.get(parentId)!);
+      const list = pMap.get(childKey) || (pMap.set(childKey, []), pMap.get(childKey)!);
       list.push(t.name);
     }
     const numCmp = (a: string, b: string) => {
       const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
       const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
       const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
-      if (aNum && bNum) return ai - bi;
-      if (aNum && !bNum) return -1; if (!aNum && bNum) return 1;
-      return a.localeCompare(b);
+      if (aNum && bNum) return ai - bi; if (aNum && !bNum) return -1; if (!aNum && bNum) return 1; return a.localeCompare(b);
     };
-    for (const [k, list] of map) {
-      const grp = groupById.get(k);
-      const isRating = (k === 'tagGroup.rating') || (String(grp?.name || '').trim().toLowerCase() === 'rating');
-      list.sort((a,b)=> isRating ? numCmp(a,b) : a.localeCompare(b));
+    for (const [pid, cmap] of parentBuckets) {
+      for (const [cid, list] of cmap) {
+        const parentIsRating = pid && ((groupById.get(pid)?.name || '').trim().toLowerCase() === 'rating' || pid === 'tagGroup.rating');
+        const childIsRating = cid && ((groupById.get(cid)?.name || '').trim().toLowerCase() === 'rating' || cid === 'tagGroup.rating');
+        const isRating = parentIsRating || childIsRating;
+        list.sort((a,b)=> isRating ? numCmp(a,b) : a.localeCompare(b));
+      }
     }
-    return { map, groupById };
+    return { parentBuckets, groupById };
   }, [allTags, tagGroups]);
 
   const addVideoTag = async (name: string) => {
@@ -407,17 +417,40 @@ function PopupApp() {
                 } catch {}
               }}
             >⮟</button>
-            {Array.from(byGroup.map.entries()).map(([gid, names]) => (
-              <details key={gid || 'ungrouped-v'}>
-                <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
-                <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
-                  {names.map(n => {
-                    const nm = String(n || '').toLowerCase();
-                    // Hide channel-only tags from video tag apply UI
-                    if (nm === 'scrape' || nm === 'tagged') return null;
-                    const active = Array.isArray(videoTags) && videoTags.includes(n);
+            {Array.from(tree.parentBuckets.entries()).sort((a,b)=>{
+              if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+              const an = a[0] ? (tree.groupById.get(a[0])?.name || '') : 'Ungrouped';
+              const bn = b[0] ? (tree.groupById.get(b[0])?.name || '') : 'Ungrouped';
+              return an.localeCompare(bn);
+            }).map(([pid, cmap]) => (
+              <details key={pid || 'ungrouped-v'}>
+                {(() => {
+                  const parent = pid ? tree.groupById.get(pid) : null;
+                  const bg = parent?.color ? toHex6(parent.color) : null;
+                  const fg = textColorBW(bg || undefined); const br = bg ? darken(bg, 0.25) : undefined;
+                  return <summary style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}`: undefined }}>{parent ? parent.name : 'Ungrouped'}</summary>;
+                })()}
+                <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap' }}>
+                  {Array.from(cmap.entries()).sort((a,b)=>{
+                    if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+                    const an = a[0] ? (tree.groupById.get(a[0])?.name || '') : '';
+                    const bn = b[0] ? (tree.groupById.get(b[0])?.name || '') : '';
+                    return an.localeCompare(bn);
+                  }).map(([cid, names]) => {
+                    const childColor = cid ? (tree.groupById.get(cid)?.color ? toHex6(tree.groupById.get(cid)!.color) : null) : null;
+                    const fg = textColorBW(childColor || undefined); const br = childColor ? darken(childColor, 0.25) : undefined;
                     return (
-                      <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addVideoTag(n)} title={active ? 'Already applied' : 'Apply to video'}>{n}</button>
+                      <div key={cid || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {names.map(n => {
+                          const nm = String(n || '').toLowerCase();
+                          // Hide channel-only tags from video tag apply UI
+                          if (nm === 'scrape' || nm === 'tagged') return null;
+                          const active = Array.isArray(videoTags) && videoTags.includes(n);
+                          return (
+                            <button key={n} className="btn-ghost" style={{ background: childColor || (active ? '#203040' : undefined), color: fg, border: br ? `1px solid ${br}` : undefined }} onClick={() => addVideoTag(n)} title={active ? 'Already applied' : 'Apply to video'}>{n}</button>
+                          );
+                        })}
+                      </div>
                     );
                   })}
                 </div>
@@ -443,17 +476,40 @@ function PopupApp() {
                 } catch {}
               }}
             >⮟</button>
-            {Array.from(byGroup.map.entries()).map(([gid, names]) => (
-              <details key={gid || 'ungrouped-c'}>
-                <summary>{gid ? byGroup.groupById.get(gid)?.name : 'Ungrouped'}</summary>
-                <div style={{ display: 'flex', gap: 6, paddingTop: 6, flexWrap: 'wrap' }}>
-                  {names.map(n => {
-                    // For channel tags, hide non-manual system defaults
-                    const nm = String(n || '').toLowerCase();
-                    if (nm === 'subscribed' || nm === 'unsubscribed') return null;
-                    const active = Array.isArray(channelTags) && channelTags.includes(n);
+            {Array.from(tree.parentBuckets.entries()).sort((a,b)=>{
+              if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+              const an = a[0] ? (tree.groupById.get(a[0])?.name || '') : 'Ungrouped';
+              const bn = b[0] ? (tree.groupById.get(b[0])?.name || '') : 'Ungrouped';
+              return an.localeCompare(bn);
+            }).map(([pid, cmap]) => (
+              <details key={pid || 'ungrouped-c'}>
+                {(() => {
+                  const parent = pid ? tree.groupById.get(pid) : null;
+                  const bg = parent?.color ? toHex6(parent.color) : null;
+                  const fg = textColorBW(bg || undefined); const br = bg ? darken(bg, 0.25) : undefined;
+                  return <summary style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}`: undefined }}>{parent ? parent.name : 'Ungrouped'}</summary>;
+                })()}
+                <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap' }}>
+                  {Array.from(cmap.entries()).sort((a,b)=>{
+                    if (a[0] === '' && b[0] !== '') return -1; if (a[0] !== '' && b[0] === '') return 1;
+                    const an = a[0] ? (tree.groupById.get(a[0])?.name || '') : '';
+                    const bn = b[0] ? (tree.groupById.get(b[0])?.name || '') : '';
+                    return an.localeCompare(bn);
+                  }).map(([cid, names]) => {
+                    const childColor = cid ? (tree.groupById.get(cid)?.color ? toHex6(tree.groupById.get(cid)!.color) : null) : null;
+                    const fg = textColorBW(childColor || undefined); const br = childColor ? darken(childColor, 0.25) : undefined;
                     return (
-                      <button key={n} className="btn-ghost" style={{ background: active ? '#203040' : undefined }} onClick={() => addChannelTag(n)} title={active ? 'Already applied' : 'Apply to channel'}>{n}</button>
+                      <div key={cid || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {names.map(n => {
+                          // For channel tags, hide non-manual system defaults
+                          const nm = String(n || '').toLowerCase();
+                          if (nm === 'subscribed' || nm === 'unsubscribed') return null;
+                          const active = Array.isArray(channelTags) && channelTags.includes(n);
+                          return (
+                            <button key={n} className="btn-ghost" style={{ background: childColor || (active ? '#203040' : undefined), color: fg, border: br ? `1px solid ${br}` : undefined }} onClick={() => addChannelTag(n)} title={active ? 'Already applied' : 'Apply to channel'}>{n}</button>
+                          );
+                        })}
+                      </div>
                     );
                   })}
                 </div>
