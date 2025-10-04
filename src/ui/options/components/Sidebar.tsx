@@ -95,7 +95,7 @@ export default function Sidebar(props: Props) {
 
   return (
     <aside className="sidebar">
-        {/* Top-level tabs: Manager / Subs / Recommender */}
+        {/* Top-level tabs: Manager / Subs / Recommender (fixed, non-scrolling) */}
         <div className="top-tabs" role="tablist" aria-label="Options sections">
           <button
             className="top-tab"
@@ -126,6 +126,7 @@ export default function Sidebar(props: Props) {
           </button>
         </div>
 
+        <div className="sidebar-body">
         {mode === 'manager' ? (
         <div className="side-section">
           <div className="side-title" style={{ display: 'flex', gap: 8 }}>
@@ -304,13 +305,7 @@ export default function Sidebar(props: Props) {
           </div>
         ) : null}
           <div className="side-section">
-          {(mode === 'manager' || mode === 'subs') ? <div className="side-title">Presets</div> : <div className="side-title">Presets (manager)</div>}
-
-          {mode === 'recommender' && (
-            <div className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
-              Presets editing is available under Manager/Subs.
-            </div>
-          )}
+          <div className="side-title">Presets</div>
           {/* Preset list (click to load into form) */}
           <div className="group-list">
             {groups.length === 0 && <div className="muted">No presets yet.</div>}
@@ -367,6 +362,7 @@ export default function Sidebar(props: Props) {
             </div>
           </div>
         )}
+        </div>
       </aside>
   );
 }

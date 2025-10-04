@@ -335,7 +335,9 @@ footer {
   top: 0;
   align-self: start;
   height: 100vh;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* move scroll to inner body so tabs don't shift */
 }
 
 .content {
@@ -370,6 +372,10 @@ footer {
 .top-tab[aria-current="false"], .top-tab[aria-selected="false"] {
   background: #121820; /* slightly muted */
   color: var(--muted);
+}
+
+.sidebar-body {
+  overflow: auto;
 }
 
 /* Toggle visibility for modes */

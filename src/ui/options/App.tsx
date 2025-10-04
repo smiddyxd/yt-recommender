@@ -1160,20 +1160,40 @@ const channelsFiltered = useMemo(() => {
     loadTags();
   }
 
-  // ---- Mode persistence (storage + URL hash) ----
-  function parseHashMode(): 'manager' | 'subs' | 'recommender' | null {
+  // ---- Mode + View persistence (storage + URL hash as query) ----
+  function parseHashParams(): Record<string, string> {
     try {
-      const h = String(window.location.hash || '').toLowerCase();
-      if (h.includes('mode=subs')) return 'subs';
-      if (h.includes('mode=recommender')) return 'recommender';
-      if (h.includes('mode=manager')) return 'manager';
+      const raw = String(window.location.hash || '');
+      const s = raw.startsWith('#') ? raw.slice(1) : raw;
+      const out: Record<string, string> = {};
+      for (const part of s.split('&')) {
+        if (!part) continue;
+        const [k, v] = part.split('=');
+        if (!k) continue;
+        out[decodeURIComponent(k)] = decodeURIComponent(v || '');
+      }
+      return out;
+    } catch { return {}; }
+  }
+  function setHashParams(next: Record<string, string | undefined>) {
+    try {
+      const cur = parseHashParams();
+      const merged: Record<string, string> = { ...cur };
+      for (const k of Object.keys(next)) {
+        const v = next[k];
+        if (v == null || v === '') delete merged[k]; else merged[k] = String(v);
+      }
+      const entries = Object.entries(merged).map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+      const hash = entries.length ? ('#' + entries.join('&')) : '';
+      if (window.location.hash !== hash) window.location.hash = hash;
     } catch {}
-    return null;
   }
   useEffect(() => {
     // Prefer URL hash deep-link; fallback to storage
-    const fromHash = parseHashMode();
-    if (fromHash) setMode(fromHash);
+    const params = parseHashParams();
+    const mRaw = String(params['mode'] || '').toLowerCase();
+    const vRaw = String(params['view'] || '');
+    if (mRaw === 'subs' || mRaw === 'recommender' || mRaw === 'manager') setMode(mRaw as any);
     else {
       try {
         chrome.storage?.local?.get('options.mode', (obj) => {
@@ -1182,10 +1202,22 @@ const channelsFiltered = useMemo(() => {
         });
       } catch {}
     }
-    // Hash change listener
+    if (vRaw === 'videos' || vRaw === 'trash' || vRaw === 'channels' || vRaw === 'channelsTrash' || vRaw === 'pending') {
+      setView(vRaw as any);
+    } else {
+      try {
+        chrome.storage?.local?.get('options.view', (obj) => {
+          const vv = String((obj as any)?.['options.view'] || '');
+          if (vv === 'videos' || vv === 'trash' || vv === 'channels' || vv === 'channelsTrash' || vv === 'pending') setView(vv as any);
+        });
+      } catch {}
+    }
     const onHash = () => {
-      const m = parseHashMode();
-      if (m && m !== mode) setMode(m);
+      const p = parseHashParams();
+      const m2 = String(p['mode'] || '').toLowerCase();
+      const v2 = String(p['view'] || '');
+      if (m2 === 'subs' || m2 === 'recommender' || m2 === 'manager') setMode(m2 as any);
+      if (v2 === 'videos' || v2 === 'trash' || v2 === 'channels' || v2 === 'channelsTrash' || v2 === 'pending') setView(v2 as any);
     };
     try { window.addEventListener('hashchange', onHash); } catch {}
     return () => { try { window.removeEventListener('hashchange', onHash); } catch {} };
@@ -1194,11 +1226,13 @@ const channelsFiltered = useMemo(() => {
   useEffect(() => {
     // Persist to storage and reflect in hash
     try { chrome.storage?.local?.set({ 'options.mode': mode }); } catch {}
-    try {
-      const next = `#mode=${mode}`;
-      if (window.location.hash !== next) window.location.hash = next;
-    } catch {}
+    setHashParams({ mode });
   }, [mode]);
+  useEffect(() => {
+    try { chrome.storage?.local?.set({ 'options.view': view }); } catch {}
+    // Update hash only for manager; keep last view otherwise
+    if (view) setHashParams({ view });
+  }, [view]);
 
   return (
     <div className="page" data-mode={mode}>
@@ -1241,9 +1275,25 @@ const channelsFiltered = useMemo(() => {
           <header>
             <h1 style={{ margin: 0, fontSize: 18 }}>{mode === 'subs' ? 'Subs' : (mode === 'recommender' ? 'Recommender' : 'Manager')}</h1>
           </header>
-          <div className="filters">
-            <span className="muted">{mode === 'subs' ? 'Chronological subscriptions feed (filtered) will appear here.' : 'Multi-source recommendations will appear here.'}</span>
-          </div>
+          <FiltersBar
+            chain={chain}
+            setChain={setChain}
+            channelOptions={channelOptions}
+            countryOptions={countryOptions}
+            topicOptions={topicOptions}
+            videoSourceOptions={videoSourcesOptionsMemo}
+            videoTagOptions={videoTagOptions}
+            channelTagOptions={channelTagOptions}
+            groups={groups}
+            tagsRegistry={tags}
+            tagGroups={tagGroups}
+            groupName={groupName}
+            setGroupName={setGroupName}
+            editingGroupId={editingGroupId}
+            onSaveAsGroup={saveAsGroup}
+            onSaveChanges={saveChangesToGroup}
+            onCancelEdit={cancelEditing}
+          />
           <div style={{ padding: 16 }}>
             <div className="card" style={{ padding: 12 }}>
               <div className="muted">This section is scaffolded. Detailed features will be implemented next.</div>
