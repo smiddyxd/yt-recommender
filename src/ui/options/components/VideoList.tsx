@@ -25,9 +25,10 @@ type Props = {
   onToggle: (id: string)=>void;
   tagGroups?: TagGroupRec[];
   tagsRegistry?: TagRec[];
+  variant?: 'manager' | 'compact';
 };
 
-export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [] }: Props) {
+export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager' }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
   const [fullData, setFullData] = useState<Record<string, any>>({});
   const groupById = useMemo(() => new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec])), [tagGroups]);
@@ -55,36 +56,76 @@ export default function VideoList({ items, layout, loading, selected, onToggle, 
       return next;
     });
   };
+  // Relative time updates every minute for compact variant
+  const [now, setNow] = useState(Date.now());
+  React.useEffect(() => {
+    if (variant !== 'compact') return;
+    const t = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, [variant]);
+
+  const relTime = (ts?: number | null) => {
+    if (!ts) return '';
+    const ms = now - ts;
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'just now';
+    if (min < 60) return `${min} minute${min===1?'':'s'} ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr} hour${hr===1?'':'s'} ago`;
+    const day = Math.floor(hr / 24);
+    if (day < 7) return `${day} day${day===1?'':'s'} ago`;
+    return new Date(ts).toLocaleDateString();
+  };
+  const fmtViews = (n?: number | null) => {
+    if (!Number.isFinite(n as any)) return '';
+    try { return `${(n as number).toLocaleString()} views`; } catch { return `${n} views`; }
+  };
+
   return (
-    <main id="list" aria-live="polite" data-layout={layout}>
+    <main id="list" aria-live="polite" data-layout={layout} data-variant={variant}>
       {items.map(v => {
         const isSelected = selected.has(v.id);
+        if (variant === 'compact') {
+          return (
+            <article className={`card yt-compact${isSelected ? ' selected' : ''}`} key={v.id}>
+              <label className="select">
+                <input type="checkbox" checked={isSelected} onChange={() => onToggle(v.id)} aria-label="Select video" />
+              </label>
+              <img className="thumb toggle-select" loading="lazy" src={thumbUrl(v.id)} alt={v.title || 'thumbnail'} draggable={false} onClick={() => onToggle(v.id)} />
+              <div className="ytc-body">
+                <h3 className="title two-line">
+                  <a href={watchUrl(v.id)} target="_blank" rel="noopener noreferrer">{v.title || '(no title)'}</a>
+                </h3>
+                <div className="meta">
+                  {v.channelId ? (
+                    <a href={`https://www.youtube.com/channel/${v.channelId}`} target="_blank" rel="noopener noreferrer">{v.channelName || '(unknown channel)'}</a>
+                  ) : (
+                    <span>{v.channelName || '(unknown channel)'}</span>
+                  )}
+                </div>
+                <div className="meta">
+                  {fmtViews((v as any).views)}{(v as any).views ? <span> · </span> : null}
+                  <span>{secToClock(v.durationSec)}</span>
+                  {v.uploadedAt ? (<><span> · </span><span>{relTime(v.uploadedAt)}</span></>) : null}
+                </div>
+              </div>
+            </article>
+          );
+        }
+        // Manager (original) variant
         return (
           <article className={`card${isSelected ? ' selected' : ''}`} key={v.id}>
             <label className="select">
               <input type="checkbox" checked={isSelected} onChange={() => onToggle(v.id)} aria-label="Select video" />
             </label>
-            <img
-              className="thumb toggle-select"
-              loading="lazy"
-              src={thumbUrl(v.id)}
-              alt={v.title || 'thumbnail'}
-              draggable={false}
-              onClick={() => onToggle(v.id)}
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(v.id); } }}
-            />
+            <img className="thumb toggle-select" loading="lazy" src={thumbUrl(v.id)} alt={v.title || 'thumbnail'} draggable={false} onClick={() => onToggle(v.id)} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(v.id); } }} />
             <div>
               <h3 className="title">
                 {(() => {
-                  const t = (typeof v.progressSec === 'number' && v.progressSec > 0)
-                    ? v.progressSec
-                    : (v.flags?.started ? 1 : undefined);
+                  const t = (typeof v.progressSec === 'number' && v.progressSec > 0) ? v.progressSec : (v.flags?.started ? 1 : undefined);
                   const href = watchUrl(v.id, t);
                   return (
-                    <a href={href} target="_blank" rel="noopener noreferrer">
-                      {v.title || '(no title)'}
-                    </a>
+                    <a href={href} target="_blank" rel="noopener noreferrer">{v.title || '(no title)'}</a>
                   );
                 })()}
               </h3>
@@ -92,44 +133,22 @@ export default function VideoList({ items, layout, loading, selected, onToggle, 
                 {(() => {
                   const nodes: React.ReactNode[] = [];
                   const chName = v.channelName || '(unknown channel)';
-                  if (v.channelId) {
-                    const chHref = `https://www.youtube.com/channel/${v.channelId}`;
-                    nodes.push(<a key="ch" href={chHref} target="_blank" rel="noopener noreferrer">{chName}</a>);
-                  } else {
-                    nodes.push(<span key="ch">{chName}</span>);
-                  }
+                  if (v.channelId) nodes.push(<a key="ch" href={`https://www.youtube.com/channel/${v.channelId}`} target="_blank" rel="noopener noreferrer">{chName}</a>);
+                  else nodes.push(<span key="ch">{chName}</span>);
                   nodes.push(<span key="dur">{secToClock(v.durationSec)}</span>);
                   if (v.uploadedAt) nodes.push(<span key="up">{fmtDate(v.uploadedAt)}</span>);
-                  return nodes.map((node, i) => (
-                    <React.Fragment key={`p-${i}`}>
-                      {i > 0 && <span> · </span>}
-                      {node}
-                    </React.Fragment>
-                  ));
+                  return nodes.map((node, i) => (<React.Fragment key={`p-${i}`}>{i > 0 && <span> · </span>}{node}</React.Fragment>));
                 })()}
               </div>
               <div className="badges">
                 {v.flags?.started && <span className="badge">started</span>}
                 {v.flags?.completed && <span className="badge">completed</span>}
                 {Array.isArray(v.tags) && v.tags.length > 0 && (
-                  <>
-                    {v.tags.map(tag => {
-                      const c = getParentColor(tag);
-                      return (
-                        <span key={tag} className="badge" style={{ background: c.bg, color: c.fg, border: c.br ? `1px solid ${c.br}` : undefined }}>{tag}</span>
-                      );
-                    })}
-                  </>
+                  <>{v.tags.map(tag => { const c = getParentColor(tag); return (<span key={tag} className="badge" style={{ background: c.bg, color: c.fg, border: c.br ? `1px solid ${c.br}` : undefined }}>{tag}</span>); })}</>
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                <button
-                  type="button"
-                  className="btn-ghost debug-btn"
-                  onClick={() => toggleDebug(v.id)}
-                  aria-expanded={openDebug.has(v.id)}
-                  title={openDebug.has(v.id) ? 'Hide stored data' : 'Show stored data'}
-                >
+                <button type="button" className="btn-ghost debug-btn" onClick={() => toggleDebug(v.id)} aria-expanded={openDebug.has(v.id)} title={openDebug.has(v.id) ? 'Hide stored data' : 'Show stored data'}>
                   {openDebug.has(v.id) ? 'Hide info' : 'Show info'}
                 </button>
               </div>

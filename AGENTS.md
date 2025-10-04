@@ -294,6 +294,7 @@ Global Reminder
 - Subs mode: shows videos from channels tagged `subscribed` and videos whose `sources` include `SubscriptionsFeed`, sorted by `uploadedAt` (chronological). Reuses FiltersBar and Presets. Adds top-right indicators: latest publish time and last subs scrape timestamp, plus a "Scrape" button.
 - Recommender mode: placeholder view for now; includes a top-right "Shuffle" button (no-op).
 - Pagination: Manager and Subs show pager and page-size controls at both top and bottom. Recommender does not paginate.
+- IndexedDB: `DB_VERSION = 15`; added compound index `videos.byUploadedAt` on `['uploadedAt','id']` for chronological paging (use cursor direction 'prev' for newest first). UI exposes a helper to page by this index.
 - Views: Videos, Trash, Channels, Channels Trash, and Pending (debug). A view header shows the current view ("Videos", "Videos Trash", "Channels", "Channels Trash", or "Pending (debug)").
 - Top bar toggles (single buttons):
   - List <-> Grid view

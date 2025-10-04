@@ -63,3 +63,31 @@ export async function getVideosByChannel<T=any>(channelId: string): Promise<T[]>
     }
   });
 }
+
+// Page videos by uploadedAt DESC via compound index ['uploadedAt','id'].
+// afterKey: pass the last compound key from the previous page to continue (exclusive upper bound)
+export async function pageVideosByUploadedAt<T=any>(limit: number, afterKey?: [number, string] | null): Promise<{ items: T[]; nextKey: [number, string] | null }> {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction('videos', 'readonly');
+    tx.oncomplete = () => { try { db.close(); } catch {} };
+    const os = tx.objectStore('videos');
+    let idx: IDBIndex;
+    try { idx = os.index('byUploadedAt'); } catch { resolve({ items: [], nextKey: null }); return; }
+    const range = afterKey ? IDBKeyRange.upperBound(afterKey as any, true) : undefined;
+    const dir: IDBCursorDirection = 'prev'; // newest first
+    const out: T[] = [];
+    let lastKey: [number, string] | null = null;
+    const req = idx.openCursor(range, dir);
+    req.onsuccess = () => {
+      const cursor = req.result as IDBCursorWithValue | null;
+      if (!cursor) { resolve({ items: out, nextKey: lastKey }); return; }
+      const val = cursor.value as T;
+      out.push(val);
+      lastKey = cursor.key as any as [number, string];
+      if (out.length >= limit) { resolve({ items: out, nextKey: lastKey }); return; }
+      cursor.continue();
+    };
+    req.onerror = () => resolve({ items: out, nextKey: lastKey });
+  });
+}

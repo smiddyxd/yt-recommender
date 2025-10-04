@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 14;
+const DB_VERSION = 15;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -13,12 +13,16 @@ export async function openDB(): Promise<IDBDatabase> {
         const os = db.createObjectStore('videos', { keyPath: 'id' });
         os.createIndex('byChannel', 'channelId', { unique: false });
         os.createIndex('byTag', 'tags', { unique: false, multiEntry: true });
+        try { os.createIndex('byUploadedAt', ['uploadedAt','id'], { unique: false }); } catch {}
       } else {
         try {
           const tx = (req as any).transaction as IDBTransaction;
           const os = tx.objectStore('videos');
           const names: string[] = Array.from((os as any).indexNames || []);
           if (names.includes('byLastSeen')) os.deleteIndex('byLastSeen');
+          if (!names.includes('byUploadedAt')) {
+            try { os.createIndex('byUploadedAt', ['uploadedAt','id'], { unique: false }); } catch {}
+          }
         } catch { /* ignore */ }
       }
       if (!db.objectStoreNames.contains('trash')) {

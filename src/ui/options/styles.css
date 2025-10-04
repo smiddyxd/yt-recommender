@@ -346,6 +346,40 @@ footer {
   min-height: 100vh;
 }
 
+/* ==== Compact variant for Subs/Recommender (YouTube-like) ==== */
+#list[data-variant='compact'] {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+#list[data-variant='compact'] .card.yt-compact {
+  display: block;
+  padding: 0;
+}
+#list[data-variant='compact'] .card.yt-compact .thumb {
+  width: 100%;
+  aspect-ratio: 16/9;
+  border-radius: 8px 8px 0 0;
+}
+#list[data-variant='compact'] .card.yt-compact .ytc-body {
+  padding: 8px;
+}
+#list[data-variant='compact'] .card.yt-compact .title {
+  margin: 0 0 4px 0;
+}
+#list[data-variant='compact'] .card.yt-compact .title.two-line {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#list[data-variant='compact'] .card.yt-compact .meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 0 4px 0;
+}
+#list[data-variant='compact'] .card.yt-compact .select {
+  top: 8px;
+  left: 8px;
+}
 /* ==== Top-level tabs in sidebar (Manager | Subs | Recommender) ==== */
 .top-tabs {
   display: grid;

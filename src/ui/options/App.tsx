@@ -4,7 +4,7 @@ import { matches, matchesChannel, type Condition, type Group as GroupRec } from 
 import FiltersBar from './components/FiltersBar';
 import type { FilterEntry } from './lib/filters';
 import { chainToCondition, conditionToChainSimple } from './lib/filters';
-import { getAll as idbGetAll } from '../lib/idb';
+import { getAll as idbGetAll, pageVideosByUploadedAt } from '../lib/idb';
 import { send as sendBg } from '../lib/messaging';
 import type { TagRec, TagGroupRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
@@ -24,6 +24,7 @@ type Video = {
   durationSec?: number | null;
   uploadedAt?: number | null;
   fetchedAt?: number | null;
+  views?: number | null;
   ytTags?: string[] | null; // from API
   deletedAt?: number; // undefined for non-trash rows
   flags?: { started?: boolean; completed?: boolean };
@@ -53,6 +54,7 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
     durationSec: Number.isFinite(r.durationSec) ? r.durationSec : null,
     uploadedAt: Number.isFinite(r.uploadedAt) ? r.uploadedAt : null,
     fetchedAt: Number.isFinite(r.fetchedAt) ? r.fetchedAt : null,
+    views: Number.isFinite(r.views) ? Number(r.views) : null,
     ytTags: Array.isArray(r.ytTags) ? r.ytTags : null,
     deletedAt: r.deletedAt,
     flags: r.flags,
@@ -174,6 +176,8 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   // Subs-specific UI state
   const [subsPage, setSubsPage] = useState<number>(1);
   const [subsLastScrapeAt, setSubsLastScrapeAt] = useState<number | null>(null);
+  const [subsWindowRaw, setSubsWindowRaw] = useState<Video[]>([]);
+  const [subsNextKey, setSubsNextKey] = useState<[number, string] | null>(null);
   const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
     // Build condition without source predicates so list reflects other filters
     const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
@@ -1118,6 +1122,19 @@ const channelsFiltered = useMemo(() => {
     chrome.runtime.onMessage.addListener(h);
     return () => chrome.runtime.onMessage.removeListener(h);
   }, []);
+  // Load subs window and last scrape when entering Subs mode or page size changes
+  useEffect(() => {
+    if (mode !== 'subs') return;
+    void loadSubsInitialWindow();
+    try {
+      sendBg('scrape/status', {} as any).then((r: any) => {
+        const ts = (r?.runs || {})['scrape.lastRun.subFeed'] as number | undefined;
+        setSubsLastScrapeAt(ts && Number.isFinite(ts) ? ts : null);
+      }).catch(() => void 0);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, pageSize]);
+  useEffect(() => { if (mode === 'subs') void maybeLoadMoreSubsWindow(); }, [subsPage, subsWindowRaw, pageSize, mode]);
 
   function applyTagToSelection(tag: string) {
     if (inChannels) {
@@ -1153,13 +1170,13 @@ const channelsFiltered = useMemo(() => {
 
   const subsAll = useMemo(() => {
     // Base candidates before user filters; chronological sort by uploadedAt desc
-    const list = videos.filter(v => {
+    const list = subsWindowRaw.filter(v => {
       const chId = v.channelId || '';
       const hasSrc = Array.isArray(v.sources) && v.sources.some(s => String(s?.type||'') === 'SubscriptionsFeed');
       return hasSrc || (chId && subscribedChannelIds.has(chId));
     });
     return list.sort((a,b) => ((b.uploadedAt || b.fetchedAt || 0) - (a.uploadedAt || a.fetchedAt || 0)));
-  }, [videos, subscribedChannelIds]);
+  }, [subsWindowRaw, subscribedChannelIds]);
 
   const subsMostRecentTs = useMemo(() => {
     let m = 0; for (const v of subsAll) { const t = v.uploadedAt || v.fetchedAt || 0; if (t > m) m = t; }
@@ -1260,6 +1277,38 @@ const channelsFiltered = useMemo(() => {
 
   async function scrapeSubFeedNow() {
     try { await sendBg('scrape/subFeed', {} as any); setSubsLastScrapeAt(Date.now()); } catch {}
+  }
+
+  // Load subs window (3 pages by uploadedAt desc)
+  async function loadSubsInitialWindow() {
+    try {
+      const n = Math.max(1, pageSize * 3);
+      const r = await pageVideosByUploadedAt<any>(n, null);
+      setSubsWindowRaw(r.items || []);
+      setSubsNextKey(r.nextKey || null);
+      setSubsPage(1);
+    } catch { setSubsWindowRaw([]); setSubsNextKey(null); setSubsPage(1); }
+  }
+  async function maybeLoadMoreSubsWindow() {
+    try {
+      if (!subsNextKey) return; // no more
+      const loadedPages = Math.max(1, Math.ceil(subsWindowRaw.length / pageSize));
+      if (subsPage < loadedPages - 1) return;
+      const r = await pageVideosByUploadedAt<any>(pageSize, subsNextKey);
+      const combined = subsWindowRaw.concat(r.items || []);
+      // keep only last 3 pages
+      const keep = pageSize * 3;
+      let trimmed = combined;
+      let nextPage = subsPage;
+      if (combined.length > keep) {
+        const drop = combined.length - keep;
+        trimmed = combined.slice(drop);
+        if (nextPage > 1) nextPage = nextPage - 1; // shift window back one page
+      }
+      setSubsWindowRaw(trimmed);
+      setSubsPage(nextPage);
+      setSubsNextKey(r.nextKey || null);
+    } catch {}
   }
 
   async function loadTagGroups() {
@@ -1545,7 +1594,7 @@ const channelsFiltered = useMemo(() => {
             </div>
 
             {/* Subs list */}
-            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} />
+            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} variant="compact" />
 
             {/* Subs pager (bottom) */}
             <div className="toolbar-2">
