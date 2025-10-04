@@ -48,6 +48,12 @@ let lastWatchStubAt = 0;
 // Track latest marker sent for Sub Feed (to avoid spamming background)
 let lastSubFeedLatestId: string | null = null;
 
+// ---- Playlist highlight re-scan (scroll-activated) ----
+let playlistHlTicker: number | null = null;
+let playlistHlLastSig: string | null = null;
+let playlistHlSameSigCount = 0;
+let playlistHlLastReactivateAt = 0;
+
 // ---- Channel tag highlight (default tag: "tagged") ----
 const TAGGED_CLASS = 'ytm-channel-tagged';
 let taggedChannelIds = new Set<string>();
@@ -626,6 +632,19 @@ try {
     }
     // Start or stop auto-scrape ticker based on page
     try { setupAutoScrapeTicker(); } catch (e) { dwarn('ticker error', e); }
+    // Playlist page: reset playlist highlight re-scan state (scroll will activate)
+    try {
+      const onPlaylist = !!getPlaylistIdFromURL();
+      if (!onPlaylist) {
+        if (playlistHlTicker != null) { try { clearInterval(playlistHlTicker as any); } catch {} playlistHlTicker = null; }
+        playlistHlLastSig = null; playlistHlSameSigCount = 0; playlistHlLastReactivateAt = 0;
+      } else {
+        // Ensure initial highlights apply for the existing items; subsequent loads are handled by scroll reactivation
+        try { ensureTaggedHighlightStyles(); void loadTaggedChannelIdsFromStorage().then(() => void markChannelAnchorsIn(document)); } catch {}
+        // Do not auto-start; only reactivate via downward scroll with a 4s throttle
+        playlistHlLastSig = null; playlistHlSameSigCount = 0;
+      }
+    } catch {}
     // Re-apply tagged channel highlights on navigation
     try { ensureTaggedHighlightStyles(); void loadTaggedChannelIdsFromStorage().then(() => void markChannelAnchorsIn(document)); } catch {}
   });
@@ -1173,6 +1192,35 @@ try {
     const y = window.scrollY || 0;
     const goingDown = y > lastScrollY;
     lastScrollY = y;
+    // On playlist pages, scrolling down reactivates a 4s highlight scan interval (throttled)
+    try {
+      const onPlaylist = !!getPlaylistIdFromURL();
+      if (onPlaylist && goingDown) {
+        const now = Date.now();
+        if (playlistHlTicker == null && (now - playlistHlLastReactivateAt) >= 4000) {
+          playlistHlLastReactivateAt = now;
+          // Start a short-lived interval that scans every 4s; stop after 3 identical signatures
+          playlistHlSameSigCount = 0; playlistHlLastSig = null;
+          playlistHlTicker = setInterval(async () => {
+            try {
+              const sig = await (async () => {
+                try { ensureTaggedHighlightStyles(); await loadTaggedChannelIdsFromStorage(); await markChannelAnchorsIn(document); } catch {}
+                const as = Array.from(document.querySelectorAll('a[href*="/channel/"], a[href^="/@"]')) as HTMLAnchorElement[];
+                const hrefs = as.map(a => (a.getAttribute('href') || a.href || '').trim()).filter(Boolean);
+                return hrefs.slice(0, 400).sort().join('|');
+              })();
+              if (playlistHlLastSig != null && sig === playlistHlLastSig) playlistHlSameSigCount += 1; else playlistHlSameSigCount = 0;
+              playlistHlLastSig = sig;
+              if (playlistHlSameSigCount >= 3) { try { clearInterval(playlistHlTicker as any); } catch {} playlistHlTicker = null; }
+            } catch {
+              // On unexpected errors, stop the interval to avoid spinning
+              try { if (playlistHlTicker != null) clearInterval(playlistHlTicker as any); } catch {}
+              playlistHlTicker = null;
+            }
+          }, 4000) as any;
+        }
+      }
+    } catch {}
     if (autoDisabled && goingDown) {
       const pct = getScrollProgress();
       const need = getPageReactivateThresholdPct();
