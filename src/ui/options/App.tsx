@@ -94,6 +94,8 @@ export default function App() {
   const [layout, setLayout] = useState<'grid' | 'list'>('list'); // UI-only state
   const isGrid = layout === 'grid';
   const isList = layout === 'list';
+  const isSubsMode = mode === 'subs';
+  const isRecommenderMode = mode === 'recommender';
   const [view, setView] = useState<'videos' | 'trash' | 'channels' | 'channelsTrash' | 'pending'>('videos');
   const inTrash = view === 'trash';
   const inChannels = view === 'channels';
@@ -169,6 +171,9 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(null);
   const [backupLastError, setBackupLastError] = useState<string | null>(null);
   const [unsyncedCount, setUnsyncedCount] = useState<number>(0);
+  // Subs-specific UI state
+  const [subsPage, setSubsPage] = useState<number>(1);
+  const [subsLastScrapeAt, setSubsLastScrapeAt] = useState<number | null>(null);
   const videoSourcesOptionsMemo = useMemo((): Array<{ type: string; id: string | null; count: number }> => {
     // Build condition without source predicates so list reflects other filters
     const pruned = chain.filter(e => !(e.pred.kind === 'v_sources_any'));
@@ -1134,6 +1139,129 @@ const channelsFiltered = useMemo(() => {
     }).then(() => refresh());
   }
 
+  // --- Subs dataset: videos from subscribed channels OR sources include SubscriptionsFeed ---
+  const subscribedChannelIds = useMemo(() => {
+    try {
+      const set = new Set<string>();
+      for (const ch of channels) {
+        const tagsArr = Array.isArray((ch as any).tags) ? (ch as any).tags : [];
+        if (tagsArr.some(t => String(t||'').toLowerCase() === 'subscribed')) set.add(ch.id);
+      }
+      return set;
+    } catch { return new Set<string>(); }
+  }, [channels]);
+
+  const subsAll = useMemo(() => {
+    // Base candidates before user filters; chronological sort by uploadedAt desc
+    const list = videos.filter(v => {
+      const chId = v.channelId || '';
+      const hasSrc = Array.isArray(v.sources) && v.sources.some(s => String(s?.type||'') === 'SubscriptionsFeed');
+      return hasSrc || (chId && subscribedChannelIds.has(chId));
+    });
+    return list.sort((a,b) => ((b.uploadedAt || b.fetchedAt || 0) - (a.uploadedAt || a.fetchedAt || 0)));
+  }, [videos, subscribedChannelIds]);
+
+  const subsMostRecentTs = useMemo(() => {
+    let m = 0; for (const v of subsAll) { const t = v.uploadedAt || v.fetchedAt || 0; if (t > m) m = t; }
+    return m || null;
+  }, [subsAll]);
+
+  const subsFiltered = useMemo(() => {
+    // Apply FiltersBar condition and hide-by-default behavior like manager
+    const cond = chainToCondition(chain);
+    let base = subsAll;
+    if (cond) {
+      base = base.filter(v => matches(v as any, cond, {
+        resolveGroup: (id) => groups.find(g => g.id === id),
+        resolveChannel: (id) => channels.find(c => c.id === id) as any
+      }));
+    }
+    // Exclude videos tagged 'hide' unless explicitly included in chip
+    try {
+      const includesHide = chain.some(e => {
+        const p: any = e?.pred || {};
+        if (p?.kind === 'v_tags_any' || p?.kind === 'v_tags_all') {
+          const csv = String(p.tagsCsv || '').toLowerCase();
+          return csv.split(',').map(s=>s.trim()).includes('hide');
+        }
+        return false;
+      });
+      if (!includesHide) base = base.filter(v => !(Array.isArray(v.tags) && v.tags.some(t => String(t||'').toLowerCase() === 'hide')));
+    } catch {}
+    // Search box filter
+    const needle = q.trim().toLowerCase();
+    if (needle) base = base.filter(v => (v.title||'').toLowerCase().includes(needle) || (v.channelName||v.channelId||'').toLowerCase().includes(needle));
+    return base;
+  }, [subsAll, chain, groups, channels, q]);
+
+  // Subs selection/display sets (mirror manager)
+  const subsVisibleIdsNormal = useMemo(() => {
+    const ids = new Set<string>();
+    for (const v of subsFiltered) ids.add(v.id);
+    return ids;
+  }, [subsFiltered]);
+  const subsSelectedVisibleSetNormal = useMemo(() => {
+    const s = new Set<string>();
+    selected.forEach(id => { if (subsVisibleIdsNormal.has(id)) s.add(id); });
+    return s;
+  }, [selected, subsVisibleIdsNormal]);
+  const subsSelectedHiddenCount = useMemo(() => {
+    let n = 0; selected.forEach(id => { if (!subsVisibleIdsNormal.has(id)) n++; }); return n;
+  }, [selected, subsVisibleIdsNormal]);
+  const subsDisplayVideos = useMemo(() => {
+    if (showDisabledOnly) return videos.filter(v => selected.has(v.id) && !subsVisibleIdsNormal.has(v.id));
+    return subsFiltered;
+  }, [showDisabledOnly, videos, selected, subsFiltered, subsVisibleIdsNormal]);
+  const subsSelectedVisibleSetDisplay = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of subsDisplayVideos) if (selected.has(v.id)) s.add(v.id);
+    return s;
+  }, [subsDisplayVideos, selected]);
+
+  // Subs pagination (same pageSize; separate current page)
+  const subsTotal = subsDisplayVideos.length;
+  const subsTotalPages = Math.max(1, Math.ceil(subsTotal / pageSize));
+  const subsStart = (subsPage - 1) * pageSize;
+  const subsPageItems = subsDisplayVideos.slice(subsStart, subsStart + pageSize);
+
+  function applyTagToSubsSelection(tag: string) {
+    const haveAll = subsSelectedVisibleSetDisplay.size > 0 && (Array.from(subsSelectedVisibleSetDisplay).every(id => {
+      const v = videos.find(x => x.id === id);
+      return v && Array.isArray(v.tags) && v.tags.includes(tag);
+    }));
+    sendBg('videos/applyTags', {
+      ids: Array.from(subsSelectedVisibleSetDisplay),
+      addIds: haveAll ? [] : [tag],
+      removeIds: haveAll ? [tag] : []
+    }).then(() => refresh());
+  }
+
+  function openSubsInTabs() {
+    const ids = Array.from(subsSelectedVisibleSetDisplay);
+    if (!ids.length) return;
+    for (const id of ids) {
+      try { chrome.tabs?.create?.({ url: `https://www.youtube.com/watch?v=${id}`, active: false }); } catch {}
+    }
+  }
+
+  function fmtRecent(ts: number | null): string {
+    if (!ts) return '';
+    try {
+      const d = new Date(ts);
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const y = new Date(now); y.setDate(now.getDate()-1);
+      const isYesterday = d.toDateString() === y.toDateString();
+      if (isToday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (isYesterday) return 'yesterday';
+      return d.toLocaleDateString();
+    } catch { return ''; }
+  }
+
+  async function scrapeSubFeedNow() {
+    try { await sendBg('scrape/subFeed', {} as any); setSubsLastScrapeAt(Date.now()); } catch {}
+  }
+
   async function loadTagGroups() {
     try { const r: any = await sendBg('tagGroups/list', {} as any); setTagGroups(r?.items || []); } catch {}
   }
@@ -1270,11 +1398,112 @@ const channelsFiltered = useMemo(() => {
   onModeChange={setMode}
 />
       <div className="content">
-        {/* Non-manager placeholder content */}
+        {/* Non-manager content (Subs / Recommender) */}
         <div className="non-manager-only">
           <header>
-            <h1 style={{ margin: 0, fontSize: 18 }}>{mode === 'subs' ? 'Subs' : (mode === 'recommender' ? 'Recommender' : 'Manager')}</h1>
+            <div className="controls">
+              {/* View toggle (single button) */}
+              <div className="view-toggle" role="group" aria-label="View mode">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-pressed={true}
+                  title={isList ? 'Switch to grid view' : 'Switch to list view'}
+                  onClick={() => setLayout(isList ? 'grid' : 'list')}
+                >
+                  {isList ? (
+                    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>
+                    </svg>
+                  ) : (
+                    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>
+                    </svg>
+                  )}
+                </button>
+              </div>
+
+              {/* Selection controls (videos only) */}
+              {mode !== 'recommender' && (
+              <div className="sel-controls">
+                <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => setSelected(new Set(subsDisplayVideos.map(v => v.id)))}>all</button>
+                <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selected.size === 0}>C</button>
+                <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
+                  setSelected(prev => {
+                    const next = new Set(prev);
+                    for (const v of subsDisplayVideos) { if (next.has(v.id)) next.delete(v.id); else next.add(v.id); }
+                    return next;
+                  });
+                }} disabled={subsDisplayVideos.length === 0}>Inv</button>
+                <button type="button" className="btn-ghost" title="Open selected in new tabs" onClick={openSubsInTabs} disabled={subsSelectedVisibleSetDisplay.size === 0}>T</button>
+                <button type="button" className="btn-ghost" title={showDisabledOnly ? 'Show filtered results' : 'Show disabled selection'} onClick={() => setShowDisabledOnly(v => !v)}>D</button>
+                {/* Hide */}
+                <button type="button" className="btn-ghost" title="Tag 'hide' on selected" onClick={() => applyTagToSubsSelection('hide')} disabled={subsSelectedVisibleSetDisplay.size === 0}>hide</button>
+                {/* Tags opener */}
+                <button type="button" className="btn-ghost" title="Open tagger" onClick={() => setShowTagger(v => !v)} disabled={subsSelectedVisibleSetDisplay.size === 0}>tags</button>
+                <span className="sel-info">{subsSelectedVisibleSetDisplay.size}{subsSelectedHiddenCount > 0 ? ` -${subsSelectedHiddenCount}` : ''}</span>
+              </div>
+              )}
+
+              <span style={{ marginLeft: 'auto' }} />
+              {mode === 'subs' ? (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                  <span className="muted" title="Most recent publish">Latest: {fmtRecent(subsMostRecentTs)}</span>
+                  <span className="muted" title="Last sub feed scrape">Scrape: {fmtTime(subsLastScrapeAt)}</span>
+                  <button type="button" className="btn-ghost" onClick={scrapeSubFeedNow}>Scrape</button>
+                </div>
+              ) : (
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                  <button type="button" className="btn-ghost" title="Shuffle (coming soon)">Shuffle</button>
+                </div>
+              )}
+            </div>
           </header>
+
+          {/* Tagger (same UI reused) */}
+          {showTagger && subsSelectedVisibleSetDisplay.size > 0 && (
+            <div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              {/* Video Type toggles (does not change tags) */}
+              <span style={{ marginRight: 8 }}>Apply tag:</span>
+              {(() => {
+                // Group tags by tag groups (same grouping as manager)
+                const groupById = new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
+                const parentBuckets = new Map<string, Map<string, string[]>>();
+                for (const t of tags) {
+                  const gid = (t.groupId || '') as string;
+                  if (!gid || !groupById.has(gid)) {
+                    const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
+                    const cList = pMap.get('') || (pMap.set('', []), pMap.get('')!);
+                    cList.push(t.name);
+                    continue;
+                  }
+                  const g = groupById.get(gid)!;
+                  const parentId = g.parentId ? String(g.parentId) : String(g.id);
+                  const childKey = g.parentId ? String(g.id) : '';
+                  const pMap = parentBuckets.get(parentId) || (parentBuckets.set(parentId, new Map()), parentBuckets.get(parentId)!);
+                  const list = pMap.get(childKey) || (pMap.set(childKey, []), pMap.get(childKey)!);
+                  list.push(t.name);
+                }
+                const parentEntries = Array.from(parentBuckets.entries());
+                return parentEntries.map(([parentId, childMap]) => (
+                  <details key={parentId || 'ungrouped'} className="tag-dropdown">
+                    <summary>{parentId ? (groupById.get(parentId)?.name || '') : 'Ungrouped'}</summary>
+                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                      {Array.from(childMap.entries()).map(([childId, names]) => (
+                        <div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {names.map(tag => (
+                            <button key={tag} type="button" className="btn-ghost" onClick={() => applyTagToSubsSelection(tag)}>{tag}</button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ));
+              })()}
+            </div>
+          )}
+
+          {/* Filters */}
           <FiltersBar
             chain={chain}
             setChain={setChain}
@@ -1294,11 +1523,47 @@ const channelsFiltered = useMemo(() => {
             onSaveChanges={saveChangesToGroup}
             onCancelEdit={cancelEditing}
           />
-          <div style={{ padding: 16 }}>
-            <div className="card" style={{ padding: 12 }}>
-              <div className="muted">This section is scaffolded. Detailed features will be implemented next.</div>
+          {mode === 'subs' ? (
+            <>
+            {/* Subs pager (top) */}
+            <div className="toolbar-2">
+              <div className="page-size">
+                <label htmlFor="subsPageSize">Per page:</label>
+                <select id="subsPageSize" value={pageSize} onChange={(e)=> setPageSize(parseInt(e.target.value, 10))}>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={250}>250</option>
+                  <option value={500}>500</option>
+                </select>
+              </div>
+              <div className="pager">
+                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">‹ Prev</button>
+                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>
+                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ›</button>
+              </div>
+              <div className="total-info">{subsTotal} total</div>
             </div>
-          </div>
+
+            {/* Subs list */}
+            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} />
+
+            {/* Subs pager (bottom) */}
+            <div className="toolbar-2">
+              <div className="pager" style={{ marginLeft: 0 }}>
+                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">‹ Prev</button>
+                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>
+                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ›</button>
+              </div>
+              <div className="total-info">{subsTotal} total</div>
+            </div>
+            </>
+          ) : (
+            <div style={{ padding: 16 }}>
+              <div className="card" style={{ padding: 12 }}>
+                <div className="muted">Recommender placeholder. Shuffle coming soon.</div>
+              </div>
+            </div>
+          )}
         </div>
         <div className="manager-only">
           <header>
@@ -1842,6 +2107,32 @@ const channelsFiltered = useMemo(() => {
     tagsRegistry={tags}
   />
 )}
+
+{/* Manager pager (bottom) */}
+<div className="toolbar-2">
+  <div className="pager" style={{ marginLeft: 0 }}>
+    <button
+      type="button"
+      className="btn-ghost"
+      onClick={() => setPage(p => Math.max(1, p - 1))}
+      disabled={page <= 1}
+      title="Previous page"
+    >
+      ‹ Prev
+    </button>
+    <span className="page-info">Page {page} / {totalPages}</span>
+    <button
+      type="button"
+      className="btn-ghost"
+      onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+      disabled={page >= totalPages}
+      title="Next page"
+    >
+      Next ›
+    </button>
+  </div>
+  <div className="total-info">{total} total</div>
+</div>
 
 {/* Undo toast (if you still want it visible here) */}
 {showUndo && lastDeleted && (

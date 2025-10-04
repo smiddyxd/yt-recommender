@@ -291,6 +291,9 @@ Global Reminder
 
 ## Options UI Highlights
 - Top-level tabs: Manager (current Options UI), Subs (chronological feed view), Recommender (multi-source recommendations). Manager contains the existing views and toolbars below. Subs shows the Presets section in the sidebar for parity with Manager.
+- Subs mode: shows videos from channels tagged `subscribed` and videos whose `sources` include `SubscriptionsFeed`, sorted by `uploadedAt` (chronological). Reuses FiltersBar and Presets. Adds top-right indicators: latest publish time and last subs scrape timestamp, plus a "Scrape" button.
+- Recommender mode: placeholder view for now; includes a top-right "Shuffle" button (no-op).
+- Pagination: Manager and Subs show pager and page-size controls at both top and bottom. Recommender does not paginate.
 - Views: Videos, Trash, Channels, Channels Trash, and Pending (debug). A view header shows the current view ("Videos", "Videos Trash", "Channels", "Channels Trash", or "Pending (debug)").
 - Top bar toggles (single buttons):
   - List <-> Grid view
