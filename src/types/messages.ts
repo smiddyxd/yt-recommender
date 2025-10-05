@@ -1,6 +1,33 @@
 // add near top
 import type { Condition, Group } from '../shared/conditions';
 
+// ---- Recommender / Rec Sets ----
+export interface RecEntry {
+  presetId: string;
+  role: 'filter' | 'weighted';
+  weight: number; // 0..3 (0 disables when role=weighted)
+  minPerPage?: number;
+  maxPerPage?: number;
+  prioritizeViewcount: number; // 0..1
+  prioritizeRecency: number;   // 0..1
+  randomness: number;          // 0..1
+}
+
+export interface PageRecord {
+  id: string;
+  recSetId: string;
+  timestamp: number;
+  videoIds: string[];
+}
+
+export interface RecSet {
+  id: string;
+  name: string;
+  pageSize: number;
+  entries: RecEntry[];
+  history?: PageRecord[]; // output-only, bounded (e.g., last 100)
+}
+
 // ---- Collections ----
 export interface CollectionRec {
   id: string;
@@ -44,7 +71,7 @@ export type Msg =
   | { type: 'scrape/subscriptionsManager'; payload: {} }
   | { type: 'scrape/history'; payload: { max?: number } }
   | { type: 'page/GET_CONTEXT'; payload: {} }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' | 'collections' } } // optional push event
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' | 'collections' | 'recSets' } } // optional push event
   | { type: 'videos/delete';  payload: { ids: string[] } }
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
@@ -90,6 +117,19 @@ export type Msg =
   | { type: 'collections/create'; payload: { name: string; parentId?: string | null } }
   | { type: 'collections/update'; payload: { id: string; patch: Partial<CollectionRec> } }
   | { type: 'collections/delete'; payload: { id: string } }
+  // RECOMMENDER / REC SETS
+  | { type: 'recSets/list'; payload: {} }
+  | { type: 'recSets/create'; payload: { name: string; pageSize: number; entries?: RecEntry[] } }
+  | { type: 'recSets/update'; payload: { id: string; patch: Partial<RecSet> } }
+  | { type: 'recSets/delete'; payload: { id: string } }
+  | { type: 'recSets/duplicate'; payload: { id: string; name?: string } }
+  // REC SETS HISTORY
+  | { type: 'recSets/history/list'; payload: { recSetId: string } }
+  | { type: 'recSets/history/open'; payload: { recordId: string } }
+  | { type: 'recSets/history/delete'; payload: { recordId: string } }
+  | { type: 'recSets/history/export'; payload: { recordId: string } }
+  // PAGE BUILD
+  | { type: 'recommender/buildPage'; payload: { recSetId: string; seed?: string; respectDontRecommend?: boolean } }
   // VIDEO <-> COLLECTIONS
   | { type: 'videos/collections/apply'; payload: { ids: string[]; collectionId: string; op: 'add'|'remove' } }
   // TAG GROUPS (for organizing tags)
@@ -106,7 +146,7 @@ export type Msg =
   | { type: 'rules/update';  payload: { id: string; patch: Partial<RuleRec> } }
   | { type: 'rules/delete';  payload: { id: string } }
   | { type: 'rules/runAll';  payload: { onlyEnabled?: boolean } }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' } }
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'groups' | 'rules' | 'tagGroups' | 'collections' | 'recSets' } }
   // BACKUP (Google Drive)
   | { type: 'backup/saveSettings'; payload: {} }
   | { type: 'backup/getClientId'; payload: {} }
