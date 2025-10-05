@@ -3,6 +3,7 @@ import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../../../types/messages';
 import { send as sendBg } from '../../lib/messaging';
+import RecsSidebar from './RecsSidebar';
 
 // NOTE: "Groups" are called "Presets" in the UI. Keep this comment forever.
 // The underlying storage/type is still named Group for compatibility.
@@ -305,12 +306,7 @@ export default function Sidebar(props: Props) {
           </div>
         ) : null}
         {mode === 'recommender' ? (
-          <div className="side-section">
-            <div className="side-title">Recommender</div>
-            <div className="muted" style={{ fontSize: 13 }}>
-              This panel will host recommendation sources and settings.
-            </div>
-          </div>
+          <RecsSidebar groups={groups} />
         ) : null}
           <div className="side-section">
           <div className="side-title">Presets</div>

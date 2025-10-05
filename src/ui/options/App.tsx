@@ -4,9 +4,9 @@ import { matches, matchesChannel, type Condition, type Group as GroupRec } from 
 import FiltersBar from './components/FiltersBar';
 import type { FilterEntry } from './lib/filters';
 import { chainToCondition, conditionToChainSimple } from './lib/filters';
-import { getAll as idbGetAll, pageVideosByUploadedAt } from '../lib/idb';
+import { getAll as idbGetAll, pageVideosByUploadedAt, getOne as idbGetOne } from '../lib/idb';
 import { send as sendBg } from '../lib/messaging';
-import type { TagRec, TagGroupRec, CollectionRec } from '../../types/messages';
+import type { TagRec, TagGroupRec, CollectionRec, RecSet } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import { toHex6, darken, textColorBW } from '../lib/colors';
 import VideoList from './components/VideoList';
@@ -172,6 +172,15 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [videoSorts, setVideoSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [channelSorts, setChannelSorts] = useState<Array<{ field: string; dir: 'asc' | 'desc' }>>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
+
+  // Recommender state
+  const [recSets, setRecSets] = useState<RecSet[]>([]);
+  const [recSetId, setRecSetId] = useState<string>('');
+  const [respectDontRecommend, setRespectDontRecommend] = useState<boolean>(true);
+  const [recSeed, setRecSeed] = useState<string>('');
+  const [recVideoIds, setRecVideoIds] = useState<string[]>([]);
+  const [recVideos, setRecVideos] = useState<Video[]>([]);
+  const [recLoading, setRecLoading] = useState<boolean>(false);
   const [driveClientId, setDriveClientId] = useState<string | null>(null);
   const [showBackups, setShowBackups] = useState<boolean>(false);
   const [showHistory, setShowHistory] = useState<boolean>(false);
@@ -599,6 +608,7 @@ useEffect(() => {
       if (ent === 'groups') loadGroups();
       if (ent === 'channels') { loadChannelsDir(); void refreshStubCount(); }
       if (ent === 'topics') loadTopicOptions();
+      if (ent === 'recSets') loadRecSets();
     } else if (msg?.type === 'refresh/progress') {
       const p = msg.payload || {};
       setRefreshing(true);
@@ -1517,7 +1527,7 @@ const channelsFiltered = useMemo(() => {
 
               {/* Selection controls (videos only) */}
               {mode !== 'recommender' && (
-              <div className="sel-controls">
+                <div className="sel-controls">
                 <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => setSelected(new Set(subsDisplayVideos.map(v => v.id)))}>all</button>
                 <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selected.size === 0}>C</button>
                 <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
@@ -1548,6 +1558,18 @@ const channelsFiltered = useMemo(() => {
                 </span>
                 <span className="sel-info">{subsSelectedVisibleSetDisplay.size}{subsSelectedHiddenCount > 0 ? ` -${subsSelectedHiddenCount}` : ''}</span>
               </div>
+              )}
+              {mode === 'recommender' && (
+                <div className="sel-controls" style={{ gap: 8 }}>
+                  <select className="side-input" value={recSetId} onChange={(e)=> setRecSetId(e.currentTarget.value)} title="Rec Set">
+                    {recSets.map(s => (<option key={s.id} value={s.id}>{s.name}</option>))}
+                  </select>
+                  <button type="button" className="btn-ghost" title="Reshuffle" onClick={()=> buildRecPage()}>Reshuffle</button>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} title="Exclude dontRecommend-tagged items">
+                    <input type="checkbox" checked={respectDontRecommend} onChange={(e)=> setRespectDontRecommend(e.currentTarget.checked)} />
+                    Respect dontRecommend
+                  </label>
+                </div>
               )}
 
               <span style={{ marginLeft: 'auto' }} />
@@ -1677,9 +1699,16 @@ const channelsFiltered = useMemo(() => {
             </>
           ) : (
             <div style={{ padding: 16 }}>
-              <div className="card" style={{ padding: 12 }}>
-                <div className="muted">Recommender placeholder. Shuffle coming soon.</div>
+              <div className="toolbar-2" style={{ marginBottom: 8 }}>
+                <div className="page-size">
+                  <label htmlFor="recPageSize">Per page:</label>
+                  <select id="recPageSize" value={(() => { const sel = recSets.find(s => s.id === recSetId); return sel?.pageSize || 0; })()} onChange={(e)=>{ const val = parseInt(e.target.value, 10); const sel = recSets.find(s => s.id === recSetId); if (sel) { void sendBg('recSets/update', { id: sel.id, patch: { pageSize: val } }); } }}>
+                    {[10,20,30,40,50].map(n => (<option key={n} value={n}>{n}</option>))}
+                  </select>
+                </div>
+                <div className="total-info">{recVideoIds.length} items</div>
               </div>
+              <VideoList items={recVideos} layout={layout} loading={recLoading} selected={new Set()} onToggle={()=>{}} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />
             </div>
           )}
         </div>
@@ -2322,3 +2351,38 @@ const channelsFiltered = useMemo(() => {
 
 
   
+  // Load Rec Sets when entering Recommender mode
+  useEffect(() => {
+    if (mode === 'recommender') {
+      loadRecSets();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
+
+  async function loadRecSets() {
+    try {
+      const r: any = await sendBg('recSets/list', {} as any);
+      const items: RecSet[] = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+      setRecSets(items);
+      if (!recSetId && items.length) setRecSetId(items[0].id);
+    } catch { setRecSets([]); }
+  }
+
+  async function buildRecPage(seed?: string) {
+    if (!recSetId) return;
+    setRecLoading(true);
+    const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    setRecSeed(String(s));
+    const resp: any = await sendBg('recommender/buildPage', { recSetId, seed: String(s), respectDontRecommend });
+    const ids: string[] = (resp && resp.ok && Array.isArray(resp.videoIds)) ? resp.videoIds : [];
+    setRecVideoIds(ids);
+    const rows: Video[] = [];
+    for (const id of ids) {
+      try {
+        const v: any = await idbGetOne('videos', id);
+        if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any);
+      } catch {}
+    }
+    setRecVideos(rows);
+    setRecLoading(false);
+  }
