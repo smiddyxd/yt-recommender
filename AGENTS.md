@@ -64,7 +64,7 @@ Pre-Edit Checklist
 Global Reminder
 - Treat AGENTS.md as canonical. Always favor minimal, surgical edits. If in doubt, stop and ask.
 
-**Verified As Of:** 2025-10-04
+**Verified As Of:** 2025-10-05
 
 ## Project Snapshot
 - Extension (MV3) that caches YouTube videos/channels you see, enriches via YouTube Data API, lets you filter/tag/group in an Options UI, and backs up configuration and history to Google Drive appData.
@@ -86,6 +86,11 @@ Global Reminder
 ## Architecture Overview
 - Manifest V3: background service worker, one content script, Options page (React), Popup (React).
  - Collections: metadata (list, parent/child links) stored in chrome.storage.local; video membership stored on video rows in IndexedDB as `collectionIds[]`.
+
+### Recent Changes (2025-10-05)
+- FiltersBar: Sources chip shows friendly labels (Channel* sources display channel names; playlist shows a short id tail; page-scoped sources omit the “null” suffix). Added “Collections” to the “+ Add filter...” dropdown (`v_collections_any`).
+- Rules actions: extended to include `collections` (add/remove) with an optional `recursive` flag (applies to descendant collections), plus `delete` and `purge` video actions. Background applies these during `rules/runAll` and on relevant updates.
+- Collections filter behavior: filtering by a parent collection includes videos in descendant collections. Predicates (`collectionsAny`) climb parent links via a resolver.
 
 ### Recent Changes (2025-09-29)
 - Channel highlight: Across YouTube, channel anchors for channels tagged with the default channel tag `tagged` are outlined (`border: 3px solid #5edf8b`). Implemented in content via `chrome.storage.local.settings.channelTagsById`, MutationObserver, and navigation hooks; channel page headers are also marked when applicable.
@@ -121,7 +126,7 @@ Global Reminder
 
 ### UI
 - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
-  - Collections: Sidebar section to manage collections (create/rename/delete, set parent). Clicking a collection filters the Videos list to show only its items. Topbar tagger exposes a Collections dropdown plus +/− buttons to add/remove the current selection to/from the chosen collection.
+- Collections: Sidebar section to manage collections (create/rename/delete, set parent). Clicking a collection filters the Videos list to show its items and descendant collections. Topbar tagger exposes a Collections dropdown plus +/- buttons to add/remove the current selection to/from the chosen collection.
 - Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "×" button on the right to remove the entry.
 - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch). The popup now:
   - Polls the active tab context every ~1s while open to reflect SPA navigation changes (e.g., channel ? channel), updating video/channel id in place.
@@ -326,7 +331,7 @@ Global Reminder
 - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
- - Rules: A section below Presets lists all rules and provides a creator form with fields: `name`, `preset` (existing Group/Presets), `action` (initially supports tags add/remove), optional `channelIds` (comma/space‑separated), and an `enabled` toggle. Buttons: `Create`, `Run` (apply all enabled rules now). Each rule row shows enable/disable and delete controls.
+- Rules: A section below Presets lists all rules and provides a creator form with fields: `name`, `preset` (existing Group/Presets), `action` (supports tags add/remove; collections add/remove with optional `recursive`; and `delete`/`purge` video actions), optional `channelIds` (comma/space-separated), and an `enabled` toggle. Buttons: `Create`, `Run` (apply all enabled rules now). Each rule row shows enable/disable and delete controls.
   - "Fetch video data" calls YouTube API to fetch video metadata.
   - "Fetch channels (unfetched)" fetches channels that were never fetched.
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
