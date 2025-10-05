@@ -502,7 +502,7 @@ export async function updateRecSetLocal(id: string, patch: Partial<RecSet>): Pro
       ...(patch || {}),
       id: prev.id,
       name: String((patch as any)?.name ?? prev.name),
-      pageSize: Math.max(0, Math.floor((patch as any)?.pageSize ?? prev.pageSize || 0)),
+      pageSize: Math.max(0, Math.floor(((patch as any)?.pageSize ?? prev.pageSize ?? 0))),
       entries: Array.isArray((patch as any)?.entries) ? ((patch as any).entries as RecEntry[]).slice() : prev.entries,
       history: Array.isArray((patch as any)?.history) ? ((patch as any).history as PageRecord[]).slice() : (prev.history || []),
     };

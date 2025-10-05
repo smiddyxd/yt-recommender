@@ -240,8 +240,8 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
         const g = groupById.get(String(r.groupId));
         if (!g) continue;
         const matched = matches(v as any, g.condition, {
-          resolveGroup: (gid) => groupById.get(gid),
-          resolveChannel: (id) => ((id === chId) ? (chRow as any) : undefined),
+          resolveGroup: (gid: string) => groupById.get(gid),
+          resolveChannel: (id: string) => ((id === chId) ? (chRow as any) : undefined),
         } as any);
         if (!matched) continue;
         if (r.action?.kind === 'tags') {
@@ -719,8 +719,9 @@ async function runSubscriptionsManagerOnce(): Promise<{ subscribedCount: number;
   // Helper to list current subscriptions (ids + handles) from the page
   async function listSubs(): Promise<{ ids: string[]; handles: string[]; count: number }> {
     try {
+      const tabIdNum = tabId as number;
       const resp: any = await new Promise((resolve) => {
-        try { chrome.tabs?.sendMessage?.(tabId, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); }
+        try { chrome.tabs?.sendMessage?.(tabIdNum, { type: 'scrape/LIST_SUBSCRIPTIONS', payload: {} }, (r: any) => resolve(r)); } catch { resolve(null); }
       });
       const ids = Array.isArray(resp?.ids) ? (resp.ids as string[]).map(String) : [];
       const handles = Array.isArray(resp?.handles) ? (resp.handles as string[]).map(String) : [];
@@ -1085,14 +1086,14 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const parentId = (raw.payload?.parentId ?? null) as (string | null);
         const id = await createCollectionCfg(name, parentId);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
-        recordEvent('collections/create', { id, name, parentId }, { impact: { collections: 1 } });
+        recordEvent('collections/create', { id, name, parentId }, { impact: {} });
         scheduleBackup();
         sendResponse?.({ ok: true, id });
       } else if (raw.type === 'collections/update') {
         const { id, patch } = raw.payload || {};
         await updateCollectionCfg(id, patch);
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
-        recordEvent('collections/update', { id, patch }, { impact: { collections: 1 } });
+        recordEvent('collections/update', { id, patch }, { impact: {} });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'collections/delete') {
@@ -1101,7 +1102,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         try { await removeCollectionFromAllRows(id); } catch {}
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
-        recordEvent('collections/delete', { id }, { impact: { collections: 1 } });
+        recordEvent('collections/delete', { id }, { impact: {} });
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'videos/collections/apply') {
@@ -1305,19 +1306,40 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
             cur.onerror = () => resolve(out);
           } catch { resolve(out); }
         });
+        // Prefetch channels for channel-aware predicates
+        const chIds = Array.from(new Set(videos.map(v => String(v?.channelId || '')).filter(Boolean)));
+        const channelMap: Map<string, any> = new Map();
+        try {
+          const tx = (await openDB()).transaction('channels', 'readonly');
+          const os = tx.objectStore('channels');
+          for (const id of chIds) {
+            await new Promise<void>((res) => {
+              try {
+                const g = os.get(String(id));
+                g.onsuccess = () => { if (g.result) channelMap.set(String(id), g.result as any); res(); };
+                g.onerror = () => res();
+              } catch { res(); }
+            });
+          }
+        } catch {}
         const dont = 'dontrecommend';
         let count = 0;
-        for (const v of videos) {
-          if (respectToggle) {
-            const tags = Array.isArray(v?.tags) ? v.tags : [];
-            if (tags.some((t: string) => String(t || '').toLowerCase() === dont)) continue;
+        const preset = groupById.get(presetId);
+        if (preset) {
+          for (const v of videos) {
+            if (respectToggle) {
+              const tags = Array.isArray(v?.tags) ? v.tags : [];
+              if (tags.some((t: string) => String(t || '').toLowerCase() === dont)) continue;
+            }
+            try {
+              const ok = matches(v as any, preset.condition, {
+                resolveGroup: (id: string) => groupById.get(String(id)),
+                resolveChannel: (id: string) => channelMap.get(String(id)),
+                seenGroups: new Set(),
+              } as any);
+              if (ok) count += 1;
+            } catch {}
           }
-          const g = groupById.get(presetId);
-          if (!g) continue;
-          try {
-            const ok = matches(v as any, g.condition, { resolveGroup: (id) => groupById.get(String(id)), seenGroups: new Set() } as any);
-            if (ok) count += 1;
-          } catch {}
         }
         sendResponse?.({ ok: true, count });
       } else if (raw.type === 'videos/applyTags') {
@@ -1419,7 +1441,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
   } else if (raw.type === 'tags/delete') {
         const nm = String(raw.payload?.name || '');
         const cascade = raw.payload?.cascade ?? true;
-        if (!isDefaultTag(nm)) { await deleteTag(nm, cascade); await deleteTagInDB(nm, cascade); }
+        if (!isDefaultTag(nm)) { await deleteTag(nm); await deleteTagInDB(nm, cascade); }
         chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } });
       if (cascade) { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } }); try { await recomputeVideoTagsForAllChannels(); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'channels' } }); } catch{} }
       recordEvent('tags/delete', { name: raw.payload?.name, cascade }, { impact: { tags: 1 } });

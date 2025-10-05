@@ -78,6 +78,7 @@ export type Msg =
   | { type: 'videos/wipeSources'; payload: {} }
   | { type: 'videos/applyYTBatch'; payload: { items: any[] } }
   | { type: 'videos/refreshAll'; payload: { skipFetched?: boolean } }
+  | { type: 'videos/setType'; payload: { ids: string[]; type: 'video'|'short'|'livestream' } }
   | { type: 'videos/stubsCount'; payload: {} }
   | { type: 'channels/stubsCount'; payload: {} }
   | { type: 'videos/purge'; payload: { ids: string[] } }

@@ -6,6 +6,7 @@ import { send as sendBg } from '../../lib/messaging';
 
 type Props = {
   groups: GroupRec[];
+  respectDontRecommend?: boolean;
 };
 
 export default function RecsSidebar({ groups, respectDontRecommend = true }: Props) {
@@ -16,12 +17,52 @@ export default function RecsSidebar({ groups, respectDontRecommend = true }: Pro
   const [newPageSize, setNewPageSize] = useState<number>(20);
   const [history, setHistory] = useState<Array<{ id: string; timestamp: number; videoIds: string[] }>>([]);
   const [historyOpen, setHistoryOpen] = useState<boolean>(false);
+  const [rowCandByIdx, setRowCandByIdx] = useState<Record<number, number>>({});
+  const [globalPool, setGlobalPool] = useState<number | null>(null);
 
   const groupOptions = useMemo(() => groups.map(g => ({ id: g.id, name: g.name })), [groups]);
-    const [rowCandByIdx, setRowCandByIdx] = useState<Record<number, number>>({});
-  const [globalPool, setGlobalPool] = useState<number | null>(null);
+  const sumW = useMemo(() => (draft?.entries || [])
+    .filter(e => e.role === 'weighted' && (e.weight || 0) > 0)
+    .reduce((a, e) => a + (e.weight || 0), 0), [draft]);
+
   useEffect(() => { void loadSets(); }, []);
-  // Open editor event from runtime
+  useEffect(() => {
+    function onMsg(msg: any) {
+      if (msg?.type === 'db/change' && msg?.payload?.entity === 'recSets') loadSets();
+    }
+    chrome.runtime.onMessage.addListener(onMsg);
+    return () => chrome.runtime.onMessage.removeListener(onMsg);
+  }, []);
+
+  // Recompute candidate stats when editing or toggle changes
+  useEffect(() => {
+    async function recompute() {
+      if (!editingId) { setRowCandByIdx({}); setGlobalPool(null); return; }
+      try {
+        const evalResp: any = await sendBg('recommender/evaluate', { recSetId: editingId, respectDontRecommend });
+        const dbg = evalResp && evalResp.ok ? evalResp.debug : null;
+        const map: Record<number, number> = {};
+        if (dbg && dbg.perRow) {
+          for (const r of dbg.perRow as any[]) { map[Number(r.rowIndex)||0] = Number(r.candidates)||0; }
+          setGlobalPool(typeof dbg.globalPool === 'number' ? dbg.globalPool : null);
+        } else {
+          setGlobalPool(null);
+        }
+        // Filter rows: channel-aware count via presetCount
+        if (draft?.entries && draft.entries.length) {
+          await Promise.all(draft.entries.map(async (e, idx) => {
+            if (e.role === 'filter' && e.presetId) {
+              try { const r: any = await sendBg('recommender/presetCount', { presetId: e.presetId, respectDontRecommend }); map[idx] = Number(r?.count || 0); } catch { map[idx] = 0; }
+            }
+          }));
+        }
+        setRowCandByIdx(map);
+      } catch { setRowCandByIdx({}); setGlobalPool(null); }
+    }
+    void recompute();
+  }, [editingId, respectDontRecommend, draft]);
+
+  // Open editor event from runtime (empty-state action)
   useEffect(() => {
     function onOpenEditor(ev: any) {
       try {
@@ -33,32 +74,6 @@ export default function RecsSidebar({ groups, respectDontRecommend = true }: Pro
     window.addEventListener('recs:openEditor' as any, onOpenEditor as any);
     return () => window.removeEventListener('recs:openEditor' as any, onOpenEditor as any);
   }, [sets]);
-  useEffect(() => {
-    function onMsg(msg: any) {
-      if (msg?.type === 'db/change' && msg?.payload?.entity === 'recSets') loadSets();
-    }
-    chrome.runtime.onMessage.addListener(onMsg);
-    return () => chrome.runtime.onMessage.removeListener(onMsg);
-  }, []);
-  useEffect(() => {
-    // Recompute candidate stats when editing or toggle changes
-    async function recompute() {
-      if (!editingId) { setRowCandByIdx({}); setGlobalPool(null); return; }
-      try {
-        const evalResp: any = await sendBg('recommender/evaluate', { recSetId: editingId, respectDontRecommend });
-        const dbg = evalResp && evalResp.ok ? evalResp.debug : null;
-        if (dbg && dbg.perRow) {
-          const map: Record<number, number> = {};
-          for (const r of dbg.perRow as any[]) { map[Number(r.rowIndex)||0] = Number(r.candidates)||0; }
-          setRowCandByIdx(map);
-          setGlobalPool(typeof dbg.globalPool === 'number' ? dbg.globalPool : null);
-        } else {
-          setRowCandByIdx({}); setGlobalPool(null);
-        }
-      } catch { setRowCandByIdx({}); setGlobalPool(null); }
-    }
-    void recompute();
-  }, [editingId, respectDontRecommend, draft]);
 
   async function loadSets() {
     const r: any = await sendBg('recSets/list', {});
@@ -116,32 +131,28 @@ export default function RecsSidebar({ groups, respectDontRecommend = true }: Pro
     setDraft({ ...draft, entries: [...draft.entries, def] });
   }
 
-  
-  useEffect(() => {
-    async function recompute() {
-      if (!editingId) { setRowCandByIdx({}); setGlobalPool(null); return; }
-      try {
-        const evalResp: any = await sendBg('recommender/evaluate', { recSetId: editingId, respectDontRecommend });
-        const dbg = evalResp && evalResp.ok ? evalResp.debug : null;
-        const map: Record<number, number> = {};
-        if (dbg && dbg.perRow) {
-          for (const r of dbg.perRow as any[]) { map[Number(r.rowIndex)||0] = Number(r.candidates)||0; }
-          setGlobalPool(typeof dbg.globalPool === 'number' ? dbg.globalPool : null);
-        } else {
-          setGlobalPool(null);
-        }
-        if (draft?.entries && draft.entries.length) {
-          await Promise.all(draft.entries.map(async (e, idx) => {
-            if (e.role === 'filter' && e.presetId) {
-              try { const r: any = await sendBg('recommender/presetCount', { presetId: e.presetId, respectDontRecommend }); map[idx] = Number(r?.count || 0); } catch { map[idx] = 0; }
-            }
-          }));
-        }
-        setRowCandByIdx(map);
-      } catch { setRowCandByIdx({}); setGlobalPool(null); }
-    }
-    void recompute();
-  }, [editingId, respectDontRecommend, draft]);
+  function removeRow(idx: number) {
+    if (!draft) return;
+    const entries = draft.entries.slice();
+    entries.splice(idx, 1);
+    setDraft({ ...draft, entries });
+  }
+
+  async function saveDraft() {
+    if (!draft) return;
+    const patch = { name: draft.name, pageSize: draft.pageSize, entries: draft.entries } as Partial<RecSet>;
+    await sendBg('recSets/update', { id: draft.id, patch });
+  }
+
+  async function duplicate(id: string) {
+    await sendBg('recSets/duplicate', { id });
+  }
+
+  async function remove(id: string) {
+    if (!confirm('Delete this Rec Set?')) return;
+    await sendBg('recSets/delete', { id });
+    if (editingId === id) { setEditingId(null); setDraft(null); }
+  }
 
   async function loadHistory(id?: string) {
     const rid = String(id || editingId || '');
@@ -252,6 +263,7 @@ export default function RecsSidebar({ groups, respectDontRecommend = true }: Pro
           <div className="side-row" style={{ justifyContent: 'flex-start' }}>
             <button className="btn-ghost" onClick={addRow}>Add row</button>
           </div>
+
           {/* History panel */}
           <div className="side-subsection" style={{ marginTop: 8 }}>
             <div className="side-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -281,9 +293,4 @@ export default function RecsSidebar({ groups, respectDontRecommend = true }: Pro
     </div>
   );
 }
-
-
-
-
-
 

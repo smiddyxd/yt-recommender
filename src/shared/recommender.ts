@@ -15,9 +15,10 @@ export interface BuildPageParams {
 
 export interface BuildPageResult {
   videoIds: string[];
+  metaById?: Record<string, { rowIdx: number; presetId: string; recent: boolean; highViews: boolean }>;
   debug?: {
     globalPool: number;
-    perRow: Array<{ rowIndex: number; role: RecEntry['role']; candidates: number; placed: number; weight: number; min?: number; max?: number }>
+    perRow: Array<{ rowIndex: number; role: RecEntry['role']; candidates: number; placed: number; weight: number; min?: number; max?: number }>;
   };
 }
 
