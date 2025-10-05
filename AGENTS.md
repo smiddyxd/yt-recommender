@@ -516,3 +516,38 @@ Use this section as an "inbox" for future patch notes. After integrating updates
     - A new Filters chip “Collections” lets you include/exclude videos by collection id; parent inheritance applies (videos in a child match their ancestors too).
     - Switching between a collection view and normal Videos view disables the selection; switching Channels ↔ Videos clears it (unchanged).
   - Backups: settings `collections[]` included in `settings.json` snapshots and baseline snapshots.
+## Recommender
+### Current Design (2025-10-05)
+- Rec Sets (v2): sidebar editor manages sets; each row references an existing Preset (aka Group) with always-visible controls.
+  - Role: Filter vs Weighted
+  - Weight: 0..3 (weight 0 disables the row; when disabled, `min` is ignored)
+  - Min/Max per page (tiny inputs)
+  - Sliders: Prioritize Viewcount (0..1), Prioritize Recency (0..1), Randomness (0..1)
+  - Live expected slots preview: ~round(pageSize*wi/sumW) clamped by Min/Max
+  - Defaults per row: role=weighted, weight=1, min=0, max=pageSize, prioritizeViewcount=0, prioritizeRecency=0, randomness=0
+- Topbar (runtime): Rec Set selector; Reshuffle (new seed); global toggle “Respect dontRecommend” (default ON, persisted globally).
+- Default tag: `dontRecommend` is a reserved system tag (cannot rename/delete). One-time migration auto-creates it if missing. When the toggle is ON, items with this tag are excluded from candidates.
+- Sampling engine (deterministic, overlap-safe):
+  - Global pool: items matching all Filter rows; if toggle ON, exclude `dontRecommend`.
+  - Scoring per weighted row:
+    - Recency: B_recency = 2^(-age_days / 30). If `uploadedAt` missing → 0.5.
+    - Views: B_views = minmax_row(log10(views+1)). If constant → 0.5.
+    - Mix: let α=prioritizeRecency, β=prioritizeViewcount. If α+β>0, base=(α*B_recency+β*B_views)/(α+β); else base=0.5.
+    - Seeded randomness: R(item)=hash32(recSetSeed+":"+itemId)/2^32; score=(1-randomness)*base + randomness*R.
+  - Allocation:
+    - Mins first (clamp to candidates). If Σmin > pageSize → shrink via Hamilton method (largest remainder) to exactly pageSize.
+    - Remaining targets by largest remainder on raw quotas; fill up to min_i+target_i honoring max and exhaustion.
+    - Backfill unmet targets proportionally until full or no capacity.
+  - Overlap de-dup: when multiple rows want the same item, claim goes to the row with the largest remaining gap; tie-break by hash(itemId+":"+rowId+":"+seed). The claimant is the tile’s “from: PresetName”. If claimant hits max, try next; else skip.
+  - Final order: sort chosen items by the claimant row’s score; ties by hash(itemId, seed). Deterministic per seed.
+- Tiles (runtime): show `from: PresetName`; show “recent” if α>=0.3 and item is in the top quartile of B_recency for that row; show “high views” if β>=0.3 and item is in the top quartile of B_views.
+- History (output-only): stored in `chrome.storage.local.settings` under Rec Sets, not in IndexedDB.
+  - Shape per record: { id, recSetId, timestamp, videoIds[] }.
+  - Retention: keep last 100 records per Rec Set (FIFO oldest-first). Do not write a record when the page result is empty.
+  - Actions: Open as page (loads exact list with a banner “History view”; actions allowed), Delete (by recordId, no reindex/backfill), Export (JSON array of the record).
+- Storage: definitions and history live in `chrome.storage.local.settings` (e.g., `settings.recSets[]` with inline `history[]`). Global toggle persisted as `settings.recommender.respectDontRecommend`.
+- Messaging (planned): add `db/change { entity: 'recSets' }` push. CRUD for rec sets and history, plus `recommender/buildPage { recSetId, seed?, respectDontRecommend? } -> { videoIds[], debug? }`.
+- Edge behavior:
+  - Empty weighted set (all disabled or sumW=0): runtime shows friendly empty state; editor underlines Weights with a tip.
+  - Filters empty the pool: runtime empty state with quick actions (Open editor; Toggle “Respect dontRecommend” if ON). Editor shows a badge on each filter row with 0 matches and a summary note.
+  - Missing fields: if `uploadedAt` or `views` are missing, corresponding base components act as 0 contribution (i.e., lower score) but items remain eligible.
