@@ -1,5 +1,5 @@
 import type { Group as GroupRec, Condition } from '../shared/conditions';
-import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../types/messages';
+import type { TagRec, TagGroupRec, RuleRec, CollectionRec, RecSet, RecEntry, PageRecord } from '../types/messages';
 
 // Chrome storage keys
 const KEY = {
@@ -8,6 +8,8 @@ const KEY = {
   groups: 'settings.groups',
   rules: 'settings.rules',
   collections: 'settings.collections',
+  recSets: 'settings.recSets',
+  recommender: 'settings.recommender', // { respectDontRecommend: boolean }
   channelTagsById: 'settings.channelTagsById',
   rev: 'settings.rev',
   updatedAt: 'settings.updatedAt',
@@ -23,6 +25,8 @@ type SettingsBundle = {
   groups: GroupRec[];
   rules: RuleRec[];
   collections: CollectionRec[];
+  recSets: RecSet[];
+  recommender: { respectDontRecommend?: boolean } | undefined;
   channelTagsById: ChannelTagsMap;
   rev: number;
   updatedAt: number;
@@ -39,16 +43,18 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function readAll(): Promise<SettingsBundle> {
-  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.rules, KEY.collections, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
+  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.rules, KEY.collections, KEY.recSets, KEY.recommender, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
   const tags: TagRec[] = Array.isArray(o[KEY.tags]) ? o[KEY.tags] : [];
   const tagGroups: TagGroupRec[] = Array.isArray(o[KEY.tagGroups]) ? o[KEY.tagGroups] : [];
   const groups: GroupRec[] = Array.isArray(o[KEY.groups]) ? o[KEY.groups] : [];
   const rules: RuleRec[] = Array.isArray(o[KEY.rules]) ? o[KEY.rules] : [];
   const collections: CollectionRec[] = Array.isArray(o[KEY.collections]) ? o[KEY.collections] : [];
+  const recSets: RecSet[] = Array.isArray(o[KEY.recSets]) ? o[KEY.recSets] : [];
+  const recommender: { respectDontRecommend?: boolean } | undefined = (o[KEY.recommender] && typeof o[KEY.recommender] === 'object') ? o[KEY.recommender] : undefined;
   const channelTagsById: ChannelTagsMap = o[KEY.channelTagsById] && typeof o[KEY.channelTagsById] === 'object' ? (o[KEY.channelTagsById] as ChannelTagsMap) : {};
   const rev: number = Number.isFinite(o[KEY.rev]) ? Number(o[KEY.rev]) : 0;
   const updatedAt: number = Number.isFinite(o[KEY.updatedAt]) ? Number(o[KEY.updatedAt]) : 0;
-  return { tags, tagGroups, groups, rules, collections, channelTagsById, rev, updatedAt };
+  return { tags, tagGroups, groups, rules, collections, recSets, recommender, channelTagsById, rev, updatedAt };
 }
 
 async function writeAll(next: SettingsBundle): Promise<void> {
@@ -58,6 +64,8 @@ async function writeAll(next: SettingsBundle): Promise<void> {
     [KEY.groups]: next.groups,
     [KEY.rules]: next.rules,
     [KEY.collections]: next.collections,
+    [KEY.recSets]: next.recSets,
+    [KEY.recommender]: next.recommender,
     [KEY.channelTagsById]: next.channelTagsById,
     [KEY.rev]: next.rev,
     [KEY.updatedAt]: next.updatedAt,
@@ -429,12 +437,16 @@ export async function writeInitialLocalSettings(payload: Partial<SettingsBundle>
   const groups = Array.isArray(payload.groups) ? payload.groups : [];
   const rules = Array.isArray(payload.rules) ? payload.rules : [];
   const channelTagsById = (payload.channelTagsById || {}) as ChannelTagsMap;
+  const recSets: RecSet[] = Array.isArray((payload as any).recSets) ? ((payload as any).recSets as RecSet[]) : [];
+  const recommender = (payload as any).recommender && typeof (payload as any).recommender === 'object' ? (payload as any).recommender : undefined;
   const now = Date.now();
   await chrome.storage.local.set({
     [KEY.tags]: tags,
     [KEY.tagGroups]: tagGroups,
     [KEY.groups]: groups,
     [KEY.rules]: rules,
+    [KEY.recSets]: recSets,
+    [KEY.recommender]: recommender,
     [KEY.channelTagsById]: channelTagsById,
     [KEY.rev]: 1,
     [KEY.updatedAt]: now,
@@ -449,9 +461,152 @@ export async function getSettingsSnapshotForDownload(extra?: Partial<SettingsBun
     tagGroups: cur.tagGroups,
     groups: cur.groups,
     rules: cur.rules,
+    collections: cur.collections,
+    recSets: cur.recSets,
+    recommender: cur.recommender,
     channelTagsById: cur.channelTagsById,
     rev: cur.rev,
     updatedAt: cur.updatedAt,
     ...(extra || {}),
   } as SettingsBundle;
+}
+
+// ---- Rec Sets (local: chrome.storage.local) ----
+export async function listRecSetsLocal(): Promise<RecSet[]> {
+  const { recSets } = await readAll();
+  return Array.isArray(recSets) ? recSets.slice() : [];
+}
+
+export async function createRecSetLocal(name: string, pageSize: number, entries: RecEntry[] = []): Promise<string> {
+  const id = crypto.randomUUID();
+  const rec: RecSet = { id, name: String(name || ''), pageSize: Math.max(0, Math.floor(pageSize || 0)), entries: entries.slice(), history: [] };
+  await withLock(async () => {
+    const cur = await readAll();
+    const next = { ...cur, recSets: [...(cur.recSets || []), rec] } as SettingsBundle;
+    next.rev += 1; next.updatedAt = Date.now();
+    await writeAll(next);
+  });
+  return id;
+}
+
+export async function updateRecSetLocal(id: string, patch: Partial<RecSet>): Promise<void> {
+  const rid = String(id || ''); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const list = (cur.recSets || []).slice();
+    const idx = list.findIndex(r => String(r.id) === rid);
+    if (idx === -1) return;
+    const prev = list[idx];
+    const next: RecSet = {
+      ...prev,
+      ...(patch || {}),
+      id: prev.id,
+      name: String((patch as any)?.name ?? prev.name),
+      pageSize: Math.max(0, Math.floor((patch as any)?.pageSize ?? prev.pageSize || 0)),
+      entries: Array.isArray((patch as any)?.entries) ? ((patch as any).entries as RecEntry[]).slice() : prev.entries,
+      history: Array.isArray((patch as any)?.history) ? ((patch as any).history as PageRecord[]).slice() : (prev.history || []),
+    };
+    list[idx] = next;
+    const out = { ...cur, recSets: list } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+}
+
+export async function deleteRecSetLocal(id: string): Promise<void> {
+  const rid = String(id || ''); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const list = (cur.recSets || []).filter(r => String(r.id) !== rid);
+    const out = { ...cur, recSets: list } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+}
+
+export async function duplicateRecSetLocal(id: string, name?: string): Promise<string | null> {
+  const rid = String(id || ''); if (!rid) return null;
+  let newId: string | null = null;
+  await withLock(async () => {
+    const cur = await readAll();
+    const src = (cur.recSets || []).find(r => String(r.id) === rid);
+    if (!src) return;
+    const copy: RecSet = { id: crypto.randomUUID(), name: String(name || (src.name + ' (copy)')), pageSize: src.pageSize, entries: src.entries.slice(), history: [] };
+    newId = copy.id;
+    const out = { ...cur, recSets: [...(cur.recSets || []), copy] } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+  return newId;
+}
+
+export async function listRecSetHistoryLocal(recSetId: string): Promise<PageRecord[]> {
+  const rid = String(recSetId || '');
+  const { recSets } = await readAll();
+  const rec = (recSets || []).find(r => String(r.id) === rid);
+  return Array.isArray(rec?.history) ? rec!.history!.slice() : [];
+}
+
+export async function appendRecSetHistoryLocal(recSetId: string, record: PageRecord, cap: number = 100): Promise<void> {
+  if (!record?.videoIds || record.videoIds.length === 0) return; // skip empty outputs
+  const rid = String(recSetId || ''); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const list = (cur.recSets || []).slice();
+    const idx = list.findIndex(r => String(r.id) === rid);
+    if (idx === -1) return;
+    const prev = list[idx];
+    const history = Array.isArray(prev.history) ? prev.history.slice() : [];
+    history.unshift(record);
+    if (history.length > cap) history.length = cap;
+    list[idx] = { ...prev, history } as RecSet;
+    const out = { ...cur, recSets: list } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+}
+
+export async function deleteRecSetHistoryRecordLocal(recordId: string): Promise<void> {
+  const rid = String(recordId || ''); if (!rid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const list = (cur.recSets || []).map(r => ({ ...r, history: Array.isArray(r.history) ? r.history.filter(h => String(h.id) !== rid) : r.history }));
+    const out = { ...cur, recSets: list } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+}
+
+export async function getRecSetHistoryRecordLocal(recordId: string): Promise<PageRecord | null> {
+  const rid = String(recordId || ''); if (!rid) return null;
+  const { recSets } = await readAll();
+  for (const rs of (recSets || [])) {
+    const found = (rs.history || []).find(h => String(h.id) === rid);
+    if (found) return { ...found };
+  }
+  return null;
+}
+
+// ---- Recommender global settings ----
+export async function getRecommenderSettingsLocal(): Promise<{ respectDontRecommend: boolean }> {
+  const { recommender } = await readAll();
+  return { respectDontRecommend: !!(recommender?.respectDontRecommend ?? true) };
+}
+
+export async function setRecommenderSettingsLocal(patch: Partial<{ respectDontRecommend: boolean }>): Promise<void> {
+  await withLock(async () => {
+    const cur = await readAll();
+    const next = { ...(cur.recommender || {}) } as any;
+    if (typeof patch?.respectDontRecommend === 'boolean') next.respectDontRecommend = !!patch.respectDontRecommend;
+    const out = { ...cur, recommender: next } as SettingsBundle;
+    out.rev += 1; out.updatedAt = Date.now();
+    await writeAll(out);
+  });
+}
+
+// Utility: check if a tag exists in settings (by case-insensitive name)
+export async function hasTagLocal(name: string): Promise<boolean> {
+  const nm = String(name || '').toLowerCase();
+  const { tags } = await readAll();
+  return (tags || []).some(t => String(t.name || '').toLowerCase() === nm);
 }

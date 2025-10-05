@@ -2,7 +2,8 @@ import { renameTag as renameTagInDB, deleteTag as deleteTagInDB } from './db';
 import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed, applyCollections, removeCollectionFromAllRows } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
-import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload, listRulesLocal as listRulesCfg, createRuleLocal as createRuleCfg, updateRuleLocal as updateRuleCfg, deleteRuleLocal as deleteRuleCfg, listCollectionsLocal as listCollectionsCfg, createCollectionLocal as createCollectionCfg, updateCollectionLocal as updateCollectionCfg, deleteCollectionLocal as deleteCollectionCfg } from './settingsStorage';
+import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload, listRulesLocal as listRulesCfg, createRuleLocal as createRuleCfg, updateRuleLocal as updateRuleCfg, deleteRuleLocal as deleteRuleCfg, listCollectionsLocal as listCollectionsCfg, createCollectionLocal as createCollectionCfg, updateCollectionLocal as updateCollectionCfg, deleteCollectionLocal as deleteCollectionCfg, listRecSetsLocal, createRecSetLocal, updateRecSetLocal, deleteRecSetLocal, duplicateRecSetLocal, listRecSetHistoryLocal, appendRecSetHistoryLocal, deleteRecSetHistoryRecordLocal, getRecSetHistoryRecordLocal, getRecommenderSettingsLocal, setRecommenderSettingsLocal, hasTagLocal } from './settingsStorage';
+import { buildRecommendationPage, hash32 } from '../shared/recommender';
 import type { RuleRec } from '../types/messages';
 import { matches, type Group as GroupRec } from '../shared/conditions';
 import { registerSettingsProducer, saveSettingsNow, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
@@ -17,6 +18,7 @@ const DEFAULT_RATING_TAG_GROUP_NAME = 'Rating';
 const DEFAULT_TAGS = [
   { name: 'no fetch', manual: true, scope: 'both' as const },
   { name: 'hide', manual: true, scope: 'video' as const },
+  { name: 'dontRecommend', manual: true, scope: 'video' as const },
   { name: 'subscribed', manual: false, scope: 'channel' as const },
   { name: 'unsubscribed', manual: false, scope: 'channel' as const },
   { name: 'tagged', manual: true, scope: 'channel' as const },
@@ -393,12 +395,23 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
 // Try to ensure a baseline snapshot silently on startup (ignored if Drive not configured yet)
 try { void ensureBaselineSnapshot({ interactive: false }); } catch {}
 try { void migrateSettingsFromIDBIfNeeded(); } catch {}
+try { void ensureDontRecommendTagPresent(); } catch {}
 try { initHourlyBackupAlarm(); } catch {}
 
 async function scheduleBackup() {
   try { queueCommitFlush(3000); } catch {}
   try { queueSettingsBackup(); } catch {}
   try { void replayUnsyncedCommitsToDrive(); } catch {}
+}
+
+async function ensureDontRecommendTagPresent() {
+  try {
+    const exists = await hasTagLocal('dontRecommend');
+    if (!exists) {
+      await createTag('dontRecommend');
+      try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'tags' } }); } catch {}
+    }
+  } catch { /* ignore */ }
 }
 
 // Ensure there is at least one baseline snapshot in Drive appData so reverts are possible soon after setup
@@ -1101,6 +1114,115 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('videos/applyCollections', { ids, collectionId, op }, { impact: { videos: ids.length } });
         scheduleBackup();
         sendResponse?.({ ok: true, count: ids.length });
+      } else if (raw.type === 'recSets/list') {
+        const items = await listRecSetsLocal();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'recSets/create') {
+        const name = String(raw.payload?.name || '').trim();
+        const pageSize = Math.max(0, Math.floor(raw.payload?.pageSize || 0));
+        const entries = Array.isArray(raw.payload?.entries) ? raw.payload.entries : [];
+        const id = await createRecSetLocal(name, pageSize, entries as any);
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true, id });
+      } else if (raw.type === 'recSets/update') {
+        const { id, patch } = (raw.payload || {}) as any;
+        await updateRecSetLocal(String(id || ''), patch || {});
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'recSets/delete') {
+        const { id } = (raw.payload || {}) as any;
+        await deleteRecSetLocal(String(id || ''));
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'recSets/duplicate') {
+        const { id, name } = (raw.payload || {}) as any;
+        const newId = await duplicateRecSetLocal(String(id || ''), name ? String(name) : undefined);
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true, id: newId });
+      } else if (raw.type === 'recSets/history/list') {
+        const recSetId = String(raw.payload?.recSetId || '').trim();
+        const items = await listRecSetHistoryLocal(recSetId);
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'recSets/history/open') {
+        const recordId = String(raw.payload?.recordId || '').trim();
+        const record = await getRecSetHistoryRecordLocal(recordId);
+        sendResponse?.({ ok: !!record, record });
+      } else if (raw.type === 'recSets/history/delete') {
+        const recordId = String(raw.payload?.recordId || '').trim();
+        await deleteRecSetHistoryRecordLocal(recordId);
+        try { chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); } catch {}
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'recSets/history/export') {
+        const recordId = String(raw.payload?.recordId || '').trim();
+        const record = await getRecSetHistoryRecordLocal(recordId);
+        sendResponse?.({ ok: !!record, record });
+      } else if (raw.type === 'recommender/buildPage') {
+        const recSetId = String(raw.payload?.recSetId || '').trim();
+        if (!recSetId) { sendResponse?.({ ok: false, error: 'Missing recSetId' }); return; }
+        const [recSets, groups] = await Promise.all([listRecSetsLocal().catch(()=>[]), listGroups().catch(()=>[])]);
+        const rec = (recSets || []).find(r => String(r.id) === recSetId);
+        if (!rec) { sendResponse?.({ ok: false, error: 'Rec Set not found' }); return; }
+        let respectToggle: boolean;
+        if (typeof raw.payload?.respectDontRecommend === 'boolean') {
+          respectToggle = !!raw.payload?.respectDontRecommend;
+          await setRecommenderSettingsLocal({ respectDontRecommend: respectToggle });
+        } else {
+          try { respectToggle = (await getRecommenderSettingsLocal()).respectDontRecommend; } catch { respectToggle = true; }
+        }
+        const seed = String(raw.payload?.seed || (crypto?.randomUUID?.() || String(Date.now()) + ':' + Math.random().toString(36).slice(2)));
+        // Load candidate videos
+        const db = await openDB();
+        const videos: any[] = await new Promise((resolve) => {
+          const out: any[] = [];
+          try {
+            const tx = db.transaction('videos', 'readonly');
+            const os = tx.objectStore('videos');
+            const cur = os.openCursor();
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(out); return; }
+              try { const row: any = c.value || {}; if (row?.id) out.push(row); } catch {}
+              c.continue();
+            };
+            cur.onerror = () => resolve(out);
+          } catch { resolve(out); }
+        });
+        // Prefetch channel rows for candidates
+        const chIds = Array.from(new Set(videos.map(v => String(v?.channelId || '')).filter(Boolean)));
+        const channelMap: Map<string, any> = new Map();
+        try {
+          const tx = (await openDB()).transaction('channels', 'readonly');
+          const os = tx.objectStore('channels');
+          for (const id of chIds) {
+            await new Promise<void>((res) => {
+              try {
+                const g = os.get(String(id));
+                g.onsuccess = () => { if (g.result) channelMap.set(String(id), g.result as any); res(); };
+                g.onerror = () => res();
+              } catch { res(); }
+            });
+          }
+        } catch {}
+        const groupById = new Map<string, GroupRec>(groups.map(g => [String(g.id), g] as any));
+        const result = buildRecommendationPage({
+          recSet: rec as any,
+          videos: videos as any,
+          resolveGroup: (id) => groupById.get(String(id)),
+          resolveChannel: (id) => channelMap.get(String(id)),
+          respectDontRecommend: !!respectToggle,
+          seed,
+          getViews: (v: any) => (typeof v?.views === 'number' ? v.views : undefined),
+        });
+        // Append history (skip if empty handled in helper)
+        const recordId = crypto?.randomUUID?.() || (hash32(seed + ':' + Date.now()).toString(16));
+        const record = { id: recordId, recSetId, timestamp: Date.now(), videoIds: result.videoIds } as any;
+        try { await appendRecSetHistoryLocal(recSetId, record); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); scheduleBackup(); } catch {}
+        sendResponse?.({ ok: true, videoIds: result.videoIds, debug: result.debug, seed, recordId: record.id });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         const add = sanitizeVideoTagAdds(addIds);
