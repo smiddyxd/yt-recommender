@@ -160,6 +160,7 @@ function App() {
     const [recSetId, setRecSetId] = useState<string>('');
     const [respectDontRecommend, setRespectDontRecommend] = useState<boolean>(true);
     const [recSeed, setRecSeed] = useState<string>('');
+    const [recLoading, setRecLoading] = useState<boolean>(false);
     const [recVideoIds, setRecVideoIds] = useState<string[]>([]);
     const [recMetaById, setRecMetaById] = useState<Record<string, {
         presetId: string;
@@ -438,7 +439,52 @@ function App() {
         } catch (e: any) {
             alert(`Backup failed: ${e?.message || e}`);
         }
-    } async function purgeSelected() {
+    } 
+    useEffect(() => {
+    if (mode === 'recommender') {
+        loadRecSets();
+    }    // eslint-disable-next-line react-hooks/exhaustive-deps  
+}, [mode]);
+async function loadRecSets() {
+    try {
+        const r: any = await sendBg('recSets/list', {} as any);
+        const items: RecSet[] = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+        setRecSets(items);
+        if (!recSetId && items.length) setRecSetId(items[0].id);
+    } catch {
+        setRecSets([]);
+    }
+}async function buildRecPage(seed?: string) {
+    if (!recSetId) return;
+    setRecLoading(true);
+    setRecIsHistoryView(false);
+    const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+    setRecSeed(String(s));
+    try {
+        const resp: any = await sendBg('recommender/buildPage', { recSetId, seed: String(s), respectDontRecommend } as any);
+        const ids: string[] = Array.isArray(resp?.videoIds) ? resp.videoIds : (Array.isArray(resp?.items) ? resp.items : []);
+        setRecVideoIds(ids);
+        const meta = (resp && resp.debug && typeof resp.debug.metaById === 'object') ? (resp.debug.metaById as Record<string, { presetId: string; recent?: boolean; highViews?: boolean }>) : {};
+        setRecMetaById(meta || {});
+        setRecGlobalPool(typeof resp?.debug?.globalPool === 'number' ? resp.debug.globalPool : null);
+        const rows: Video[] = [];
+        for (const id of ids) {
+            try {
+                const v: any = await idbGetOne('videos', id);
+                if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any);
+            } catch { }
+        }
+        setRecVideos(rows);
+    } catch {
+        setRecVideoIds([]);
+        setRecMetaById({});
+        setRecGlobalPool(null);
+        setRecVideos([]);
+    }
+    setRecLoading(false);
+}
+    
+    async function purgeSelected() {
         const ids = Array.from(selectedVisibleSetDisplay);
         if (!ids.length) return;
         const confirmMsg = (inChannelsTrash || inTrash) ? `Permanently delete ${ids.length} item(s) from trash? This cannot be undone.` : '';
@@ -1318,7 +1364,7 @@ function App() {
         } catch { }    // Update hash only for manager; keep last view otherwise
         if (view) setHashParams({ view });
     }, [view]);
-    return (<div className="page" data-mode={mode}><Sidebar tags={tags} newTag={newSidebarTag} setNewTag={setNewSidebarTag} tagEditing={tagEditing} tagEditValue={tagEditValue} setTagEditValue={setTagEditValue} startRename={startRename} cancelRename={cancelRename} commitRename={commitRename} addTag={addTag} removeTag={removeTag} importing={importing} importMessage={importMessage} onImportFile={handleImportFile} tagGroups={tagGroups} onCreateTagGroup={createTagGroup} onRenameTagGroup={renameTagGroup} onDeleteTagGroup={deleteTagGroup} onUpdateTagGroup={updateTagGroup} onAssignTagToGroup={assignTagToGroup} groups={groups} startEditFromGroup={startEditFromGroup} removeGroup={removeGroup} isPresetScrapeCheckable={isPresetScrapeCheckable} toggleGroupScrape={toggleGroupScrape} driveClientId={driveClientId} onSetDriveClientId={setDriveClientIdInteractive} onBackupNow={backupSettingsInteractive} respectDontRecommend={respectDontRecommend} collections={collections} activeCollectionId={activeCollectionId} onOpenCollection={openCollection} />      <div className="content">        {/* Non-manager content (Subs / Recommender) */}        <div className="non-manager-only">          <header>            <div className="controls">              {/* View toggle (single button) */}              <div className="view-toggle" role="group" aria-label="View mode">                <button type="button" className="icon-btn" aria-pressed={true} title={isList ? 'Switch to grid view' : 'Switch to list view'} onClick={() => setLayout(isList ? 'grid' : 'list')}                >                  {isList ? (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                      <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>                    </svg>) : (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                      <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>                    </svg>)}                </button>              </div>              {/* Selection controls (videos only) */}              {mode !== 'recommender' && (<div className="sel-controls">                <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => setSelected(new Set(subsDisplayVideos.map(v => v.id)))}>all</button>                <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selected.size === 0}>C</button>                <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
+    return (<div className="page" data-mode={mode}><Sidebar tags={tags} newTag={newSidebarTag} setNewTag={setNewSidebarTag} tagEditing={tagEditing} tagEditValue={tagEditValue} setTagEditValue={setTagEditValue} startRename={startRename} cancelRename={cancelRename} commitRename={commitRename} addTag={addTag} removeTag={removeTag} importing={importing} importMessage={importMessage} onImportFile={handleImportFile} tagGroups={tagGroups} onCreateTagGroup={createTagGroup} onRenameTagGroup={renameTagGroup} onDeleteTagGroup={deleteTagGroup} onUpdateTagGroup={updateTagGroup} onAssignTagToGroup={assignTagToGroup} groups={groups} startEditFromGroup={startEditFromGroup} removeGroup={removeGroup} isPresetScrapeCheckable={isPresetScrapeCheckable} toggleGroupScrape={toggleGroupScrape} driveClientId={driveClientId} onSetDriveClientId={setDriveClientIdInteractive} onBackupNow={backupSettingsInteractive} respectDontRecommend={respectDontRecommend} collections={collections} activeCollectionId={activeCollectionId} onOpenCollection={openCollection} mode={mode} onModeChange={(m) => setMode(m)} />      <div className="content">        {/* Non-manager content (Subs / Recommender) */}        <div className="non-manager-only">          <header>            <div className="controls">              {/* View toggle (single button) */}              <div className="view-toggle" role="group" aria-label="View mode">                <button type="button" className="icon-btn" aria-pressed={true} title={isList ? 'Switch to grid view' : 'Switch to list view'} onClick={() => setLayout(isList ? 'grid' : 'list')}                >                  {isList ? (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                      <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>                    </svg>) : (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                      <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>                    </svg>)}                </button>              </div>              {/* Selection controls (videos only) */}              {mode !== 'recommender' && (<div className="sel-controls">                <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => setSelected(new Set(subsDisplayVideos.map(v => v.id)))}>all</button>                <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selected.size === 0}>C</button>                <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
         setSelected(prev => {
             const next = new Set(prev);
             for (const v of subsDisplayVideos) {
@@ -1364,12 +1410,12 @@ function App() {
             list.push(t.name);
         } const parentEntries = Array.from(parentBuckets.entries());
         return parentEntries.map(([parentId, childMap]) => (<details key={parentId || 'ungrouped'} className="tag-dropdown">                    <summary>{parentId ? (groupById.get(parentId)?.name || '') : 'Ungrouped'}</summary>                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>                      {Array.from(childMap.entries()).map(([childId, names]) => (<div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>                          {names.map(tag => (<button key={tag} type="button" className="btn-ghost" onClick={() => applyTagToSubsSelection(tag)}>{tag}</button>))}                        </div>))}                    </div>                  </details>));
-    })()}            </div>)}          {/* Filters */}          <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} countryOptions={countryOptions} topicOptions={topicOptions} videoSourceOptions={videoSourcesOptionsMemo} videoTagOptions={videoTagOptions} channelTagOptions={channelTagOptions} groups={groups} tagsRegistry={tags} tagGroups={tagGroups} groupName={groupName}              {(!recLoading && recVideos.length === 0 && (recGlobalPool === 0)) && (<div className="card" style={{ padding: 12, marginBottom: 8 }}>                  <div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div>                  <div style={{ display: "flex", gap: 8 }}>                    <button className="btn-ghost" onClick={() => {
+    })()}            </div>)}          {/* Filters */}          <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} countryOptions={countryOptions} topicOptions={topicOptions} videoSourceOptions={videoSourcesOptionsMemo} videoTagOptions={videoTagOptions} channelTagOptions={channelTagOptions} groups={groups} tagsRegistry={tags} tagGroups={tagGroups} groupName={groupName} {/* (!recLoading && recVideos.length === 0 && (recGlobalPool === 0)) && (<div className="card" style={{ padding: 12, marginBottom: 8 }}>                  <div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div>                  <div style={{ display: "flex", gap: 8 }}>                    <button className="btn-ghost" onClick={() => {
         try {
             const ev = new CustomEvent("recs:openEditor", { detail: { recSetId } });
             window.dispatchEvent(ev as any);
         } catch { }
-    }}>Open editor</button>                  </div>                </div>)} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} />          {mode === 'subs' ? (<>            {/* Subs pager (top) */}            <div className="toolbar-2">              <div className="page-size">                <label htmlFor="subsPageSize">Per page:</label>                <select id="subsPageSize" value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}>                  <option value={50}>50</option>                  <option value={100}>100</option>                  <option value={250}>250</option>                  <option value={500}>500</option>                </select>              </div>              <div className="pager">                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            {/* Subs list */}            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />            {/* Subs pager (bottom) */}            <div className="toolbar-2">              <div className="pager" style={{ marginLeft: 0 }}>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            </>) : (<div style={{ padding: 16 }}>              {recIsHistoryView && (<div className="card" style={{ padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>                  <span className="muted">History view</span>                  <button className="btn-ghost" onClick={() => setRecIsHistoryView(false)}>Clear</button>                </div>)}              <div className="toolbar-2" style={{ marginBottom: 8 }}>                <div className="page-size">                  <label htmlFor="recPageSize">Per page:</label>                  <select id="recPageSize" value={(() => {
+    }}>Open editor</button>                  </div>                </div>) */} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} />          {mode === 'subs' ? (<>            {/* Subs pager (top) */}            <div className="toolbar-2">              <div className="page-size">                <label htmlFor="subsPageSize">Per page:</label>                <select id="subsPageSize" value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}>                  <option value={50}>50</option>                  <option value={100}>100</option>                  <option value={250}>250</option>                  <option value={500}>500</option>                </select>              </div>              <div className="pager">                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            {/* Subs list */}            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />            {/* Subs pager (bottom) */}            <div className="toolbar-2">              <div className="pager" style={{ marginLeft: 0 }}>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            </>) : (<div style={{ padding: 16 }}>              {recIsHistoryView && (<div className="card" style={{ padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>                  <span className="muted">History view</span>                  <button className="btn-ghost" onClick={() => setRecIsHistoryView(false)}>Clear</button>                </div>)}              <div className="toolbar-2" style={{ marginBottom: 8 }}>                <div className="page-size">                  <label htmlFor="recPageSize">Per page:</label>                  <select id="recPageSize" value={(() => {
         const sel = recSets.find(s => s.id === recSetId);
         return sel?.pageSize || 0;
     })()} onChange={(e) => {
@@ -1538,37 +1584,5 @@ function App() {
         return <span key={t} className="badge" style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}` : undefined }}>{t}</span>;
     })}            </span>)}          {Array.isArray((ch as any).videoTags) && (ch as any).videoTags.length > 0 && (<span className="badge">Video tags: {(ch as any).videoTags.join(', ')}</span>)}          {(ch as any).keywords && <span className="muted" style={{ fontSize: 12 }}>Keywords: {(ch as any).keywords}</span>}          {Array.isArray((ch as any).topics) && (ch as any).topics.length > 0 && (<span className="muted" style={{ fontSize: 12 }}>Topics: {(ch as any).topics.join(', ')}</span>)}        </div>        <div style={{ marginLeft: 'auto' }}>          <button type="button" className="btn-ghost" onClick={() => toggleChannelDebug(ch.id)}>Show info</button>        </div>      </div>      {openChannelDebug.has(ch.id) && (<div className="debug-panel" role="region" aria-label="Channel data" style={{ marginTop: -8, marginBottom: 8 }}>          <div className="debug-panel-head">            <span>Stored data</span>            <button className="debug-close" onClick={() => toggleChannelDebug(ch.id)} title="Close">A-</button>          </div>          <pre className="debug-pre">{JSON.stringify((channelFull[ch.id] ?? ch) as any, null, 2)}</pre>        </div>)}      </>))}    {channels.length === 0 && <div className="muted">No channels yet.</div>}  </div>) : (<VideoList items={pageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} />)}{/* Manager pager (bottom) */}<div className="toolbar-2">  <div className="pager" style={{ marginLeft: 0 }}>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} title="Previous page"    >      ï¿½ Prev    </button>    <span className="page-info">Page {page} / {totalPages}</span>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} title="Next page"    >      Next ï¿½    </button>  </div>  <div className="total-info">{total} total</div></div>{/* Undo toast (if you still want it visible here) */}{showUndo && lastDeleted && (<div className="toast">    Deleted {lastDeleted.length} {lastDeleted.length === 1 ? 'item' : 'items'}    <button className="btn-link" onClick={undoDelete}>Undo</button>  </div>)}        </div>      </div>{/* .content */}      <BackupModal open={showBackups} onClose={closeBackups} />      <HistoryModal open={showHistory} onClose={closeHistory} />    </div>);
 }    // Load Rec Sets when entering Recommender mode  
-useEffect(() => {
-    if (mode === 'recommender') {
-        loadRecSets();
-    }    // eslint-disable-next-line react-hooks/exhaustive-deps  
-}, [mode]);
-async function loadRecSets() {
-    try {
-        const r: any = await sendBg('recSets/list', {} as any);
-        const items: RecSet[] = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
-        setRecSets(items);
-        if (!recSetId && items.length) setRecSetId(items[0].id);
-    } catch {
-        setRecSets([]);
-    }
-} async function buildRecPage(seed?: string) {
-    if (!recSetId) return;
-    setRecLoading(true);
-    setRecIsHistoryView(false);
-    const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    setRecSeed(String(s));
-    try {
-        setRecGlobalPool(typeof (resp?.debug?.globalPool) === 'number' ? resp.debug.globalPool : null);
-    } catch {
-        setRecGlobalPool(null);
-    } const rows: Video[] = [];
-    for (const id of ids) {
-        try {
-            const v: any = await idbGetOne('videos', id);
-            if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any);
-        } catch { }
-    } setRecVideos(rows);
-    setRecLoading(false);
-} export default App;
+ export default App;
 export { App };
