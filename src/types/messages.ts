@@ -14,7 +14,9 @@ export interface CollectionRec {
 // ---- Rules ----
 export type RuleAction =
   | { kind: 'tags'; add?: string[]; remove?: string[] }
-  | { kind: 'collections'; add?: string[]; remove?: string[]; recursive?: boolean }\n  | { kind: 'delete' }\n  | { kind: 'purge' };
+  | { kind: 'collections'; add?: string[]; remove?: string[]; recursive?: boolean }
+  | { kind: 'delete' }
+  | { kind: 'purge' };
 
 export interface RuleRec {
   id: string;

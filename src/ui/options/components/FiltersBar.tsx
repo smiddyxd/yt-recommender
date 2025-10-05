@@ -1221,11 +1221,4 @@ export default function FiltersBar({
     </div>
   );
 }
-      <div className="add-filter-row">
-        <select className="add-filter" value="" onChange={(e)=>{ const v=e.target.value as FilterNode['kind']|''; if(!v) return; addFilter(v); (e.target as HTMLSelectElement).value=''; }}>
-          <option value="">+ filter</option>
-          <option disabled>— Video —</option>
-          <option value="v_collections_any">Collections</option>
-          {/* existing entries omitted for brevity in this control */}
-        </select>
-      </div>
+

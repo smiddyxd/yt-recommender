@@ -204,7 +204,24 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
       return Array.from(out.values());
     };
     for (const vid of ids) {
-      const v = await getVideoById(vid);
+      let v: any | null = await getVideoById(vid);
+      let inTrash = false;
+      if (!v) {
+        // Fallback: check trash store so purge rules can act on already-trashed videos
+        try {
+          const db = await openDB();
+          v = await new Promise<any | null>((resolve) => {
+            try {
+              const tx = db.transaction('trash', 'readonly');
+              const os = tx.objectStore('trash');
+              const g = os.get(String(vid));
+              g.onsuccess = () => resolve((g.result as any) || null);
+              g.onerror = () => resolve(null);
+            } catch { resolve(null); }
+          });
+          if (v) inTrash = true;
+        } catch {}
+      }
       if (!v) continue;
       // Evaluate rules for this video
       let add: string[] = [];
@@ -226,11 +243,13 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
         } as any);
         if (!matched) continue;
         if (r.action?.kind === 'tags') {
+          if (inTrash) { /* ignore tag edits for trashed rows */ continue; }
           const a = Array.isArray(r.action.add) ? r.action.add.filter(Boolean) : [];
           const d = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean) : [];
           if (a.length) add.push(...a);
           for (const t of d) remSet.add(String(t));
         } else if (r.action?.kind === 'collections') {
+          if (inTrash) { /* ignore collection edits for trashed rows */ continue; }
           let addCols: string[] = Array.isArray(r.action.add) ? r.action.add.filter(Boolean).map(String) : [];
           let remCols: string[] = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean).map(String) : [];
           if ((r.action as any)?.recursive) {
@@ -244,9 +263,11 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
             try { await applyCollections([vid], cid, 'remove'); affected += 1; } catch {}
           }
         } else if ((r.action as any)?.kind === 'delete') {
-          try { await moveToTrash([vid]); affected += 1; } catch {}
+          if (!inTrash) {
+            try { await moveToTrash([vid]); affected += 1; } catch {}
+          }
         } else if ((r.action as any)?.kind === 'purge') {
-          try { await moveToTrash([vid]); } catch {}
+          if (!inTrash) { try { await moveToTrash([vid]); } catch {} }
           try { await purgeVideosFromTrash([vid]); affected += 1; } catch {}
         }
       }
@@ -256,7 +277,7 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
       const curTags: string[] = Array.isArray(v.tags) ? v.tags : [];
       const addFinal = add.filter(t => !curTags.includes(t));
       const remFinal = remove.filter(t => curTags.includes(t));
-      if (addFinal.length || remFinal.length) {
+      if (!inTrash && (addFinal.length || remFinal.length)) {
         try { await applyTags([vid], addFinal, remFinal); affected += 1; } catch {}
       }
     }
@@ -993,9 +1014,9 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         scheduleBackup();
         sendResponse?.({ ok: true });
       } else if (raw.type === 'rules/runAll') {
-        // Evaluate across all videos (best-effort). Includes those with no fetch tags.
+        // Evaluate across all videos (best-effort), including items currently in trash so purge rules can act.
         const db = await openDB();
-        const ids: string[] = await new Promise((resolve, reject) => {
+        const videosIds: string[] = await new Promise((resolve) => {
           const out: string[] = [];
           try {
             const tx = db.transaction('videos', 'readonly');
@@ -1007,9 +1028,25 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               try { const row: any = c.value || {}; if (row?.id) out.push(String(row.id)); } catch {}
               c.continue();
             };
-            cur.onerror = () => reject(cur.error);
-          } catch (e) { resolve(out); }
+            cur.onerror = () => resolve(out);
+          } catch { resolve(out); }
         });
+        const trashIds: string[] = await new Promise((resolve) => {
+          const out: string[] = [];
+          try {
+            const tx = db.transaction('trash', 'readonly');
+            const os = tx.objectStore('trash');
+            const cur = os.openCursor();
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(out); return; }
+              try { const row: any = c.value || {}; if (row?.id) out.push(String(row.id)); } catch {}
+              c.continue();
+            };
+            cur.onerror = () => resolve(out);
+          } catch { resolve(out); }
+        });
+        const ids = Array.from(new Set([...videosIds, ...trashIds]));
         const r = await applyRulesForIds(ids, { onlyEnabled: !!raw.payload?.onlyEnabled });
         sendResponse?.({ ok: true, ...r });
       } else if (raw.type === 'groups/update') {

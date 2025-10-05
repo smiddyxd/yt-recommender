@@ -91,6 +91,8 @@ Global Reminder
 - FiltersBar: Sources chip shows friendly labels (Channel* sources display channel names; playlist shows a short id tail; page-scoped sources omit the “null” suffix). Added “Collections” to the “+ Add filter...” dropdown (`v_collections_any`).
 - Rules actions: extended to include `collections` (add/remove) with an optional `recursive` flag (applies to descendant collections), plus `delete` and `purge` video actions. Background applies these during `rules/runAll` and on relevant updates.
 - Collections filter behavior: filtering by a parent collection includes videos in descendant collections. Predicates (`collectionsAny`) climb parent links via a resolver.
+- Rules editor UX: clicking a rule loads it into the form for editing and switches controls to Save/Cancel; Delete remains available on the list. For Collections actions, a `recursive` checkbox appears inline next to `enabled`; chips show collection names and a dashed outline when recursive. Add/Remove pickers render as two stacked rows for clarity.
+ - Rules engine (purge + trash): `rules/runAll` now evaluates both videos and trash stores so `purge` actions apply to already-trashed videos. Tag/Collections edits are ignored for trashed rows; `delete` is a no-op if already trashed; `purge` removes from trash.
 
 ### Recent Changes (2025-09-29)
 - Channel highlight: Across YouTube, channel anchors for channels tagged with the default channel tag `tagged` are outlined (`border: 3px solid #5edf8b`). Implemented in content via `chrome.storage.local.settings.channelTagsById`, MutationObserver, and navigation hooks; channel page headers are also marked when applicable.
@@ -331,7 +333,7 @@ Global Reminder
 - Default preset (hardcoded): `scrapable channels` with scrape enabled and a `channelIdIn` condition built from channels tagged `scrape`. It is non-deletable and its scrape toggle is locked on.
 - Actions and labels:
   - "Refresh DB" reloads local list (no API calls).
-- Rules: A section below Presets lists all rules and provides a creator form with fields: `name`, `preset` (existing Group/Presets), `action` (supports tags add/remove; collections add/remove with optional `recursive`; and `delete`/`purge` video actions), optional `channelIds` (comma/space-separated), and an `enabled` toggle. Buttons: `Create`, `Run` (apply all enabled rules now). Each rule row shows enable/disable and delete controls.
+- Rules: A section below Presets lists all rules and provides a creator form with fields: `name`, `preset` (existing Group/Presets), `action` (supports tags add/remove; collections add/remove with optional `recursive`; and `delete`/`purge` video actions), optional `channelIds` (comma/space-separated), and an `enabled` toggle. Buttons: `Create`, `Run` (apply all enabled rules now). Clicking a rule in the list loads it into the form for editing; the form switches to `Save`/`Cancel`. Each rule row has enable/disable and delete controls. For Collections actions, chips show collection names; when `recursive` is on, chips are shown with a dashed outline.
   - "Fetch video data" calls YouTube API to fetch video metadata.
   - "Fetch channels (unfetched)" fetches channels that were never fetched.
 - Stubs indicator: merged into the checkbox label, shows "X stubs" (total across videos+channels) and "Y in view" on a second line (aligned with padding).
