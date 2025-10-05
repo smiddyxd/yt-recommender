@@ -220,6 +220,23 @@ export default function FiltersBar({
           }));
           const clearAll = () => setChain(arr => arr.map((e,i)=> i===idx && e.pred.kind==='v_sources_any' ? { ...e, pred: { ...e.pred, itemsCsv: '' } } : e));
           const all = Array.isArray(videoSourceOptions) ? videoSourceOptions : [];
+          const friendly = (opt: SourceOption): string => {
+            const t = String(opt.type || '');
+            const id = opt.id == null ? null : String(opt.id);
+            if (id == null) {
+              return t; // e.g., "SubscriptionsFeed", "WatchPage"
+            }
+            if (t.startsWith('Channel')) {
+              const hit = (channelOptions || []).find(c => c.id === id);
+              const nm = hit?.name || id;
+              return `${t} ${nm}`;
+            }
+            if (t === 'playlist') {
+              const tail = id.length > 4 ? id.slice(-4) : id;
+              return `playlist (...${tail})`;
+            }
+            return `${t} ${id}`;
+          };
           return (
             <div className="filter-chip-row" key={idx}>
               {OpToggle}
@@ -240,7 +257,7 @@ export default function FiltersBar({
                     {all.map(opt => (
                       <label key={`${opt.type}:${opt.id == null ? 'null' : String(opt.id)}`} className="chip-check">
                         <input type="checkbox" checked={selected.has(tokenOf(opt.type, opt.id))} onChange={() => toggle(opt.type, opt.id)} />
-                        <span>{opt.type} {opt.id == null ? 'null' : String(opt.id)}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
+                        <span>{friendly(opt)}{typeof opt.count === 'number' ? ` (${opt.count})` : ''}</span>
                       </label>
                     ))}
                   </div>
@@ -1184,6 +1201,7 @@ export default function FiltersBar({
           <option value="v_language">Language</option>
           <option value="v_visibility">Visibility</option>
           <option value="v_sources_any">Sources</option>
+          <option value="v_collections_any">Collections</option>
           <option value="v_tags_any">Tags (any)</option>
           <option value="v_tags_all">Tags (all)</option>
           <option value="v_tags_none">Tags (none)</option>

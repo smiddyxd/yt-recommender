@@ -1,4 +1,4 @@
-﻿import { renameTag as renameTagInDB, deleteTag as deleteTagInDB } from './db';
+import { renameTag as renameTagInDB, deleteTag as deleteTagInDB } from './db';
 import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed, applyCollections, removeCollectionFromAllRows } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
@@ -184,6 +184,25 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
     ]);
     if (!rules.length || !groups.length) return { affected: 0 };
     const groupById = new Map<string, GroupRec>(groups.map(g => [g.id, g] as [string, GroupRec]));
+    // Preload collections list for recursive expansion
+    let collectionsCache: Array<{id:string; parentId?: string|null}> | null = null;
+    const getCollections = async () => {
+      if (collectionsCache) return collectionsCache;
+      try { const list: any[] = await (listCollectionsCfg().catch(()=>[])); collectionsCache = list as any; } catch { collectionsCache = []; }
+      return collectionsCache!;
+    };
+    const expandDescendants = async (idsLocal: string[]): Promise<string[]> => {
+      const list = await getCollections();
+      const children = new Map<string, string[]>();
+      for (const c of list) {
+        const pid = (c as any).parentId || null; const id = String((c as any).id || '');
+        if (pid) { const arr = children.get(pid) || []; arr.push(id); children.set(pid, arr); }
+      }
+      const out = new Set<string>();
+      const visit = (id: string) => { if (out.has(id)) return; out.add(id); const ch = children.get(id) || []; for (const x of ch) visit(x); };
+      for (const id of idsLocal) visit(id);
+      return Array.from(out.values());
+    };
     for (const vid of ids) {
       const v = await getVideoById(vid);
       if (!v) continue;
@@ -212,14 +231,23 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
           if (a.length) add.push(...a);
           for (const t of d) remSet.add(String(t));
         } else if (r.action?.kind === 'collections') {
-          const addCols: string[] = Array.isArray(r.action.add) ? r.action.add.filter(Boolean).map(String) : [];
-          const remCols: string[] = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean).map(String) : [];
+          let addCols: string[] = Array.isArray(r.action.add) ? r.action.add.filter(Boolean).map(String) : [];
+          let remCols: string[] = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean).map(String) : [];
+          if ((r.action as any)?.recursive) {
+            try { addCols = await expandDescendants(addCols); } catch {}
+            try { remCols = await expandDescendants(remCols); } catch {}
+          }
           for (const cid of addCols) {
             try { await applyCollections([vid], cid, 'add'); affected += 1; } catch {}
           }
           for (const cid of remCols) {
             try { await applyCollections([vid], cid, 'remove'); affected += 1; } catch {}
           }
+        } else if ((r.action as any)?.kind === 'delete') {
+          try { await moveToTrash([vid]); affected += 1; } catch {}
+        } else if ((r.action as any)?.kind === 'purge') {
+          try { await moveToTrash([vid]); } catch {}
+          try { await purgeVideosFromTrash([vid]); affected += 1; } catch {}
         }
       }
       // Sanitize & diff vs current
@@ -2253,7 +2281,7 @@ function bestThumb(thumbs: any): string | null {
     return (thumbs?.high?.url || thumbs?.medium?.url || thumbs?.default?.url || null) as (string | null);
   } catch { return null; }
 }
-function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + 'â€¦' : (s || ''); }
+function trimText(s: string, max: number = 1000): string { return (s || '').length > max ? (s || '').slice(0, max) + '…' : (s || ''); }
 
 async function fetchVideosListWithRetry(parts: string, ids: string[], apiKey: string): Promise<any[]> {
   const url = new URL('https://www.googleapis.com/youtube/v3/videos');
@@ -2353,6 +2381,7 @@ async function channelIdsForVideos(ids: string[]): Promise<string[]> {
   });
   return Array.from(set);
 }
+
 
 
 

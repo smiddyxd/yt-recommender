@@ -330,7 +330,7 @@ footer {
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);
-  padding: 14px 12px;
+  padding: 0; /* no padding per request */
   position: sticky; /* stay visible while content scrolls */
   top: 0;
   align-self: start;
@@ -384,7 +384,8 @@ footer {
 .top-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
-  margin: -14px -12px 12px -12px; /* extend to full sidebar width */
+  margin: -14px -12px 0 -12px; /* extend to full sidebar width */
+  padding: 14px 12px 0 0;
   border-bottom: 1px solid var(--border);
 }
 .top-tab {
@@ -526,6 +527,19 @@ footer {
   gap: 8px;
   align-items: center;
   margin-bottom: 8px;
+}
+
+/* Column wrapper for Add/Remove rows in Rules creator */
+.side-row-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+/* Recursive chip highlight for collections */
+.chip-rec {
+  border: 1px dashed var(--accent);
 }
 .side-input {
   flex: 1;

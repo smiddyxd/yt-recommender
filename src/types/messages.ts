@@ -1,4 +1,4 @@
-﻿// add near top
+// add near top
 import type { Condition, Group } from '../shared/conditions';
 
 // ---- Collections ----
@@ -14,7 +14,7 @@ export interface CollectionRec {
 // ---- Rules ----
 export type RuleAction =
   | { kind: 'tags'; add?: string[]; remove?: string[] }
-  | { kind: 'collections'; add?: string[]; remove?: string[] };
+  | { kind: 'collections'; add?: string[]; remove?: string[]; recursive?: boolean }\n  | { kind: 'delete' }\n  | { kind: 'purge' };
 
 export interface RuleRec {
   id: string;
@@ -148,5 +148,6 @@ export type ChannelUpsertStubMsg = { type: 'channels/upsertStub'; payload: { id:
 
 export interface TagRec { name: string; color?: string; createdAt?: number; groupId?: string | null }
 export interface TagGroupRec { id: string; name: string; createdAt?: number; color?: string; parentId?: string | null }
+
 
 

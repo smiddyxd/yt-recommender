@@ -1,4 +1,4 @@
-﻿// src/ui/options/components/Sidebar.tsx
+// src/ui/options/components/Sidebar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../../../types/messages';
@@ -377,7 +377,8 @@ export default function Sidebar(props: Props) {
 // ---- Rules UI ----
 function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: GroupRec[]; collections: CollectionRec[] }) {
   const [rules, setRules] = React.useState<RuleRec[]>([]);
-  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean; actionKind: 'tags'|'collections' }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags' });
+  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean; actionKind: 'tags'|'collections'|'delete'|'purge'; recursive?: boolean }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags', recursive: false   })();
+  const [editingRuleId, setEditingRuleId] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     try { const r: any = await sendBg('rules/list', {} as any); setRules(Array.isArray(r?.items) ? r.items as RuleRec[] : []); } catch { setRules([]); }
@@ -401,21 +402,50 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
   }
 
   async function onCreate() {
+    const channelIds = creating.channelsText.split(/[\,\s]+/).map(s => s.trim()).filter(Boolean);
+    const action: any = (() => {
+      if (creating.actionKind === 'collections') return { kind: 'collections', add: creating.add, remove: creating.remove, recursive: !!creating.recursive } as const;
+      if (creating.actionKind === 'delete') return { kind: 'delete' } as const;
+      if (creating.actionKind === 'purge') return { kind: 'purge' } as const;
+      return { kind: 'tags', add: creating.add, remove: creating.remove } as const;
+    })();
+    if (r?.ok) {
+      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true   })();
+      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags', recursive: false });
+    }
+  }
+
+  function startEditRule(rule: RuleRec) {
+    const actionKind: 'tags'|'collections'|'delete'|'purge' = (rule.action?.kind === 'collections') ? 'collections' : 'tags';
+    const add = Array.isArray((rule.action as any)?.add) ? ((rule.action as any).add as string[]) : [];
+    const remove = Array.isArray((rule.action as any)?.remove) ? ((rule.action as any).remove as string[]) : [];
+    const channelsText = Array.isArray(rule.channelIds) ? rule.channelIds.join(' ') : '';
+    setCreating({
+      name: rule.name || '',
+      groupId: String(rule.groupId || ''),
+      add: add.slice(),
+      remove: remove.slice(),
+      channelsText,
+      enabled: rule.enabled !== false,
+      actionKind,
+      recursive: actionKind === 'collections' ? !!(rule.action as any)?.recursive : false,
+      })();
+    setEditingRuleId(rule.id);
+  }
+
+  async function onSaveEdit() {
+    if (!editingRuleId) return;
     const name = creating.name.trim();
     const groupId = creating.groupId.trim();
     if (!name || !groupId) return;
-    const channelIds = creating.channelsText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
-    const action = creating.actionKind === 'collections'
-      ? ({ kind: 'collections', add: creating.add, remove: creating.remove } as const)
-      : ({ kind: 'tags', add: creating.add, remove: creating.remove } as const);
-    const r: any = await sendBg('rules/create', { name, groupId, action, channelIds, enabled: creating.enabled } as any);
-    if (r?.ok) {
-      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true });
-      load();
-    }
-  }
-  async function onToggle(rule: RuleRec, next: boolean) {
-    await sendBg('rules/update', { id: rule.id, patch: { enabled: !!next } });
+    const channelIds = creating.channelsText.split(/[\,\s]+/).map(s => s.trim()).filter(Boolean);
+    const action: any = (() => {
+      if (creating.actionKind === 'collections') return { kind: 'collections', add: creating.add, remove: creating.remove, recursive: !!creating.recursive } as const;
+      if (creating.actionKind === 'delete') return { kind: 'delete' } as const;
+      if (creating.actionKind === 'purge') return { kind: 'purge' } as const;
+      return { kind: 'tags', add: creating.add, remove: creating.remove } as const;
+    })();
+    await sendBg('rules/update', { id: rule.id, patch: { enabled: !!next }   })();
   }
   async function onDelete(rule: RuleRec) {
     if (!confirm(`Delete rule "${rule.name}"?`)) return;
@@ -431,6 +461,7 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
         <span>Rules</span>
         <button className="btn-ghost" title="Run all enabled rules now" onClick={runAll}>Run</button>
       </div>
+      
       {/* Creator */}
       <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
         <input className="side-input" style={{ flex: 1 }} placeholder="Rule name" value={creating.name} onChange={(ev)=> { const v = (ev.target as HTMLInputElement)?.value ?? ''; setCreating(p=> ({ ...p, name: v })); }} />
@@ -455,6 +486,8 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
         >
           <option value="tags">Tags</option>
           <option value="collections">Collections</option>
+          <option value="delete">Delete videos</option>
+          <option value="purge">Purge videos</option>
         </select>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <input
@@ -467,9 +500,16 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
           />
           enabled
         </label>
+        {creating.actionKind === 'collections' && (
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <input type="checkbox" checked={!!creating.recursive} onChange={(ev)=> setCreating(prev => ({ ...prev, recursive: !!(ev.target as HTMLInputElement)?.checked }))} />
+            recursive
+          </label>
+        )}
       </div>
-      <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        <span className="muted" style={{ width: 60 }}>Add</span>
+      <div className="side-row-col">
+        <div className="side-row" style={{ gap: 6 }}>
+          <span className="muted" style={{ width: 60 }}>Add</span>
         {creating.actionKind === 'collections' ? (
           <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('add', v); }}>
             <option value="">+ collection</option>
@@ -481,18 +521,21 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
             {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
           </select>
         )}
-        <span className="muted" style={{ width: 60 }}>Remove</span>
-        {creating.actionKind === 'collections' ? (
-          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
-            <option value="">- collection</option>
-            {allCollections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
-          </select>
-        ) : (
-          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
-            <option value="">- tag</option>
-            {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
-          </select>
-        )}
+        </div>
+        <div className="side-row" style={{ gap: 6 }}>
+          <span className="muted" style={{ width: 60 }}>Remove</span>
+          {creating.actionKind === 'collections' ? (
+            <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
+              <option value="">- collection</option>
+              {allCollections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+            </select>
+          ) : (
+            <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
+              <option value="">- tag</option>
+              {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
+            </select>
+          )}
+        </div>
       </div>
       {(creating.add.length > 0 || creating.remove.length > 0) && (
         <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
@@ -502,10 +545,10 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
             return (
               <>
                 {creating.add.map(n => (
-                  <span key={`+${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('add', n)}>+{nameOf(n)}</span>
+                  <span key={`+${n}`} className={`chip${(creating.actionKind==='collections' && creating.recursive) ? ' chip-rec' : ''}`} title="click to remove" onClick={()=> removeFrom('add', n)}>+{nameOf(n)}</span>
                 ))}
                 {creating.remove.map(n => (
-                  <span key={`-${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('remove', n)}>-{nameOf(n)}</span>
+                  <span key={`-${n}`} className={`chip${(creating.actionKind==='collections' && creating.recursive) ? ' chip-rec' : ''}`} title="click to remove" onClick={()=> removeFrom('remove', n)}>-{nameOf(n)}</span>
                 ))}
               </>
             );
@@ -514,7 +557,14 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
       )}
       <div className="side-row" style={{ gap: 6 }}>
         <input className="side-input" style={{ flex: 1 }} placeholder="Channel IDs (optional, comma/space-separated)" value={creating.channelsText} onChange={(ev)=> { const v = (ev.target as HTMLInputElement)?.value ?? ''; setCreating(p=> ({ ...p, channelsText: v })); }} />
-        <button className="btn-ghost" disabled={!creating.name.trim() || !creating.groupId} onClick={onCreate}>Create</button>
+        {editingRuleId ? (
+          <>
+            <button className="btn-ghost" disabled={!creating.name.trim() || !creating.groupId} onClick={onSaveEdit}>Save</button>
+            <button className="btn-ghost" onClick={onCancelEdit}>Cancel</button>
+          </>
+        ) : (
+          <button className="btn-ghost" disabled={!creating.name.trim() || !creating.groupId} onClick={onCreate}>Create</button>
+        )}
       </div>
       {/* List */}
       <div className="group-list">
@@ -523,7 +573,7 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
           const preset = groups.find(g => g.id === r.groupId);
           return (
             <div className="group-row" key={r.id}>
-              <button className="side-btn" title={preset ? `Preset: ${preset.name}` : 'Preset not found'}>{r.name}</button>
+              <button className="side-btn" title={preset ? `Preset: ${preset.name}` : 'Preset not found'} onClick={() => startEditRule(r)}>{r.name}</button>
               <span className="muted" style={{ fontSize: 12, flex: 1, textAlign: 'left' }}>
                 {r.action?.kind === 'collections'
                   ? `Collections: ${Array.isArray((r.action as any).add) && (r.action as any).add.length ? `+${(r.action as any).add.length}` : ''}${Array.isArray((r.action as any).remove) && (r.action as any).remove.length ? ` -${(r.action as any).remove.length}` : ''}`
@@ -621,5 +671,16 @@ function CollectionsSection({ collections, onOpenCollection, activeCollectionId 
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
