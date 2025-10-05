@@ -14,6 +14,8 @@ export default function RecsSidebar({ groups }: Props) {
   const [draft, setDraft] = useState<RecSet | null>(null);
   const [newName, setNewName] = useState('New Rec Set');
   const [newPageSize, setNewPageSize] = useState<number>(20);
+  const [history, setHistory] = useState<Array<{ id: string; timestamp: number; videoIds: string[] }>>([]);
+  const [historyOpen, setHistoryOpen] = useState<boolean>(false);
 
   const groupOptions = useMemo(() => groups.map(g => ({ id: g.id, name: g.name })), [groups]);
   const sumW = useMemo(() => (draft?.entries || []).filter(e => e.role === 'weighted' && (e.weight || 0) > 0).reduce((a, e) => a + (e.weight || 0), 0), [draft]);
@@ -53,6 +55,7 @@ export default function RecsSidebar({ groups }: Props) {
     const cur = sets.find(s => s.id === id) || null;
     setEditingId(id);
     setDraft(cur ? { ...cur } : null);
+    void loadHistory(id);
   }
 
   function updateDraft(patch: Partial<RecSet>) {
@@ -103,6 +106,45 @@ export default function RecsSidebar({ groups }: Props) {
     if (!confirm('Delete this Rec Set?')) return;
     await sendBg('recSets/delete', { id });
     if (editingId === id) { setEditingId(null); setDraft(null); }
+  }
+
+  async function loadHistory(id?: string) {
+    const rid = String(id || editingId || '');
+    if (!rid) { setHistory([]); return; }
+    try {
+      const r: any = await sendBg('recSets/history/list', { recSetId: rid });
+      const items = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+      setHistory(items as any);
+    } catch { setHistory([]); }
+  }
+
+  async function openRecord(recordId: string) {
+    try {
+      const r: any = await sendBg('recSets/history/open', { recordId });
+      const rec = (r && r.ok && r.record && Array.isArray(r.record.videoIds)) ? r.record : null;
+      if (rec) {
+        const ev = new CustomEvent('recs:openHistory', { detail: { videoIds: rec.videoIds } });
+        window.dispatchEvent(ev);
+      }
+    } catch {}
+  }
+
+  async function deleteRecord(recordId: string) {
+    await sendBg('recSets/history/delete', { recordId });
+    await loadHistory();
+  }
+
+  async function exportRecord(recordId: string) {
+    try {
+      const r: any = await sendBg('recSets/history/export', { recordId });
+      const rec = (r && r.ok && r.record) ? r.record : null;
+      if (!rec) return;
+      const blob = new Blob([JSON.stringify(rec, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `recset-${rec.recSetId}-${new Date(rec.timestamp).toISOString().replace(/[:]/g,'-')}.json`;
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch {}
   }
 
   const expectedSlots = (e: RecEntry): string => {
@@ -174,9 +216,32 @@ export default function RecsSidebar({ groups }: Props) {
           <div className="side-row" style={{ justifyContent: 'flex-start' }}>
             <button className="btn-ghost" onClick={addRow}>Add row</button>
           </div>
+          {/* History panel */}
+          <div className="side-subsection" style={{ marginTop: 8 }}>
+            <div className="side-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>History</span>
+              <span>
+                <button className="btn-ghost" onClick={() => { setHistoryOpen(v => !v); if (!historyOpen) void loadHistory(); }}>{historyOpen ? 'Hide' : 'Show'}</button>
+                <button className="btn-ghost" onClick={() => loadHistory()} title="Refresh">R</button>
+              </span>
+            </div>
+            {historyOpen && (
+              <div className="group-list">
+                {history.length === 0 && <div className="muted">No entries.</div>}
+                {history.map(h => (
+                  <div className="group-row" key={h.id}>
+                    <button className="side-btn" onClick={() => openRecord(h.id)} title={new Date(h.timestamp).toLocaleString()}>
+                      {new Date(h.timestamp).toLocaleString()} ({h.videoIds.length})
+                    </button>
+                    <button className="btn-ghost" onClick={() => exportRecord(h.id)} title="Export">DL</button>
+                    <button className="btn-ghost" onClick={() => deleteRecord(h.id)} title="Delete">x</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 }
-

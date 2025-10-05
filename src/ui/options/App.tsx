@@ -179,8 +179,25 @@ const [chain, setChain] = useState<FilterEntry[]>([]);
   const [respectDontRecommend, setRespectDontRecommend] = useState<boolean>(true);
   const [recSeed, setRecSeed] = useState<string>('');
   const [recVideoIds, setRecVideoIds] = useState<string[]>([]);
+  const [recMetaById, setRecMetaById] = useState<Record<string, { presetId: string; recent?: boolean; highViews?: boolean }>>({});
+  const groupNameById = useMemo(() => new Map(groups.map(g => [g.id, g.name as string])), [groups]);
+  const recChipsById = useMemo(() => {
+    const out: Record<string, string[]> = {};
+    for (const id of recVideoIds) {
+      const m = recMetaById[id];
+      if (!m) continue;
+      const arr: string[] = [];
+      const name = groupNameById.get(m.presetId) || '';
+      if (name) arr.push(`from: ${name}`);
+      if (m.recent) arr.push('recent');
+      if (m.highViews) arr.push('high views');
+      if (arr.length) out[id] = arr;
+    }
+    return out;
+  }, [recVideoIds, recMetaById, groupNameById]);
   const [recVideos, setRecVideos] = useState<Video[]>([]);
   const [recLoading, setRecLoading] = useState<boolean>(false);
+  const [recIsHistoryView, setRecIsHistoryView] = useState<boolean>(false);
   const [driveClientId, setDriveClientId] = useState<string | null>(null);
   const [showBackups, setShowBackups] = useState<boolean>(false);
   const [showHistory, setShowHistory] = useState<boolean>(false);
@@ -587,6 +604,31 @@ function startEditFromGroup(g: GroupRec) {
     if (inChannels || inChannelsTrash) loadChannelsDir();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, inChannels, inChannelsTrash]);
+
+  // Listen for history open events from RecsSidebar
+  useEffect(() => {
+    function onOpenHistory(ev: any) {
+      try {
+        const ids: string[] = Array.isArray(ev?.detail?.videoIds) ? ev.detail.videoIds : [];
+        if (ids.length) {
+          setMode('recommender');
+          setRecVideoIds(ids);
+          setRecMetaById({});
+          setRecIsHistoryView(true);
+          // Load rows by id
+          (async () => {
+            const rows: Video[] = [];
+            for (const id of ids) {
+              try { const v: any = await idbGetOne('videos', id); if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any); } catch {}
+            }
+            setRecVideos(rows);
+          })();
+        }
+      } catch {}
+    }
+    window.addEventListener('recs:openHistory' as any, onOpenHistory as any);
+    return () => window.removeEventListener('recs:openHistory' as any, onOpenHistory as any);
+  }, []);
 
 useEffect(() => {
   function onMsg(msg: any) {
@@ -1699,6 +1741,12 @@ const channelsFiltered = useMemo(() => {
             </>
           ) : (
             <div style={{ padding: 16 }}>
+              {recIsHistoryView && (
+                <div className="card" style={{ padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="muted">History view</span>
+                  <button className="btn-ghost" onClick={() => setRecIsHistoryView(false)}>Clear</button>
+                </div>
+              )}
               <div className="toolbar-2" style={{ marginBottom: 8 }}>
                 <div className="page-size">
                   <label htmlFor="recPageSize">Per page:</label>
@@ -1708,7 +1756,7 @@ const channelsFiltered = useMemo(() => {
                 </div>
                 <div className="total-info">{recVideoIds.length} items</div>
               </div>
-              <VideoList items={recVideos} layout={layout} loading={recLoading} selected={new Set()} onToggle={()=>{}} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />
+              <VideoList items={recVideos} layout={layout} loading={recLoading} selected={new Set()} onToggle={()=>{}} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" chipsById={recChipsById} />
             </div>
           )}
         </div>
@@ -2371,11 +2419,14 @@ const channelsFiltered = useMemo(() => {
   async function buildRecPage(seed?: string) {
     if (!recSetId) return;
     setRecLoading(true);
+    setRecIsHistoryView(false);
     const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
     setRecSeed(String(s));
     const resp: any = await sendBg('recommender/buildPage', { recSetId, seed: String(s), respectDontRecommend });
     const ids: string[] = (resp && resp.ok && Array.isArray(resp.videoIds)) ? resp.videoIds : [];
+    const meta = (resp && resp.ok && (resp as any).metaById) ? ((resp as any).metaById as Record<string, { rowIdx:number; presetId:string; recent:boolean; highViews:boolean }>) : {};
     setRecVideoIds(ids);
+    setRecMetaById(Object.fromEntries(Object.entries(meta).map(([k,v]) => [k, { presetId: v.presetId, recent: !!v.recent, highViews: !!v.highViews }])));
     const rows: Video[] = [];
     for (const id of ids) {
       try {

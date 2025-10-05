@@ -1222,7 +1222,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const recordId = crypto?.randomUUID?.() || (hash32(seed + ':' + Date.now()).toString(16));
         const record = { id: recordId, recSetId, timestamp: Date.now(), videoIds: result.videoIds } as any;
         try { await appendRecSetHistoryLocal(recSetId, record); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); scheduleBackup(); } catch {}
-        sendResponse?.({ ok: true, videoIds: result.videoIds, debug: result.debug, seed, recordId: record.id });
+        sendResponse?.({ ok: true, videoIds: result.videoIds, metaById: (result as any).metaById, debug: result.debug, seed, recordId: record.id });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         const add = sanitizeVideoTagAdds(addIds);

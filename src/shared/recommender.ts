@@ -84,6 +84,13 @@ export function buildRecommendationPage(params: BuildPageParams): BuildPageResul
   });
 
   const perRowDbg = rowStates.map(rs => ({ rowIndex: rs.idx, role: 'weighted' as const, candidates: rs.candidates.length, placed: 0, weight: rs.entry.weight, min: rs.min, max: rs.max }));
+  // Precompute 75th percentile thresholds per row for recency and views
+  const quartileByRow: Record<number, { rec: number; views: number }> = {};
+  for (const rs of rowStates) {
+    const recVals = rs.candidates.map(c => c.bRec);
+    const viewVals = rs.candidates.map(c => c.bViews);
+    quartileByRow[rs.idx] = { rec: q75(recVals), views: q75(viewVals) };
+  }
 
   // If no weighted rows or sumW=0, empty result
   const sumW = rowStates.reduce((a, r) => a + (r.enabled ? r.entry.weight : 0), 0);
@@ -178,7 +185,18 @@ export function buildRecommendationPage(params: BuildPageParams): BuildPageResul
     if (dbg) dbg.placed++;
   }
 
-  return { videoIds: selection.map(s => s.id), debug: { globalPool: pool.length, perRow: perRowDbg } };
+  const metaById: Record<string, { rowIdx: number; presetId: string; recent: boolean; highViews: boolean }> = {};
+  for (const s of selection) {
+    const rs = rowStates.find(r => r.idx === s.rowIdx);
+    const alpha = clamp01(rs?.entry?.prioritizeRecency ?? 0);
+    const beta = clamp01(rs?.entry?.prioritizeViewcount ?? 0);
+    const thr = quartileByRow[s.rowIdx] || { rec: 1, views: 1 };
+    const recent = alpha >= 0.3 && s.bRec >= (thr.rec ?? 1);
+    const highViews = beta >= 0.3 && s.bViews >= (thr.views ?? 1);
+    metaById[s.id] = { rowIdx: s.rowIdx, presetId: String(rs?.entry?.presetId || ''), recent, highViews };
+  }
+
+  return { videoIds: selection.map(s => s.id), metaById, debug: { globalPool: pool.length, perRow: perRowDbg } };
 
   function pick(c: Cand, r: RowState) {
     picked.add(c.id);
@@ -313,6 +331,12 @@ function recencyBase(v: VideoRow): number {
 
 function clamp01(x: number): number { return x < 0 ? 0 : x > 1 ? 1 : x; }
 function norm(s: string): string { return (s || '').trim().toLowerCase(); }
+function q75(arr: number[]): number {
+  if (!arr || arr.length === 0) return 1;
+  const a = arr.slice().sort((x, y) => x - y);
+  const idx = Math.floor(0.75 * (a.length - 1));
+  return a[idx];
+}
 
 // Simple 32-bit FNV-1a based hash with a xorshift mix for better distribution
 export function hash32(str: string): number {
@@ -327,4 +351,3 @@ export function hash32(str: string): number {
   h ^= h << 5;  h >>>= 0;
   return h >>> 0;
 }
-

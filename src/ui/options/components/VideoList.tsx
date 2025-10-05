@@ -27,9 +27,10 @@ type Props = {
   tagsRegistry?: TagRec[];
   variant?: 'manager' | 'compact';
   collections?: CollectionRec[];
+  chipsById?: Record<string, string[]>;
 };
 
-export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager', collections = [] }: Props) {
+export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager', collections = [], chipsById = {} }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
   const [fullData, setFullData] = useState<Record<string, any>>({});
   const groupById = useMemo(() => new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec])), [tagGroups]);
@@ -98,6 +99,12 @@ export default function VideoList({ items, layout, loading, selected, onToggle, 
                 <h3 className="title two-line">
                   <a href={watchUrl(v.id)} target="_blank" rel="noopener noreferrer">{v.title || '(no title)'}</a>
                 </h3>
+                {/* Chips (e.g., recommender: from preset, hints) */}
+                {Array.isArray(chipsById[v.id]) && chipsById[v.id].length > 0 && (
+                  <div className="meta">
+                    {chipsById[v.id].map((c, i) => (<span key={`chip-${i}`} className="badge">{c}</span>))}
+                  </div>
+                )}
                 <div className="meta">
                   {v.channelId ? (
                     <a href={`https://www.youtube.com/channel/${v.channelId}`} target="_blank" rel="noopener noreferrer">{v.channelName || '(unknown channel)'}</a>
