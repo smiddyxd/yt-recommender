@@ -43,6 +43,8 @@ type Props = {
   // Top-level Options mode
   mode: 'manager' | 'subs' | 'recommender';
   onModeChange: (m: 'manager' | 'subs' | 'recommender') => void;
+  // Recommender global toggle (for editor stats)
+  respectDontRecommend?: boolean;
   // Collections
   collections?: CollectionRec[];
   activeCollectionId?: string | null;
@@ -306,7 +308,7 @@ export default function Sidebar(props: Props) {
           </div>
         ) : null}
         {mode === 'recommender' ? (
-          <RecsSidebar groups={groups} />
+          <RecsSidebar groups={groups} respectDontRecommend={props.respectDontRecommend === false ? false : true} />
         ) : null}
           <div className="side-section">
           <div className="side-title">Presets</div>

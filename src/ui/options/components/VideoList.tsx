@@ -28,9 +28,10 @@ type Props = {
   variant?: 'manager' | 'compact';
   collections?: CollectionRec[];
   chipsById?: Record<string, string[]>;
+  emptyHint?: React.ReactNode;
 };
 
-export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager', collections = [], chipsById = {} }: Props) {
+export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager', collections = [], chipsById = {}, emptyHint }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
   const [fullData, setFullData] = useState<Record<string, any>>({});
   const groupById = useMemo(() => new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec])), [tagGroups]);
@@ -185,7 +186,7 @@ export default function VideoList({ items, layout, loading, selected, onToggle, 
         );
       })}
       {!loading && items.length === 0 && (
-        <div style={{ padding: 16, color: 'var(--muted)' }}>No videos match your search.</div>
+        emptyHint ?? (<div style={{ padding: 16, color: 'var(--muted)' }}>No videos match your search.</div>)
       )}
     </main>
   );

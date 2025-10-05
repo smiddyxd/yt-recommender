@@ -1223,6 +1223,103 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         const record = { id: recordId, recSetId, timestamp: Date.now(), videoIds: result.videoIds } as any;
         try { await appendRecSetHistoryLocal(recSetId, record); chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'recSets' } }); scheduleBackup(); } catch {}
         sendResponse?.({ ok: true, videoIds: result.videoIds, metaById: (result as any).metaById, debug: result.debug, seed, recordId: record.id });
+      } else if (raw.type === 'recommender/evaluate') {
+        const recSetId = String(raw.payload?.recSetId || '').trim();
+        if (!recSetId) { sendResponse?.({ ok: false, error: 'Missing recSetId' }); return; }
+        const [recSets, groups] = await Promise.all([listRecSetsLocal().catch(()=>[]), listGroups().catch(()=>[])]);
+        const rec = (recSets || []).find(r => String(r.id) === recSetId);
+        if (!rec) { sendResponse?.({ ok: false, error: 'Rec Set not found' }); return; }
+        let respectToggle: boolean;
+        if (typeof raw.payload?.respectDontRecommend === 'boolean') {
+          respectToggle = !!raw.payload?.respectDontRecommend;
+        } else {
+          try { respectToggle = (await getRecommenderSettingsLocal()).respectDontRecommend; } catch { respectToggle = true; }
+        }
+        // Load candidate videos + channels
+        const db = await openDB();
+        const videos: any[] = await new Promise((resolve) => {
+          const out: any[] = [];
+          try {
+            const tx = db.transaction('videos', 'readonly');
+            const os = tx.objectStore('videos');
+            const cur = os.openCursor();
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(out); return; }
+              try { const row: any = c.value || {}; if (row?.id) out.push(row); } catch {}
+              c.continue();
+            };
+            cur.onerror = () => resolve(out);
+          } catch { resolve(out); }
+        });
+        const chIds = Array.from(new Set(videos.map(v => String(v?.channelId || '')).filter(Boolean)));
+        const channelMap: Map<string, any> = new Map();
+        try {
+          const tx = (await openDB()).transaction('channels', 'readonly');
+          const os = tx.objectStore('channels');
+          for (const id of chIds) {
+            await new Promise<void>((res) => {
+              try {
+                const g = os.get(String(id));
+                g.onsuccess = () => { if (g.result) channelMap.set(String(id), g.result as any); res(); };
+                g.onerror = () => res();
+              } catch { res(); }
+            });
+          }
+        } catch {}
+        const groupById = new Map<string, GroupRec>(groups.map(g => [String(g.id), g] as any));
+        const result = buildRecommendationPage({
+          recSet: rec as any,
+          videos: videos as any,
+          resolveGroup: (id) => groupById.get(String(id)),
+          resolveChannel: (id) => channelMap.get(String(id)),
+          respectDontRecommend: !!respectToggle,
+          seed: 'eval',
+          getViews: (v: any) => (typeof v?.views === 'number' ? v.views : undefined),
+        });
+        sendResponse?.({ ok: true, debug: result.debug });
+      } else if (raw.type === 'recommender/presetCount') {
+        const presetId = String(raw.payload?.presetId || '').trim();
+        if (!presetId) { sendResponse?.({ ok: false, error: 'Missing presetId' }); return; }
+        let respectToggle: boolean;
+        if (typeof raw.payload?.respectDontRecommend === 'boolean') {
+          respectToggle = !!raw.payload?.respectDontRecommend;
+        } else {
+          try { respectToggle = (await getRecommenderSettingsLocal()).respectDontRecommend; } catch { respectToggle = true; }
+        }
+        const [groups] = await Promise.all([listGroups().catch(() => [])]);
+        const groupById = new Map<string, GroupRec>((groups || []).map(g => [String(g.id), g] as any));
+        const db = await openDB();
+        const videos: any[] = await new Promise((resolve) => {
+          const out: any[] = [];
+          try {
+            const tx = db.transaction('videos', 'readonly');
+            const os = tx.objectStore('videos');
+            const cur = os.openCursor();
+            cur.onsuccess = () => {
+              const c = cur.result as IDBCursorWithValue | null;
+              if (!c) { resolve(out); return; }
+              try { const row: any = c.value || {}; if (row?.id) out.push(row); } catch {}
+              c.continue();
+            };
+            cur.onerror = () => resolve(out);
+          } catch { resolve(out); }
+        });
+        const dont = 'dontrecommend';
+        let count = 0;
+        for (const v of videos) {
+          if (respectToggle) {
+            const tags = Array.isArray(v?.tags) ? v.tags : [];
+            if (tags.some((t: string) => String(t || '').toLowerCase() === dont)) continue;
+          }
+          const g = groupById.get(presetId);
+          if (!g) continue;
+          try {
+            const ok = matches(v as any, g.condition, { resolveGroup: (id) => groupById.get(String(id)), seenGroups: new Set() } as any);
+            if (ok) count += 1;
+          } catch {}
+        }
+        sendResponse?.({ ok: true, count });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         const add = sanitizeVideoTagAdds(addIds);

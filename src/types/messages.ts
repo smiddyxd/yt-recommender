@@ -130,6 +130,9 @@ export type Msg =
   | { type: 'recSets/history/export'; payload: { recordId: string } }
   // PAGE BUILD
   | { type: 'recommender/buildPage'; payload: { recSetId: string; seed?: string; respectDontRecommend?: boolean } }
+  // RECOMMENDER EVAL (no history writes)
+  | { type: 'recommender/evaluate'; payload: { recSetId: string; respectDontRecommend?: boolean } }
+  | { type: 'recommender/presetCount'; payload: { presetId: string; respectDontRecommend?: boolean } }
   // VIDEO <-> COLLECTIONS
   | { type: 'videos/collections/apply'; payload: { ids: string[]; collectionId: string; op: 'add'|'remove' } }
   // TAG GROUPS (for organizing tags)
