@@ -377,7 +377,7 @@ export default function Sidebar(props: Props) {
 // ---- Rules UI ----
 function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: GroupRec[]; collections: CollectionRec[] }) {
   const [rules, setRules] = React.useState<RuleRec[]>([]);
-  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean; actionKind: 'tags'|'collections'|'delete'|'purge'; recursive?: boolean }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags', recursive: false   })();
+  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean; actionKind: 'tags'|'collections'|'delete'|'purge'; recursive?: boolean }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags', recursive: false   } );
   const [editingRuleId, setEditingRuleId] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
@@ -408,9 +408,9 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
       if (creating.actionKind === 'delete') return { kind: 'delete' } as const;
       if (creating.actionKind === 'purge') return { kind: 'purge' } as const;
       return { kind: 'tags', add: creating.add, remove: creating.remove } as const;
-    })();
+    } );
     if (r?.ok) {
-      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true   })();
+      setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true   } );
       setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags', recursive: false });
     }
   }
@@ -429,7 +429,7 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
       enabled: rule.enabled !== false,
       actionKind,
       recursive: actionKind === 'collections' ? !!(rule.action as any)?.recursive : false,
-      })();
+      } );
     setEditingRuleId(rule.id);
   }
 
@@ -444,8 +444,8 @@ function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: G
       if (creating.actionKind === 'delete') return { kind: 'delete' } as const;
       if (creating.actionKind === 'purge') return { kind: 'purge' } as const;
       return { kind: 'tags', add: creating.add, remove: creating.remove } as const;
-    })();
-    await sendBg('rules/update', { id: rule.id, patch: { enabled: !!next }   })();
+    } );
+    await sendBg('rules/update', { id: rule.id, patch: { enabled: !!next }   } );
   }
   async function onDelete(rule: RuleRec) {
     if (!confirm(`Delete rule "${rule.name}"?`)) return;
