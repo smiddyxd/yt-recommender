@@ -439,51 +439,51 @@ function App() {
         } catch (e: any) {
             alert(`Backup failed: ${e?.message || e}`);
         }
-    } 
+    }
     useEffect(() => {
-    if (mode === 'recommender') {
-        loadRecSets();
-    }    // eslint-disable-next-line react-hooks/exhaustive-deps  
-}, [mode]);
-async function loadRecSets() {
-    try {
-        const r: any = await sendBg('recSets/list', {} as any);
-        const items: RecSet[] = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
-        setRecSets(items);
-        if (!recSetId && items.length) setRecSetId(items[0].id);
-    } catch {
-        setRecSets([]);
-    }
-}async function buildRecPage(seed?: string) {
-    if (!recSetId) return;
-    setRecLoading(true);
-    setRecIsHistoryView(false);
-    const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
-    setRecSeed(String(s));
-    try {
-        const resp: any = await sendBg('recommender/buildPage', { recSetId, seed: String(s), respectDontRecommend } as any);
-        const ids: string[] = Array.isArray(resp?.videoIds) ? resp.videoIds : (Array.isArray(resp?.items) ? resp.items : []);
-        setRecVideoIds(ids);
-        const meta = (resp && resp.debug && typeof resp.debug.metaById === 'object') ? (resp.debug.metaById as Record<string, { presetId: string; recent?: boolean; highViews?: boolean }>) : {};
-        setRecMetaById(meta || {});
-        setRecGlobalPool(typeof resp?.debug?.globalPool === 'number' ? resp.debug.globalPool : null);
-        const rows: Video[] = [];
-        for (const id of ids) {
-            try {
-                const v: any = await idbGetOne('videos', id);
-                if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any);
-            } catch { }
+        if (mode === 'recommender') {
+            loadRecSets();
+        }    // eslint-disable-next-line react-hooks/exhaustive-deps  
+    }, [mode]);
+    async function loadRecSets() {
+        try {
+            const r: any = await sendBg('recSets/list', {} as any);
+            const items: RecSet[] = (r && r.ok && Array.isArray(r.items)) ? r.items : [];
+            setRecSets(items);
+            if (!recSetId && items.length) setRecSetId(items[0].id);
+        } catch {
+            setRecSets([]);
         }
-        setRecVideos(rows);
-    } catch {
-        setRecVideoIds([]);
-        setRecMetaById({});
-        setRecGlobalPool(null);
-        setRecVideos([]);
+    } async function buildRecPage(seed?: string) {
+        if (!recSetId) return;
+        setRecLoading(true);
+        setRecIsHistoryView(false);
+        const s = seed || (crypto?.randomUUID?.() as any) || `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+        setRecSeed(String(s));
+        try {
+            const resp: any = await sendBg('recommender/buildPage', { recSetId, seed: String(s), respectDontRecommend } as any);
+            const ids: string[] = Array.isArray(resp?.videoIds) ? resp.videoIds : (Array.isArray(resp?.items) ? resp.items : []);
+            setRecVideoIds(ids);
+            const meta = (resp && resp.debug && typeof resp.debug.metaById === 'object') ? (resp.debug.metaById as Record<string, { presetId: string; recent?: boolean; highViews?: boolean }>) : {};
+            setRecMetaById(meta || {});
+            setRecGlobalPool(typeof resp?.debug?.globalPool === 'number' ? resp.debug.globalPool : null);
+            const rows: Video[] = [];
+            for (const id of ids) {
+                try {
+                    const v: any = await idbGetOne('videos', id);
+                    if (v) rows.push({ id: v.id, title: v.title, channelId: v.channelId, channelName: v.channelName, durationSec: v.durationSec, uploadedAt: v.uploadedAt, flags: v.flags, tags: v.tags, progressSec: (typeof v?.progress?.sec === 'number') ? v.progress.sec : undefined, views: v.views } as any);
+                } catch { }
+            }
+            setRecVideos(rows);
+        } catch {
+            setRecVideoIds([]);
+            setRecMetaById({});
+            setRecGlobalPool(null);
+            setRecVideos([]);
+        }
+        setRecLoading(false);
     }
-    setRecLoading(false);
-}
-    
+
     async function purgeSelected() {
         const ids = Array.from(selectedVisibleSetDisplay);
         if (!ids.length) return;
@@ -749,7 +749,7 @@ async function loadRecSets() {
         } const cond = chainToCondition(chain);
         if (cond) {
             const parentMap = new Map<string, string | null>((collections || []).map(c => [c.id, (c.parentId ?? null) as (string | null)] as [string, string | null]));
-            base = base.filter(v => matches(v as any, cond, { resolveGroup: (id) => groups.find(g => g.id === id), resolveChannel: (id) => channels.find(c => c.id === id) as any, resolveCollectionParent: (id: string) => parentMap.get(id) } as any));
+            base = base.filter(v => matches(v as any, cond, { resolveGroup: (id: string) => groups.find(g => g.id === id), resolveChannel: (id: string) => channels.find(c => c.id === id) as any, resolveCollectionParent: (id: string) => parentMap.get(id) } as any));
         }  // Exclude videos tagged 'hide' by default unless the tag filter explicitly includes 'hide'  
         try {
             const includesHide = chain.some(e => {
@@ -1124,7 +1124,7 @@ async function loadRecSets() {
             const set = new Set<string>();
             for (const ch of channels) {
                 const tagsArr = Array.isArray((ch as any).tags) ? (ch as any).tags : [];
-                if (tagsArr.some(t => String(t || '').toLowerCase() === 'subscribed')) set.add(ch.id);
+                if (tagsArr.some((t: string) => String(t || '').toLowerCase() === 'subscribed')) set.add(ch.id);
             } return set;
         } catch {
             return new Set<string>();
@@ -1410,179 +1410,182 @@ async function loadRecSets() {
             list.push(t.name);
         } const parentEntries = Array.from(parentBuckets.entries());
         return parentEntries.map(([parentId, childMap]) => (<details key={parentId || 'ungrouped'} className="tag-dropdown">                    <summary>{parentId ? (groupById.get(parentId)?.name || '') : 'Ungrouped'}</summary>                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>                      {Array.from(childMap.entries()).map(([childId, names]) => (<div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>                          {names.map(tag => (<button key={tag} type="button" className="btn-ghost" onClick={() => applyTagToSubsSelection(tag)}>{tag}</button>))}                        </div>))}                    </div>                  </details>));
-    })()}            </div>)}          {/* Filters */}          <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} countryOptions={countryOptions} topicOptions={topicOptions} videoSourceOptions={videoSourcesOptionsMemo} videoTagOptions={videoTagOptions} channelTagOptions={channelTagOptions} groups={groups} tagsRegistry={tags} tagGroups={tagGroups} groupName={groupName} {/* (!recLoading && recVideos.length === 0 && (recGlobalPool === 0)) && (<div className="card" style={{ padding: 12, marginBottom: 8 }}>                  <div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div>                  <div style={{ display: "flex", gap: 8 }}>                    <button className="btn-ghost" onClick={() => {
-        try {
-            const ev = new CustomEvent("recs:openEditor", { detail: { recSetId } });
-            window.dispatchEvent(ev as any);
-        } catch { }
-    }}>Open editor</button>                  </div>                </div>) */} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} />          {mode === 'subs' ? (<>            {/* Subs pager (top) */}            <div className="toolbar-2">              <div className="page-size">                <label htmlFor="subsPageSize">Per page:</label>                <select id="subsPageSize" value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}>                  <option value={50}>50</option>                  <option value={100}>100</option>                  <option value={250}>250</option>                  <option value={500}>500</option>                </select>              </div>              <div className="pager">                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            {/* Subs list */}            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />            {/* Subs pager (bottom) */}            <div className="toolbar-2">              <div className="pager" style={{ marginLeft: 0 }}>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            </>) : (<div style={{ padding: 16 }}>              {recIsHistoryView && (<div className="card" style={{ padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>                  <span className="muted">History view</span>                  <button className="btn-ghost" onClick={() => setRecIsHistoryView(false)}>Clear</button>                </div>)}              <div className="toolbar-2" style={{ marginBottom: 8 }}>                <div className="page-size">                  <label htmlFor="recPageSize">Per page:</label>                  <select id="recPageSize" value={(() => {
-        const sel = recSets.find(s => s.id === recSetId);
-        return sel?.pageSize || 0;
-    })()} onChange={(e) => {
-        const val = parseInt(e.target.value, 10);
-        const sel = recSets.find(s => s.id === recSetId);
-        if (sel) {
-            void sendBg('recSets/update', { id: sel.id, patch: { pageSize: val } });
-        }
-    }}>                    {[10, 20, 30, 40, 50].map(n => (<option key={n} value={n}>{n}</option>))}                  </select>                </div>                <div className="total-info">{recVideoIds.length} items</div>              </div>              <VideoList items={recVideos} layout={layout} loading={recLoading} selected={new Set()} onToggle={() => { }} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" chipsById={recChipsById} emptyHint={<div className="card" style={{ padding: 12, marginBottom: 8 }}><div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div><div style={{ display: "flex", gap: 8 }}><button className="btn-ghost" onClick={() => {
-        try {
-            const ev = new CustomEvent("recs:openEditor", { detail: { recSetId } });
-            window.dispatchEvent(ev as any);
-        } catch { }
-    }}>Open editor</button></div></div>} />            </div>)}        </div>        <div className="manager-only">          <header>          <div className="controls">            {/* View toggle (single button) */}            <div className="view-toggle" role="group" aria-label="View mode">              <button type="button" className="icon-btn" aria-pressed={true} title={isList ? 'Switch to grid view' : 'Switch to list view'} onClick={() => setLayout(isList ? 'grid' : 'list')}              >                {isList ? (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                    <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>                  </svg>) : (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                    <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>                  </svg>)}              </button>            </div>            {/* Trash toggle (single) */}            <button type="button" className="icon-btn" aria-pressed={inTrash || inChannelsTrash} title={(inTrash || inChannelsTrash) ? 'Show non-trash' : 'Show trash'} onClick={() => setView((inChannels || inChannelsTrash) ? (inChannelsTrash ? 'channels' : 'channelsTrash') : (inTrash ? 'videos' : 'trash'))}            >              <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                <path d="M9 3h6a1 1 0 0 1 1 1v1h4v2H4V5h4V4a1 1 0 0 1 1-1Zm-3 6h12l-1 10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9Zm4 2v8h2v-8H10Zm4 0v8h2v-8h-2Z" />              </svg>            </button>            {/* Selection controls */}            <div className="sel-controls">              <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => selectAllMatching((inChannels || inChannelsTrash) ? displayChannels.map(ch => ch.id) : displayVideos.map(v => v.id))}              >                all              </button>              <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selectedCount === 0}              >                C              </button>              <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
-        setSelected(prev => {
-            const next = new Set(prev);
-            if (inChannels || inChannelsTrash) {
-                for (const ch of displayChannels) {
-                    if (next.has(ch.id)) next.delete(ch.id);
-                    else next.add(ch.id);
-                }
-            } else {
-                for (const v of displayVideos) {
-                    if (next.has(v.id)) next.delete(v.id);
-                    else next.add(v.id);
-                }
-            } return next;
-        });
-    }} disabled={(inChannels || inChannelsTrash) ? displayChannels.length === 0 : displayVideos.length === 0}              >                Inv              </button>              <button type="button" className="btn-ghost" title="Open selected in new tabs" onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        if (!ids.length) return;
-        // Open channels or videos depending on current entity view                  
-        const mkUrl = (id: string) => (inChannels || inChannelsTrash) ? `https://www.youtube.com/channel/${id}` : `https://www.youtube.com/watch?v=${id}`;
-        for (const id of ids) {
+    })()}            </div>)}          {/* Filters */}          <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} countryOptions={countryOptions} topicOptions={topicOptions} videoSourceOptions={videoSourcesOptionsMemo} videoTagOptions={videoTagOptions} channelTagOptions={channelTagOptions} groups={groups} tagsRegistry={tags} tagGroups={tagGroups} groupName={groupName} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} />          {mode === 'subs' ? (<>            {/* Subs pager (top) */}            <div className="toolbar-2">              <div className="page-size">                <label htmlFor="subsPageSize">Per page:</label>                <select id="subsPageSize" value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}>                  <option value={50}>50</option>                  <option value={100}>100</option>                  <option value={250}>250</option>                  <option value={500}>500</option>                </select>              </div>              <div className="pager">                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            {/* Subs list */}            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />            {/* Subs pager (bottom) */}            <div className="toolbar-2">              <div className="pager" style={{ marginLeft: 0 }}>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.max(1, p - 1))} disabled={subsPage <= 1} title="Previous page">ï¿½ Prev</button>                <span className="page-info">Page {subsPage} / {subsTotalPages}</span>                <button type="button" className="btn-ghost" onClick={() => setSubsPage(p => Math.min(subsTotalPages, p + 1))} disabled={subsPage >= subsTotalPages} title="Next page">Next ï¿½</button>              </div>              <div className="total-info">{subsTotal} total</div>            </div>            </>) : (<div style={{ padding: 16 }}>              {recIsHistoryView && (<div className="card" style={{ padding: 8, marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>                  <span className="muted">History view</span>                  <button className="btn-ghost" onClick={() => setRecIsHistoryView(false)}>Clear</button>                </div>)}              <div className="toolbar-2" style={{ marginBottom: 8 }}>                <div className="page-size">                  <label htmlFor="recPageSize">Per page:</label>                  <select id="recPageSize" value={(() => {
+            const sel = recSets.find(s => s.id === recSetId);
+            return sel?.pageSize || 0;
+        })()} onChange={(e) => {
+            const val = parseInt(e.target.value, 10);
+            const sel = recSets.find(s => s.id === recSetId);
+            if (sel) {
+                void sendBg('recSets/update', { id: sel.id, patch: { pageSize: val } });
+            }
+        }}>                    {[10, 20, 30, 40, 50].map(n => (<option key={n} value={n}>{n}</option>))}                  </select>                </div>                <div className="total-info">{recVideoIds.length} items</div>              </div>              <VideoList items={recVideos} layout={layout} loading={recLoading} selected={new Set()} onToggle={() => { }} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" chipsById={recChipsById} emptyHint={<div className="card" style={{ padding: 12, marginBottom: 8 }}><div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div><div style={{ display: "flex", gap: 8 }}><button className="btn-ghost" onClick={() => {
             try {
-                await chrome.tabs?.create?.({ url: mkUrl(id), active: false });
-            } catch { /* ignore */ }
-        }
-    }} disabled={selectedVisibleCountDisplay === 0}              >                T              </button>              <button type="button" className="btn-ghost" title={showDisabledOnly ? 'Show filtered results' : 'Show disabled selection'} onClick={() => setShowDisabledOnly(v => !v)}              >                D              </button>              <span className="sel-info">{selectedVisibleCount}{selectedHiddenCount > 0 ? ` -${selectedHiddenCount}` : ''}</span>            </div>            {/* Delete */}            <button type="button" className="btn-danger" title={(inTrash || inChannelsTrash) ? 'Delete selected permanently' : 'Delete selected (moves to Trash)'} onClick={(inTrash || inChannelsTrash) ? purgeSelected : deleteSelected} disabled={selectedVisibleCountDisplay === 0}            >              X            </button>            {inChannelsTrash && (<button type="button" className="btn-ghost" title="Restore selected channels from trash" onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        if (!ids.length) return;
-        await sendBg('channels/restore', { ids });
-        setSelected(prev => {
-            const s = new Set(prev);
-            ids.forEach(id => s.delete(id));
-            return s;
-        });
-        await loadChannelsDir();
-    }} disabled={selectedVisibleCountDisplay === 0}              >                Restore              </button>)}              <button type="button" className="btn-ghost" title="Tag selected" onClick={() => setShowTagger(v => !v)} disabled={selectedVisibleCountDisplay === 0}              >                tags              </button>              {/* Collections quick apply */}              {!inChannels && (<span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>                  <select className="side-input" value={applyCollectionId} onChange={(e) => setApplyCollectionId(e.currentTarget.value)} title="Select collection">                    <option value="">(collection)</option>                    {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}                  </select>                  <button type="button" className="btn-ghost" title="Add to collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        const cid = applyCollectionId;
-        if (!ids.length || !cid) return;
-        await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any);
-    }}>                    +                  </button>                  <button type="button" className="btn-ghost" title="Remove from collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        const cid = applyCollectionId;
-        if (!ids.length || !cid) return;
-        await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any);
-    }}>                    -                  </button>                </span>)}            {/* Search & refresh */}            <input id="q" type="search" placeholder="Filter by title or channel..." value={q} onChange={e => setQ(e.target.value)} />            <button id="refresh" onClick={refresh} disabled={loading} title="Reload list from local database">{loading ? 'Loadingâ€¦' : 'Refresh DB'}</button>            {/* Entity toggle (Videos â†” Channels, aware of trash) */}            <button type="button" className="btn-ghost" aria-pressed={inChannels || inChannelsTrash} title={(inChannels || inChannelsTrash) ? 'Show videos' : 'Show channels'} onClick={() => setView((inChannels || inChannelsTrash) ? ((inChannelsTrash || inTrash) ? 'trash' : 'videos') : ((inTrash || inChannelsTrash) ? 'channelsTrash' : 'channels'))}            >              {(inChannels || inChannelsTrash) ? 'Videos' : 'Channels'}            </button>            <button type="button" className="btn-ghost" aria-pressed={view === 'pending'} title={view === 'pending' ? 'Show videos' : 'Show scraping panel'} onClick={() => setView(view === 'pending' ? 'videos' : 'pending')}            >              Scraping            </button>            <button type="button" className="btn-ghost" title="Fetch video metadata via YouTube API for missing/stale videos" onClick={refreshData} disabled={refreshing}            >              {refreshing ? 'Refreshingâ€¦' : 'Fetch video data'}            </button>            <label style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginLeft: 8 }} title="Show only items without fetched metadata">              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>                <input type="checkbox" checked={showStubsOnly} onChange={(e) => setShowStubsOnly(e.target.checked)} />                <span className="muted">{stubCount} stubs</span>              </span>              <span className="muted" style={{ fontSize: 11, paddingLeft: 27 }}>                {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => {
-        const hidden = Array.isArray((ch as any).tags) && (ch as any).tags.some((t: string) => String(t || '').toLowerCase() === 'hide');
-        return !hidden && !Number.isFinite(((ch as any).fetchedAt as any) || undefined);
-    }).length : filtered.filter(v => {
-        const hidden = Array.isArray(v.tags) && v.tags.some(t => String(t || '').toLowerCase() === 'hide');
-        return !hidden && !Number.isFinite(v.fetchedAt || undefined);
-    }).length}                in view              </span>            </label>            <button type="button" className="btn-ghost" title="Fetch metadata for channels that were never fetched (stubs)" onClick={() => sendBg('channels/refreshUnfetched', {}).then(() => loadChannelsDir())}            >              Fetch channels (unfetched)            </button>            {refreshing && (<span className="muted" aria-live="polite" title={`Applied ${refreshApplied} items`}>                {refreshProcessed}/{refreshTotal}{refreshFailed ? ` (${refreshFailed} failed)` : ''}              </span>)}            <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', marginLeft: 8 }}>              {!refreshing && (<span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>)}              {backupInProgress ? (<span className="muted" aria-live="polite" title="Backup in progress">Backing upâ€¦</span>) : unsyncedCount > 0 ? (<span className="badge" title={`${unsyncedCount} commit(s) pending upload to Drive`}>                  Drive backlog: {unsyncedCount}                </span>) : (<span className="muted" aria-live="polite" title="Last backup time">B: {fmtTime(lastBackupAt)}</span>)}            </span>            {backupLastError && (<span className="muted" style={{ color: 'salmon' }} title="Backup error">{String(backupLastError).slice(0, 120)}</span>)}            {refreshLastError && (<span className="muted" style={{ color: 'salmon' }} title="Last error">{String(refreshLastError).slice(0, 140)}</span>)}            {/* Wipe sources removed per UX */}          </div>        </header>        {showTagger && selectedVisibleCountDisplay > 0 && (<div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>            {/* Video Type toggles (does not change tags) */}            {!inChannels && (<div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>                <span>Video Type:</span>                {(() => {
-        const selectedTypes = new Set<string>();
-        for (const v of selectedVideosVisible) {
-            const t = String((v as any).type || '').toLowerCase();
-            if (t) selectedTypes.add(t);
-        } const common = selectedTypes.size === 1 ? Array.from(selectedTypes)[0] : '';
-        const setType = async (t: 'video' | 'short' | 'livestream') => {
+                const ev = new CustomEvent("recs:openEditor", { detail: { recSetId } });
+                window.dispatchEvent(ev as any);
+            } catch { }
+        }}>Open editor</button></div></div>} />            </div>)}        </div>        <div className="manager-only">          <header>          <div className="controls">            {/* View toggle (single button) */}            <div className="view-toggle" role="group" aria-label="View mode">              <button type="button" className="icon-btn" aria-pressed={true} title={isList ? 'Switch to grid view' : 'Switch to list view'} onClick={() => setLayout(isList ? 'grid' : 'list')}              >                {isList ? (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                    <rect x="5" y="5" width="14" height="14" rx="2" ry="2"></rect>                  </svg>) : (<svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                    <path d="M4 7h16v2H4zM4 11h16v2H4zM4 15h16v2H4z"></path>                  </svg>)}              </button>            </div>            {/* Trash toggle (single) */}            <button type="button" className="icon-btn" aria-pressed={inTrash || inChannelsTrash} title={(inTrash || inChannelsTrash) ? 'Show non-trash' : 'Show trash'} onClick={() => setView((inChannels || inChannelsTrash) ? (inChannelsTrash ? 'channels' : 'channelsTrash') : (inTrash ? 'videos' : 'trash'))}            >              <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">                <path d="M9 3h6a1 1 0 0 1 1 1v1h4v2H4V5h4V4a1 1 0 0 1 1-1Zm-3 6h12l-1 10a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9Zm4 2v8h2v-8H10Zm4 0v8h2v-8h-2Z" />              </svg>            </button>            {/* Selection controls */}            <div className="sel-controls">              <button type="button" className="btn-ghost" title="Select all (matching filter)" onClick={() => selectAllMatching((inChannels || inChannelsTrash) ? displayChannels.map(ch => ch.id) : displayVideos.map(v => v.id))}              >                all              </button>              <button type="button" className="btn-ghost" title="Clear selection" onClick={clearSelection} disabled={selectedCount === 0}              >                C              </button>              <button type="button" className="btn-ghost" title="Invert selection (within current filter)" onClick={() => {
+            setSelected(prev => {
+                const next = new Set(prev);
+                if (inChannels || inChannelsTrash) {
+                    for (const ch of displayChannels) {
+                        if (next.has(ch.id)) next.delete(ch.id);
+                        else next.add(ch.id);
+                    }
+                } else {
+                    for (const v of displayVideos) {
+                        if (next.has(v.id)) next.delete(v.id);
+                        else next.add(v.id);
+                    }
+                } return next;
+            });
+        }} disabled={(inChannels || inChannelsTrash) ? displayChannels.length === 0 : displayVideos.length === 0}              >                Inv              </button>              <button type="button" className="btn-ghost" title="Open selected in new tabs" onClick={async () => {
             const ids = Array.from(selectedVisibleSetDisplay);
             if (!ids.length) return;
-            await sendBg('videos/setType', { ids, type: t } as any);
-        };
-        const btn = (t: 'video' | 'short' | 'livestream', label: string) => (<button type="button" className="btn-ghost" style={{ background: common === t ? '#203040' : undefined }} onClick={() => setType(t)}>{label}</button>);
-        return <>{btn('video', 'Video')}{btn('short', 'Short')}{btn('livestream', 'Livestream')}</>;
-    })()}              </div>)}            <span style={{ marginRight: 8 }}>Apply tag:</span>            {/* Grouped by parent and nested tag groups */}            {(() => {              // Build parent -> child -> tags structure              
-    const groupById = new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
-        const parentBuckets = new Map<string, Map<string, string[]>>();
-        // parentId('' for none) -> childId('' if none) -> tags              
-        for (const t of tags) {
-            const gid = (t.groupId || '') as string;
-            if (!gid || !groupById.has(gid)) {
-                const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
-                const cList = pMap.get('') || (pMap.set('', []), pMap.get('')!);
-                cList.push(t.name);
-                continue;
-            } const g = groupById.get(gid)!;
-            const parentId = g.parentId ? String(g.parentId) : String(g.id);
-            const childKey = g.parentId ? String(g.id) : '';
-            const pMap = parentBuckets.get(parentId) || (parentBuckets.set(parentId, new Map()), parentBuckets.get(parentId)!);
-            const list = pMap.get(childKey) || (pMap.set(childKey, []), pMap.get(childKey)!);
-            list.push(t.name);
-        }              // Order parents: ungrouped first, then by name              
-        const parentEntries = Array.from(parentBuckets.entries()).sort((a, b) => {
-            if (a[0] === '' && b[0] !== '') return -1;
-            if (a[0] !== '' && b[0] === '') return 1;
-            const an = a[0] ? (groupById.get(a[0])?.name || '') : 'Ungrouped';
-            const bn = b[0] ? (groupById.get(b[0])?.name || '') : 'Ungrouped';
-            return an.localeCompare(bn);
-        });
-        const numCmp = (a: string, b: string) => {
-            const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
-            const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
-            const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
-            if (aNum && bNum) return ai - bi;
-            if (aNum && !bNum) return -1;
-            if (!aNum && bNum) return 1;
-            return a.localeCompare(b);
-        };
-        return parentEntries.map(([parentId, childMap]) => {
-            const parent = parentId ? groupById.get(parentId) : null;
-            const parentTitle = parent ? parent.name : 'Ungrouped';
-            const parentBg = parent?.color ? toHex6(parent.color) : null;
-            const parentFg = textColorBW(parentBg || undefined);
-            // Sort child buckets: '' first (no nested), then by nested name                
-            const childEntries = Array.from(childMap.entries()).sort((a, b) => {
+            // Open channels or videos depending on current entity view                  
+            const mkUrl = (id: string) => (inChannels || inChannelsTrash) ? `https://www.youtube.com/channel/${id}` : `https://www.youtube.com/watch?v=${id}`;
+            for (const id of ids) {
+                try {
+                    await chrome.tabs?.create?.({ url: mkUrl(id), active: false });
+                } catch { /* ignore */ }
+            }
+        }} disabled={selectedVisibleCountDisplay === 0}              >                T              </button>              <button type="button" className="btn-ghost" title={showDisabledOnly ? 'Show filtered results' : 'Show disabled selection'} onClick={() => setShowDisabledOnly(v => !v)}              >                D              </button>              <span className="sel-info">{selectedVisibleCount}{selectedHiddenCount > 0 ? ` -${selectedHiddenCount}` : ''}</span>            </div>            {/* Delete */}            <button type="button" className="btn-danger" title={(inTrash || inChannelsTrash) ? 'Delete selected permanently' : 'Delete selected (moves to Trash)'} onClick={(inTrash || inChannelsTrash) ? purgeSelected : deleteSelected} disabled={selectedVisibleCountDisplay === 0}            >              X            </button>            {inChannelsTrash && (<button type="button" className="btn-ghost" title="Restore selected channels from trash" onClick={async () => {
+            const ids = Array.from(selectedVisibleSetDisplay);
+            if (!ids.length) return;
+            await sendBg('channels/restore', { ids });
+            setSelected(prev => {
+                const s = new Set(prev);
+                ids.forEach(id => s.delete(id));
+                return s;
+            });
+            await loadChannelsDir();
+        }} disabled={selectedVisibleCountDisplay === 0}              >                Restore              </button>)}              <button type="button" className="btn-ghost" title="Tag selected" onClick={() => setShowTagger(v => !v)} disabled={selectedVisibleCountDisplay === 0}              >                tags              </button>              {/* Collections quick apply */}              {!inChannels && (<span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>                  <select className="side-input" value={applyCollectionId} onChange={(e) => setApplyCollectionId(e.currentTarget.value)} title="Select collection">                    <option value="">(collection)</option>                    {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}                  </select>                  <button type="button" className="btn-ghost" title="Add to collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async () => {
+            const ids = Array.from(selectedVisibleSetDisplay);
+            const cid = applyCollectionId;
+            if (!ids.length || !cid) return;
+            await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any);
+        }}>                    +                  </button>                  <button type="button" className="btn-ghost" title="Remove from collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async () => {
+            const ids = Array.from(selectedVisibleSetDisplay);
+            const cid = applyCollectionId;
+            if (!ids.length || !cid) return;
+            await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any);
+        }}>                    -                  </button>                </span>)}            {/* Search & refresh */}            <input id="q" type="search" placeholder="Filter by title or channel..." value={q} onChange={e => setQ(e.target.value)} />            <button id="refresh" onClick={refresh} disabled={loading} title="Reload list from local database">{loading ? 'Loadingâ€¦' : 'Refresh DB'}</button>            {/* Entity toggle (Videos â†” Channels, aware of trash) */}            <button type="button" className="btn-ghost" aria-pressed={inChannels || inChannelsTrash} title={(inChannels || inChannelsTrash) ? 'Show videos' : 'Show channels'} onClick={() => setView((inChannels || inChannelsTrash) ? ((inChannelsTrash || inTrash) ? 'trash' : 'videos') : ((inTrash || inChannelsTrash) ? 'channelsTrash' : 'channels'))}            >              {(inChannels || inChannelsTrash) ? 'Videos' : 'Channels'}            </button>            <button type="button" className="btn-ghost" aria-pressed={view === 'pending'} title={view === 'pending' ? 'Show videos' : 'Show scraping panel'} onClick={() => setView(view === 'pending' ? 'videos' : 'pending')}            >              Scraping            </button>            <button type="button" className="btn-ghost" title="Fetch video metadata via YouTube API for missing/stale videos" onClick={refreshData} disabled={refreshing}            >              {refreshing ? 'Refreshingâ€¦' : 'Fetch video data'}            </button>            <label style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, marginLeft: 8 }} title="Show only items without fetched metadata">              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>                <input type="checkbox" checked={showStubsOnly} onChange={(e) => setShowStubsOnly(e.target.checked)} />                <span className="muted">{stubCount} stubs</span>              </span>              <span className="muted" style={{ fontSize: 11, paddingLeft: 27 }}>                {(inChannels || inChannelsTrash) ? channelsFiltered.filter(ch => {
+            const hidden = Array.isArray((ch as any).tags) && (ch as any).tags.some((t: string) => String(t || '').toLowerCase() === 'hide');
+            return !hidden && !Number.isFinite(((ch as any).fetchedAt as any) || undefined);
+        }).length : filtered.filter(v => {
+            const hidden = Array.isArray(v.tags) && v.tags.some(t => String(t || '').toLowerCase() === 'hide');
+            return !hidden && !Number.isFinite(v.fetchedAt || undefined);
+        }).length}                in view              </span>            </label>            <button type="button" className="btn-ghost" title="Fetch metadata for channels that were never fetched (stubs)" onClick={() => sendBg('channels/refreshUnfetched', {}).then(() => loadChannelsDir())}            >              Fetch channels (unfetched)            </button>            {refreshing && (<span className="muted" aria-live="polite" title={`Applied ${refreshApplied} items`}>                {refreshProcessed}/{refreshTotal}{refreshFailed ? ` (${refreshFailed} failed)` : ''}              </span>)}            <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', marginLeft: 8 }}>              {!refreshing && (<span className="muted" aria-live="polite" title="Last fetch time">F: {fmtTime(lastRefreshAt)}</span>)}              {backupInProgress ? (<span className="muted" aria-live="polite" title="Backup in progress">Backing upâ€¦</span>) : unsyncedCount > 0 ? (<span className="badge" title={`${unsyncedCount} commit(s) pending upload to Drive`}>                  Drive backlog: {unsyncedCount}                </span>) : (<span className="muted" aria-live="polite" title="Last backup time">B: {fmtTime(lastBackupAt)}</span>)}            </span>            {backupLastError && (<span className="muted" style={{ color: 'salmon' }} title="Backup error">{String(backupLastError).slice(0, 120)}</span>)}            {refreshLastError && (<span className="muted" style={{ color: 'salmon' }} title="Last error">{String(refreshLastError).slice(0, 140)}</span>)}            {/* Wipe sources removed per UX */}          </div>        </header>        {showTagger && selectedVisibleCountDisplay > 0 && (<div className="tagger" style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', gap: 12, flexWrap: 'wrap' }}>            {/* Video Type toggles (does not change tags) */}            {!inChannels && (<div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>                <span>Video Type:</span>                {(() => {
+            const selectedTypes = new Set<string>();
+            for (const v of selectedVideosVisible) {
+                const t = String((v as any).type || '').toLowerCase();
+                if (t) selectedTypes.add(t);
+            } const common = selectedTypes.size === 1 ? Array.from(selectedTypes)[0] : '';
+            const setType = async (t: 'video' | 'short' | 'livestream') => {
+                const ids = Array.from(selectedVisibleSetDisplay);
+                if (!ids.length) return;
+                await sendBg('videos/setType', { ids, type: t } as any);
+            };
+            const btn = (t: 'video' | 'short' | 'livestream', label: string) => (<button type="button" className="btn-ghost" style={{ background: common === t ? '#203040' : undefined }} onClick={() => setType(t)}>{label}</button>);
+            return <>{btn('video', 'Video')}{btn('short', 'Short')}{btn('livestream', 'Livestream')}</>;
+        })()}              </div>)}            <span style={{ marginRight: 8 }}>Apply tag:</span>            {/* Grouped by parent and nested tag groups */}            {(() => {              // Build parent -> child -> tags structure              
+            const groupById = new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec]));
+            const parentBuckets = new Map<string, Map<string, string[]>>();
+            // parentId('' for none) -> childId('' if none) -> tags              
+            for (const t of tags) {
+                const gid = (t.groupId || '') as string;
+                if (!gid || !groupById.has(gid)) {
+                    const pMap = parentBuckets.get('') || (parentBuckets.set('', new Map()), parentBuckets.get('')!);
+                    const cList = pMap.get('') || (pMap.set('', []), pMap.get('')!);
+                    cList.push(t.name);
+                    continue;
+                } const g = groupById.get(gid)!;
+                const parentId = g.parentId ? String(g.parentId) : String(g.id);
+                const childKey = g.parentId ? String(g.id) : '';
+                const pMap = parentBuckets.get(parentId) || (parentBuckets.set(parentId, new Map()), parentBuckets.get(parentId)!);
+                const list = pMap.get(childKey) || (pMap.set(childKey, []), pMap.get(childKey)!);
+                list.push(t.name);
+            }              // Order parents: ungrouped first, then by name              
+            const parentEntries = Array.from(parentBuckets.entries()).sort((a, b) => {
                 if (a[0] === '' && b[0] !== '') return -1;
                 if (a[0] !== '' && b[0] === '') return 1;
-                const an = a[0] ? (groupById.get(a[0])?.name || '') : '';
-                const bn = b[0] ? (groupById.get(b[0])?.name || '') : '';
+                const an = a[0] ? (groupById.get(a[0])?.name || '') : 'Ungrouped';
+                const bn = b[0] ? (groupById.get(b[0])?.name || '') : 'Ungrouped';
                 return an.localeCompare(bn);
             });
-            return (<details key={parentId || 'ungrouped'} className="tag-dropdown">                    <summary style={{ background: parentBg || undefined, color: parentFg, paddingInline: 6, border: parentBg ? `1px solid ${darken(parentBg, 0.25)}` : undefined }}>                      {parentTitle}                    </summary>                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>                      {childEntries.map(([childId, names]) => {                        // Sort names inside child;  rating numeric ordering if Rating group or nested under Rating parent
-                const parentIsRating = parentId && ((groupById.get(parentId)?.name || '').trim().toLowerCase() === 'rating' || parentId === 'tagGroup.rating');
-                const childIsRating = childId && ((groupById.get(childId)?.name || '').trim().toLowerCase() === 'rating' || childId === 'tagGroup.rating');
-                const isRating = parentIsRating || childIsRating;
-                names.sort((a, b) => isRating ? numCmp(a, b) : a.localeCompare(b));
-                const childColor = childId ? (groupById.get(childId)?.color ? toHex6(groupById.get(childId)!.color) : null) : null;
-                return (<div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>                            {names.map(tag => {
-                    const nm = String(tag || '').toLowerCase();
-                    if (nm === 'subscribed' || nm === 'unsubscribed') return null;
-                    if (!inChannels && (nm === 'scrape' || nm === 'tagged')) return null;
-                    const haveAll = inChannels ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0) : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);
-                    const bg = childColor || undefined;
-                    const fg = textColorBW(bg);
-                    const br = bg ? darken(bg, 0.25) : undefined;
-                    return (<button key={tag} type="button" className="btn-ghost" onClick={() => applyTagToSelection(tag)} style={{ background: bg || (haveAll ? '#203040' : undefined), color: fg, border: bg ? `1px solid ${br}` : undefined, }} title={haveAll ? 'Remove from all selected' : 'Add to all selected'}                                >                                  {tag}                                </button>);
-                })}                          </div>);
-            })}                    </div>                  </details>);
-        });
-    })()}            {availableTags.length === 0 && (<span className="muted">No tags yet. Add tags in the sidebar.</span>)}            {/* Collections apply (to the right of tags) */}            {!inChannels && collections.length > 0 && (<div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 16 }}>                <span>Collections:</span>                <select className="side-input" value={applyCollectionId} onChange={(e) => setApplyCollectionId(e.currentTarget.value)}>                  <option value="">- select -</option>                  {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}                </select>                <button type="button" className="btn-ghost" onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        const cid = applyCollectionId;
-        if (!ids.length || !cid) return;
-        await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any);
-    }} disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} title="Add selected to collection"                >                  +                </button>                <button type="button" className="btn-ghost" onClick={async () => {
-        const ids = Array.from(selectedVisibleSetDisplay);
-        const cid = applyCollectionId;
-        if (!ids.length || !cid) return;
-        await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any);
-    }} disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} title="Remove selected from collection"                >                  -                </button>              </div>)}          </div>)}    <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} videoTagOptions={videoTagOptions} videoSourceOptions={videoSourcesOptionsMemo} channelTagOptions={channelTagOptions} collections={collections} tagsRegistry={tags} tagGroups={tagGroups} topicOptions={topicOptions} countryOptions={countryOptions} groups={groups} groupName={groupName} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} /> {/* Sorting + Pagination toolbar */}<div className="toolbar-2">  {/* Sorts row */}  <div className="sorts" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>    <label style={{ marginRight: 4 }}>Sort by:</label>    {(inChannelLike ? channelSorts : videoSorts).map((s, i) => (<span key={i} className="badge" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>        <select className="chip-input" value={s.field} onChange={(e) => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x, idx) => idx === i ? { ...x, field: e.target.value } : x))}>          {inChannelLike ? (<>              <option value="name">Name</option>              <option value="subs">Subscribers</option>              <option value="views">Views</option>              <option value="videos">Video count</option>              <option value="fetchedAt">Fetched time</option>            </>) : (<>              <option value="uploadedAt">Uploaded time</option>              <option value="durationSec">Duration</option>              <option value="title">Title</option>              <option value="fetchedAt">Fetched time</option>            </>)}        </select>        <select className="chip-input" value={s.dir} onChange={(e) => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x, idx) => idx === i ? { ...x, dir: e.target.value as 'asc' | 'desc' } : x))}>          <option value="asc">asc</option>          <option value="desc">desc</option>        </select>        <button className="chip-remove" onClick={() => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.filter((_, idx) => idx !== i))} title="Remove">A-</button>      </span>))}    <select className="add-filter" value="" onChange={(e) => {
-        const v = e.target.value as string;
-        if (!v) return;
-        (inChannelLike ? setChannelSorts : setVideoSorts)(arr => [...arr, { field: v, dir: 'desc' }]);
-        (e.target as HTMLSelectElement).value = '';
-    }}>      <option value="">+ Add sort...</option>      {inChannelLike ? (<>          <option value="name">Name</option>          <option value="subs">Subscribers</option>          <option value="views">Views</option>          <option value="videos">Video count</option>          <option value="fetchedAt">Fetched time</option>        </>) : (<>          <option value="uploadedAt">Uploaded time</option>          <option value="durationSec">Duration</option>          <option value="title">Title</option>          <option value="fetchedAt">Fetched time</option>        </>)}    </select>  </div>  <div className="page-size">    <label htmlFor="pageSize">Per page:</label>    <select id="pageSize" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}    >      <option value={50}>50</option>      <option value={100}>100</option>      <option value={250}>250</option>      <option value={500}>500</option>    </select>  </div>  <div className="pager">    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} title="Previous page"    >      â† Prev    </button>    <span className="page-info">Page {page} / {totalPages}</span>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} title="Next page"    >      Next â†’    </button>  </div>  <div className="total-info">{total} total</div></div>{/* The list itself */}{view === 'pending' ? (<PendingPanel />) : inChannelLike ? (<div style={{ padding: 16 }}>    {channelsPageItems.map(ch => (<>      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>        <label className="select">          <input type="checkbox" checked={selected.has(ch.id)} onChange={() => toggleSelect(ch.id)} aria-label="Select channel" />        </label>        <img src={avatarUrlFromThumbId((ch as any).thumbnailID || null)} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222', cursor: 'pointer' }} onClick={() => toggleSelect(ch.id)} title={selected.has(ch.id) ? 'Deselect' : 'Select'} />        <div style={{ display: 'flex', flexDirection: 'column' }}>          <strong>            <a href={`https://www.youtube.com/channel/${ch.id}`} target="_blank" rel="noopener noreferrer" title="Open channel on YouTube"            >              {ch.name || ch.id}            </a>          </strong>          <span className="muted" style={{ fontSize: 12 }}>{ch.subs ? `${ch.subs.toLocaleString()} subscribers` : ''}</span>          {Array.isArray((ch as any).tags) && (ch as any).tags.length > 0 && (<span className="badges">              {((ch as any).tags as string[]).map((t) => {
-        const rec = tags.find(x => x.name === t);
-        const gid = (rec?.groupId || '') as string;
-        const grp = gid ? tagGroups.find(g => g.id === gid) : undefined;
-        const parent = grp ? (grp.parentId ? tagGroups.find(g => g.id === grp.parentId) || grp : grp) : undefined;
-        const bg = parent?.color ? toHex6(parent.color) : null;
-        const fg = textColorBW(bg || undefined);
-        const br = bg ? darken(bg, 0.25) : undefined;
-        return <span key={t} className="badge" style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}` : undefined }}>{t}</span>;
-    })}            </span>)}          {Array.isArray((ch as any).videoTags) && (ch as any).videoTags.length > 0 && (<span className="badge">Video tags: {(ch as any).videoTags.join(', ')}</span>)}          {(ch as any).keywords && <span className="muted" style={{ fontSize: 12 }}>Keywords: {(ch as any).keywords}</span>}          {Array.isArray((ch as any).topics) && (ch as any).topics.length > 0 && (<span className="muted" style={{ fontSize: 12 }}>Topics: {(ch as any).topics.join(', ')}</span>)}        </div>        <div style={{ marginLeft: 'auto' }}>          <button type="button" className="btn-ghost" onClick={() => toggleChannelDebug(ch.id)}>Show info</button>        </div>      </div>      {openChannelDebug.has(ch.id) && (<div className="debug-panel" role="region" aria-label="Channel data" style={{ marginTop: -8, marginBottom: 8 }}>          <div className="debug-panel-head">            <span>Stored data</span>            <button className="debug-close" onClick={() => toggleChannelDebug(ch.id)} title="Close">A-</button>          </div>          <pre className="debug-pre">{JSON.stringify((channelFull[ch.id] ?? ch) as any, null, 2)}</pre>        </div>)}      </>))}    {channels.length === 0 && <div className="muted">No channels yet.</div>}  </div>) : (<VideoList items={pageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} />)}{/* Manager pager (bottom) */}<div className="toolbar-2">  <div className="pager" style={{ marginLeft: 0 }}>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} title="Previous page"    >      ï¿½ Prev    </button>    <span className="page-info">Page {page} / {totalPages}</span>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} title="Next page"    >      Next ï¿½    </button>  </div>  <div className="total-info">{total} total</div></div>{/* Undo toast (if you still want it visible here) */}{showUndo && lastDeleted && (<div className="toast">    Deleted {lastDeleted.length} {lastDeleted.length === 1 ? 'item' : 'items'}    <button className="btn-link" onClick={undoDelete}>Undo</button>  </div>)}        </div>      </div>{/* .content */}      <BackupModal open={showBackups} onClose={closeBackups} />      <HistoryModal open={showHistory} onClose={closeHistory} />    </div>);
+            const numCmp = (a: string, b: string) => {
+                const ai = /^\d+$/.test(a) ? parseInt(a, 10) : NaN;
+                const bi = /^\d+$/.test(b) ? parseInt(b, 10) : NaN;
+                const aNum = Number.isFinite(ai), bNum = Number.isFinite(bi);
+                if (aNum && bNum) return ai - bi;
+                if (aNum && !bNum) return -1;
+                if (!aNum && bNum) return 1;
+                return a.localeCompare(b);
+            };
+            return parentEntries.map(([parentId, childMap]) => {
+                const parent = parentId ? groupById.get(parentId) : null;
+                const parentTitle = parent ? parent.name : 'Ungrouped';
+                const parentBg = parent?.color ? toHex6(parent.color) : null;
+                const parentFg = textColorBW(parentBg || undefined);
+                // Sort child buckets: '' first (no nested), then by nested name                
+                const childEntries = Array.from(childMap.entries()).sort((a, b) => {
+                    if (a[0] === '' && b[0] !== '') return -1;
+                    if (a[0] !== '' && b[0] === '') return 1;
+                    const an = a[0] ? (groupById.get(a[0])?.name || '') : '';
+                    const bn = b[0] ? (groupById.get(b[0])?.name || '') : '';
+                    return an.localeCompare(bn);
+                });
+                return (<details key={parentId || 'ungrouped'} className="tag-dropdown">                    <summary style={{ background: parentBg || undefined, color: parentFg, paddingInline: 6, border: parentBg ? `1px solid ${darken(parentBg, 0.25)}` : undefined }}>                      {parentTitle}                    </summary>                    <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>                      {childEntries.map(([childId, names]) => {                        // Sort names inside child;  rating numeric ordering if Rating group or nested under Rating parent
+                    const parentIsRating = parentId && ((groupById.get(parentId)?.name || '').trim().toLowerCase() === 'rating' || parentId === 'tagGroup.rating');
+                    const childIsRating = childId && ((groupById.get(childId)?.name || '').trim().toLowerCase() === 'rating' || childId === 'tagGroup.rating');
+                    const isRating = parentIsRating || childIsRating;
+                    names.sort((a, b) => isRating ? numCmp(a, b) : a.localeCompare(b));
+                    const childColor = childId ? (groupById.get(childId)?.color ? toHex6(groupById.get(childId)!.color) : null) : null;
+                    return (<div key={childId || 'none'} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>                            {names.map(tag => {
+                        const nm = String(tag || '').toLowerCase();
+                        if (nm === 'subscribed' || nm === 'unsubscribed') return null;
+                        if (!inChannels && (nm === 'scrape' || nm === 'tagged')) return null;
+                        const haveAll = inChannels ? (channels.reduce((n: number, c) => (selectedVisibleSetDisplay.has(c.id) && Array.isArray(c.tags) && c.tags.includes(tag)) ? n + 1 : n, 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0) : ((tagCounts.get(tag) || 0) === selectedVisibleCountDisplay && selectedVisibleCountDisplay > 0);
+                        const bg = childColor || undefined;
+                        const fg = textColorBW(bg);
+                        const br = bg ? darken(bg, 0.25) : undefined;
+                        return (<button key={tag} type="button" className="btn-ghost" onClick={() => applyTagToSelection(tag)} style={{ background: bg || (haveAll ? '#203040' : undefined), color: fg, border: bg ? `1px solid ${br}` : undefined, }} title={haveAll ? 'Remove from all selected' : 'Add to all selected'}                                >                                  {tag}                                </button>);
+                    })}                          </div>);
+                })}                    </div>                  </details>);
+            });
+        })()}            {availableTags.length === 0 && (<span className="muted">No tags yet. Add tags in the sidebar.</span>)}            {/* Collections apply (to the right of tags) */}            {!inChannels && collections.length > 0 && (<div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 16 }}>                <span>Collections:</span>                <select className="side-input" value={applyCollectionId} onChange={(e) => setApplyCollectionId(e.currentTarget.value)}>                  <option value="">- select -</option>                  {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}                </select>                <button type="button" className="btn-ghost" onClick={async () => {
+            const ids = Array.from(selectedVisibleSetDisplay);
+            const cid = applyCollectionId;
+            if (!ids.length || !cid) return;
+            await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any);
+        }} disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} title="Add selected to collection"                >                  +                </button>                <button type="button" className="btn-ghost" onClick={async () => {
+            const ids = Array.from(selectedVisibleSetDisplay);
+            const cid = applyCollectionId;
+            if (!ids.length || !cid) return;
+            await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any);
+        }} disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} title="Remove selected from collection"                >                  -                </button>              </div>)}          </div>)}    <FiltersBar chain={chain} setChain={setChain} channelOptions={channelOptions} videoTagOptions={videoTagOptions} videoSourceOptions={videoSourcesOptionsMemo} channelTagOptions={channelTagOptions} collections={collections} tagsRegistry={tags} tagGroups={tagGroups} topicOptions={topicOptions} countryOptions={countryOptions} groups={groups} groupName={groupName} setGroupName={setGroupName} editingGroupId={editingGroupId} onSaveAsGroup={saveAsGroup} onSaveChanges={saveChangesToGroup} onCancelEdit={cancelEditing} /> {/* Sorting + Pagination toolbar */}<div className="toolbar-2">  {/* Sorts row */}  <div className="sorts" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>    <label style={{ marginRight: 4 }}>Sort by:</label>    {(inChannelLike ? channelSorts : videoSorts).map((s, i) => (<span key={i} className="badge" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>        <select className="chip-input" value={s.field} onChange={(e) => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x, idx) => idx === i ? { ...x, field: e.target.value } : x))}>          {inChannelLike ? (<>              <option value="name">Name</option>              <option value="subs">Subscribers</option>              <option value="views">Views</option>              <option value="videos">Video count</option>              <option value="fetchedAt">Fetched time</option>            </>) : (<>              <option value="uploadedAt">Uploaded time</option>              <option value="durationSec">Duration</option>              <option value="title">Title</option>              <option value="fetchedAt">Fetched time</option>            </>)}        </select>        <select className="chip-input" value={s.dir} onChange={(e) => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.map((x, idx) => idx === i ? { ...x, dir: e.target.value as 'asc' | 'desc' } : x))}>          <option value="asc">asc</option>          <option value="desc">desc</option>        </select>        <button className="chip-remove" onClick={() => (inChannelLike ? setChannelSorts : setVideoSorts)(arr => arr.filter((_, idx) => idx !== i))} title="Remove">A-</button>      </span>))}    <select className="add-filter" value="" onChange={(e) => {
+            const v = e.target.value as string;
+            if (!v) return;
+            (inChannelLike ? setChannelSorts : setVideoSorts)(arr => [...arr, { field: v, dir: 'desc' }]);
+            (e.target as HTMLSelectElement).value = '';
+        }}>      <option value="">+ Add sort...</option>      {inChannelLike ? (<>          <option value="name">Name</option>          <option value="subs">Subscribers</option>          <option value="views">Views</option>          <option value="videos">Video count</option>          <option value="fetchedAt">Fetched time</option>        </>) : (<>          <option value="uploadedAt">Uploaded time</option>          <option value="durationSec">Duration</option>          <option value="title">Title</option>          <option value="fetchedAt">Fetched time</option>        </>)}    </select>  </div>  <div className="page-size">    <label htmlFor="pageSize">Per page:</label>    <select id="pageSize" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}    >      <option value={50}>50</option>      <option value={100}>100</option>      <option value={250}>250</option>      <option value={500}>500</option>    </select>  </div>  <div className="pager">    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} title="Previous page"    >      â† Prev    </button>    <span className="page-info">Page {page} / {totalPages}</span>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} title="Next page"    >      Next â†’    </button>  </div>  <div className="total-info">{total} total</div></div>{/* The list itself */}{view === 'pending' ? (<PendingPanel />) : inChannelLike ? (<div style={{ padding: 16 }}>    {channelsPageItems.map(ch => (<>      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 8 }}>        <label className="select">          <input type="checkbox" checked={selected.has(ch.id)} onChange={() => toggleSelect(ch.id)} aria-label="Select channel" />        </label>        <img src={avatarUrlFromThumbId((ch as any).thumbnailID || null)} alt="avatar" style={{ width: 40, height: 40, borderRadius: '50%', background: '#222', cursor: 'pointer' }} onClick={() => toggleSelect(ch.id)} title={selected.has(ch.id) ? 'Deselect' : 'Select'} />        <div style={{ display: 'flex', flexDirection: 'column' }}>          <strong>            <a href={`https://www.youtube.com/channel/${ch.id}`} target="_blank" rel="noopener noreferrer" title="Open channel on YouTube"            >              {ch.name || ch.id}            </a>          </strong>          <span className="muted" style={{ fontSize: 12 }}>{ch.subs ? `${ch.subs.toLocaleString()} subscribers` : ''}</span>          {Array.isArray((ch as any).tags) && (ch as any).tags.length > 0 && (<span className="badges">              {((ch as any).tags as string[]).map((t) => {
+            const rec = tags.find(x => x.name === t);
+            const gid = (rec?.groupId || '') as string;
+            const grp = gid ? tagGroups.find(g => g.id === gid) : undefined;
+            const parent = grp ? (grp.parentId ? tagGroups.find(g => g.id === grp.parentId) || grp : grp) : undefined;
+            const bg = parent?.color ? toHex6(parent.color) : null;
+            const fg = textColorBW(bg || undefined);
+            const br = bg ? darken(bg, 0.25) : undefined;
+            return <span key={t} className="badge" style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}` : undefined }}>{t}</span>;
+        })}            </span>)}          {Array.isArray((ch as any).videoTags) && (ch as any).videoTags.length > 0 && (<span className="badge">Video tags: {(ch as any).videoTags.join(', ')}</span>)}          {(ch as any).keywords && <span className="muted" style={{ fontSize: 12 }}>Keywords: {(ch as any).keywords}</span>}          {Array.isArray((ch as any).topics) && (ch as any).topics.length > 0 && (<span className="muted" style={{ fontSize: 12 }}>Topics: {(ch as any).topics.join(', ')}</span>)}        </div>        <div style={{ marginLeft: 'auto' }}>          <button type="button" className="btn-ghost" onClick={() => toggleChannelDebug(ch.id)}>Show info</button>        </div>      </div>      {openChannelDebug.has(ch.id) && (<div className="debug-panel" role="region" aria-label="Channel data" style={{ marginTop: -8, marginBottom: 8 }}>          <div className="debug-panel-head">            <span>Stored data</span>            <button className="debug-close" onClick={() => toggleChannelDebug(ch.id)} title="Close">A-</button>          </div>          <pre className="debug-pre">{JSON.stringify((channelFull[ch.id] ?? ch) as any, null, 2)}</pre>        </div>)}      </>))}    {channels.length === 0 && <div className="muted">No channels yet.</div>}  </div>) : (<VideoList items={pageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} />)}{/* Manager pager (bottom) */}<div className="toolbar-2">  <div className="pager" style={{ marginLeft: 0 }}>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} title="Previous page"    >      ï¿½ Prev    </button>    <span className="page-info">Page {page} / {totalPages}</span>    <button type="button" className="btn-ghost" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} title="Next page"    >      Next ï¿½    </button>  </div>  <div className="total-info">{total} total</div></div>{/* Undo toast (if you still want it visible here) */}{showUndo && lastDeleted && (<div className="toast">    Deleted {lastDeleted.length} {lastDeleted.length === 1 ? 'item' : 'items'}    <button className="btn-link" onClick={undoDelete}>Undo</button>  </div>)}        </div>      </div>{/* .content */}      <BackupModal open={showBackups} onClose={closeBackups} />      <HistoryModal open={showHistory} onClose={closeHistory} />    </div>);
 }    // Load Rec Sets when entering Recommender mode  
- export default App;
+export default App;
 export { App };
+
+
+ {/* (!recLoading && recVideos.length === 0 && (recGlobalPool === 0)) && (<div className="card" style={{ padding: 12, marginBottom: 8 }}>                  <div className="muted" style={{ marginBottom: 6 }}>Filters eliminate all candidates.</div>                  <div style={{ display: "flex", gap: 8 }}>                    <button className="btn-ghost" onClick={() => {
+        try {
+            const ev = new CustomEvent("recs:openEditor", { detail: { recSetId } });
+            window.dispatchEvent(ev as any);
+        } catch { }
+    }}>Open editor</button>                  </div>                </div>) */} 
