@@ -85,6 +85,7 @@ Global Reminder
 
 ## Architecture Overview
 - Manifest V3: background service worker, one content script, Options page (React), Popup (React).
+ - Collections: metadata (list, parent/child links) stored in chrome.storage.local; video membership stored on video rows in IndexedDB as `collectionIds[]`.
 
 ### Recent Changes (2025-09-29)
 - Channel highlight: Across YouTube, channel anchors for channels tagged with the default channel tag `tagged` are outlined (`border: 3px solid #5edf8b`). Implemented in content via `chrome.storage.local.settings.channelTagsById`, MutationObserver, and navigation hooks; channel page headers are also marked when applicable.
@@ -106,7 +107,7 @@ Global Reminder
 
 ### Background
 - `src/background/index.ts`: single message router and orchestration (DB writes, refresh, backup/history routes, restore routes). Scrape loop stops based on DOM-unique counts reported by content, supports batching, stall detection, and wait-until-flushed finalization.
-- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 14`.
+- `src/background/db.ts`: IndexedDB schema and all data mutations (videos/channels/tags/groups/tag-groups/trash/pending/events/meta). Current `DB_VERSION = 16`.
 - `src/background/driveBackup.ts`: Google Drive appData auth + read/write (JSON, JSONL, snapshots). Plaintext storage only; pass `{ interactive: true }` when user prompts are needed.
 - `src/background/events.ts`: Event batching into commits, local history in IDB, append to monthly JSONL in Drive, dynamic checkpoints, backlog replay.
 - `src/background/restore.ts`: Dry-run and apply restore from settings snapshots (merge/overwrite, selective fields).
@@ -120,6 +121,7 @@ Global Reminder
 
 ### UI
 - Options (`src/ui/options/*`): filterable list, tagging, presets, channels directory + trash, pending channels debug, backup + version history modal.
+  - Collections: Sidebar section to manage collections (create/rename/delete, set parent). Clicking a collection filters the Videos list to show only its items. Topbar tagger exposes a Collections dropdown plus +/− buttons to add/remove the current selection to/from the chosen collection.
 - Pending (debug): includes a Scrape Panel with one-click routines (Run all, Resolve ids, Scrape Sub Feed, Scrape Subscriptions Manager, Scrape Watch History, Stop), per-routine and global "Last run" timestamps, and max limits for feed/history. Each pending row shows an "Open" link (if a handle is present) and a small delete "×" button on the right to remove the entry.
 - Popup (`src/ui/popup/*`): page-aware quick actions (scrape current page; tag current video/channel; toggle auto-stub-on-watch). The popup now:
   - Polls the active tab context every ~1s while open to reflect SPA navigation changes (e.g., channel ? channel), updating video/channel id in place.
@@ -171,9 +173,10 @@ Global Reminder
 - Tiles with just a handle/name may upsert to `channels_pending` (gated by accepted presets, per-page de-duped). Channel pages resolve pending entries to real ids automatically; Options exposes a debug panel to open background tabs and auto-resolve handles in batches.
 
 ## Storage Model (IndexedDB)
-- DB: `yt-recommender`, `DB_VERSION = 14`.
+- DB: `yt-recommender`, `DB_VERSION = 16`.
 - Stores and key fields
   - `videos` (keyPath: `id`) - indexes: `byChannel` on `channelId`, `byTag` on `tags` (multiEntry).
+    - New: `byCollection` on `collectionIds` (multiEntry); `collectionIds: string[]` holds collection membership by id.
   - `trash` (keyPath: `id`) - index: `byDeletedAt`.
   - `tags` (keyPath: `name`) - index: `byCreatedAt`; record: `{ name, color?, createdAt?, groupId? }`.
   - `tag_groups` (keyPath: `id`) - indexes: `byName`, `byCreatedAt`.
@@ -198,6 +201,7 @@ Global Reminder
   - Tags/flags: `tags?: string[]`, `ytTags?: string[]`, `flags?: { started?: boolean; completed?: boolean }`
   - Progress: `progress?: { sec?: number; pct?: number; duration?: number }`
   - Sources: `sources?: Array<{ type: string; id?: string|null }>`
+  - Collections: `collectionIds?: string[]` (ids referencing settings collections)
   - Visibility/lang: `visibility?: 'public'|'unlisted'|'private'|null`, `languageCode?: 'en'|'de'|'other'|null`, `isLive?: boolean|null`
   - Topics: `videoTopics?: string[]`
   - Compact projections: `type?: 'video'|'short'|'livestream'`, `transcript?: ''|'no transcript'`, `views?: number`, `likes?: number`, `commentCount?: number`, `liveViewers?: number`, `rejectionReason?: string`, `failureReason?: string`, `premiereTime?: number|null`, `customThumbnail?: boolean`, `contentRating?: string`, `regionRestriction?: { allowed?: string[]; blocked?: string[] }`
@@ -231,6 +235,8 @@ Global Reminder
   - Channels: `channels/list`, `channels/trashList`, `channels/refreshUnfetched`, `channels/refreshByIds`, `channels/applyTags`, `channels/markScraped`, `channels/upsertStub`, `channels/delete`, `channels/restore`, `channels/stubsCount`
   - Trash purge: `videos/purge` (delete permanently from videos trash), `channels/purge` (delete permanently from channels trash)
   - Tags: `tags/list`, `tags/create`, `tags/rename`, `tags/delete`, `tags/assignGroup`
+  - Collections: `collections/list`, `collections/create { name, parentId? }`, `collections/update { id, patch }`, `collections/delete { id }`
+  - Apply: `videos/collections/apply { ids, collectionId, op: 'add'|'remove' }`
   - Tag Groups: `tagGroups/list`, `tagGroups/create`, `tagGroups/rename`, `tagGroups/delete`
   - Tag Groups (update): `tagGroups/update { id, patch }` (supports `parentId`, `color`)
   - Groups/Presets: `groups/list`, `groups/create`, `groups/update` (accepts `{ scrape?: boolean }`), `groups/delete`
@@ -267,7 +273,7 @@ Global Reminder
   - `snapshots/settings-YYYYMMDD-HHMMSS.json` (dynamic checkpoints). Background ensures a baseline snapshot exists after Drive is configured.
   - `events-YYYY-MM.jsonl` (monthly append-only history with a JSON header line).
   - Optional `cutoff.json` markers after "Delete up to here".
-  - Settings content includes: `tags`, `tagGroups`, `groups/presets`, `rules`, `videoIndex`, `channelIndex`, and `pendingChannels`.
+  - Settings content includes: `tags`, `tagGroups`, `groups/presets`, `rules`, `collections`, `videoIndex`, `channelIndex`, and `pendingChannels`.
 - Dynamic checkpoints: when commit processing weight >= 10,000 or month file size >= 20 MB, background saves a snapshot and resets counters; a daily alarm also saves settings.
 - Event history: call `recordEvent` for meaningful mutations (tag ops, delete/restore, assign group, channel tag ops, etc.) and include an `impact` estimate for snapshot thresholds. Ephemeral pending-channels operations (`pending/upsert`, `pending/resolve`, `pending/delete`) are excluded from version history and do not create events/commits.
 - Commit flush: `queueCommitFlush(3000)` batches events; `finalizeCommitAndFlushIfAny()` runs during backup schedule.
@@ -287,9 +293,9 @@ Global Reminder
  - Pending channels operations (`pending/*`) are not recorded in version history; they do not appear in export lines.
 
 ## Restore (Dry Run + Apply)
-- Snapshot shape: `{ version:1, at, tags[], tagGroups[], groups[], videoIndex[], channelIndex[], pendingChannels[] }`.
+ - Snapshot shape: `{ version:1, at, tags[], tagGroups[], groups[], rules[], collections[], videoIndex[], channelIndex[], pendingChannels[] }`.
 - Dry run (`backup/restore/dryRun`) returns counts by category for merge/overwrite and indicates which apply flags would enact changes.
-- Apply (`backup/restore/apply`) supports merge/overwrite and selective application of `channelTags`, `videoTags`, `sources`, `progress` (with tag-name dedupe and tag-group remap by name).
+- Apply (`backup/restore/apply`) supports merge/overwrite and selective application of `channelTags`, `videoTags`, `sources`, `progress`, and `collections` (registry + per‑video membership). Tag names are de‑duplicated and tag groups remapped by name.
 - Post-apply: emit `db/change` for affected entities, queue commit flush, and queue settings backup.
 
 ## Options UI Highlights
@@ -492,3 +498,14 @@ Use this section as an "inbox" for future patch notes. After integrating updates
  - Filters everywhere: FiltersBar and Presets are available in all three modes (Manager, Subs, Recommender). Subs/Recommender currently apply filters but show placeholder result areas until fully implemented.
  - URL hash: Options page reflects/persists `mode` and `view` as a hash query (e.g., `#mode=subs&view=channels`). Mode also persists in `chrome.storage.local['options.mode']` and view in `['options.view']`.
  - Sidebar UX: Tabs sit outside the scrollable sidebar body to avoid layout shifts when the body scrollbar appears/disappears.
+### Recent Changes (2025-10-04)
+- Collections: hierarchical, playlist-like groups of videos.
+  - Storage: definitions in `chrome.storage.local.settings.collections`; membership on videos via `collectionIds: string[]` with new index `videos.byCollection`.
+  - Rules: support `action.kind = 'collections'` with `add[]` / `remove[]` of collection ids.
+  - UI: Always‑visible topbar control next to `tags` in Manager/Subs/Recommender lets you pick a collection and +/− add/remove the current selection.
+    - Tagger panel also exposes the same control.
+    - Sidebar adds a Collections section (below Rules) to create/rename/delete, pick a color, set `parentId`, and click to filter the video list by that collection.
+    - Collections have colors; video cards render collection badges tinted with that color.
+    - A new Filters chip “Collections” lets you include/exclude videos by collection id; parent inheritance applies (videos in a child match their ancestors too).
+    - Switching between a collection view and normal Videos view disables the selection; switching Channels ↔ Videos clears it (unchanged).
+  - Backups: settings `collections[]` included in `settings.json` snapshots and baseline snapshots.

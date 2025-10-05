@@ -24,6 +24,7 @@ export type FilterNode =
   | { kind: 'v_topics_any'; itemsCsv: string }
   | { kind: 'v_topics_all'; itemsCsv: string }
   | { kind: 'v_sources_any'; itemsCsv: string }
+  | { kind: 'v_collections_any'; ids: string[] }
   // Channel filters
   | { kind: 'c_subs'; min?: number; max?: number }
   | { kind: 'c_views'; min?: number; max?: number }
@@ -96,6 +97,12 @@ export function entryToCondition(e: FilterEntry): Condition | null {
     const tags = csv(f.tagsCsv);
     if (!tags.length) return null;
     const node: Condition = { kind: 'tagsNone', tags } as any;
+    return e.not ? ({ not: node } as any) : node;
+  }
+  if (f.kind === 'v_collections_any') {
+    const ids = Array.isArray(f.ids) ? f.ids.filter(Boolean) : [];
+    if (!ids.length) return null;
+    const node: Condition = { kind: 'collectionsAny', ids } as any;
     return e.not ? ({ not: node } as any) : node;
   }
   // Channel tags

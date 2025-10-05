@@ -1,8 +1,8 @@
 ﻿import { renameTag as renameTagInDB, deleteTag as deleteTagInDB } from './db';
-import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed } from './db';
+import { upsertVideo, upsertVideosBulk, moveToTrash, restoreFromTrash, applyTags, listChannels, wipeSourcesDuplicates, applyYouTubeVideo, openDB, missingChannelIds, applyYouTubeChannel, recomputeVideoTagsForAllChannels, recomputeVideoTagsForChannels, recomputeVideoTopicsMeta, readVideoTopicsMeta, listChannelIdsNeedingFetch, markChannelScraped, upsertChannelStub, moveChannelsToTrash, restoreChannelsFromTrash, listChannelsTrash, upsertPendingChannel, resolvePendingChannel, listPendingChannels, applySubscribedSet, purgeVideosFromTrash, purgeChannelsFromTrash, deletePendingChannel, updateLatestForSource, getMetaValue, recomputeChannelVideoTopicsForAllChannels, markChannelsSubscribed, applyCollections, removeCollectionFromAllRows } from './db';
 import type { Msg } from '../types/messages';
 import { dlog, derr } from '../types/debug';
-import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload, listRulesLocal as listRulesCfg, createRuleLocal as createRuleCfg, updateRuleLocal as updateRuleCfg, deleteRuleLocal as deleteRuleCfg } from './settingsStorage';
+import { listTagsLocal as listTags, createTagLocal as createTag, renameTagLocal as renameTag, deleteTagLocal as deleteTag, setTagGroupLocal as setTagGroup, listTagGroupsLocal as listTagGroups, createTagGroupLocal as createTagGroup, renameTagGroupLocal as renameTagGroup, deleteTagGroupLocal as deleteTagGroup, updateTagGroupLocal as updateTagGroup, listGroupsLocal as listGroups, createGroupLocal as createGroup, updateGroupLocal as updateGroup, deleteGroupLocal as deleteGroup, getChannelTagsMap, applyChannelTagsLocal, ensureUseLocalDefault, isUseLocalEnabled, hasLocalSettingsInitialized, writeInitialLocalSettings, getSettingsSnapshotForDownload, listRulesLocal as listRulesCfg, createRuleLocal as createRuleCfg, updateRuleLocal as updateRuleCfg, deleteRuleLocal as deleteRuleCfg, listCollectionsLocal as listCollectionsCfg, createCollectionLocal as createCollectionCfg, updateCollectionLocal as updateCollectionCfg, deleteCollectionLocal as deleteCollectionCfg } from './settingsStorage';
 import type { RuleRec } from '../types/messages';
 import { matches, type Group as GroupRec } from '../shared/conditions';
 import { registerSettingsProducer, saveSettingsNow, getClientIdState, setClientId, type SettingsSnapshot, restoreSettings, listAppDataFiles, downloadAppDataFileBase64, downloadAppDataFileRangeBase64, queueSettingsBackup, deleteAppDataFile, upsertAppDataTextFile, downloadSnapshotByName, getCurrentSettingsSnapshot, saveSnapshotWithName } from './driveBackup';
@@ -211,6 +211,15 @@ async function applyRulesForIds(ids: string[], opts?: { onlyEnabled?: boolean })
           const d = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean) : [];
           if (a.length) add.push(...a);
           for (const t of d) remSet.add(String(t));
+        } else if (r.action?.kind === 'collections') {
+          const addCols: string[] = Array.isArray(r.action.add) ? r.action.add.filter(Boolean).map(String) : [];
+          const remCols: string[] = Array.isArray(r.action.remove) ? r.action.remove.filter(Boolean).map(String) : [];
+          for (const cid of addCols) {
+            try { await applyCollections([vid], cid, 'add'); affected += 1; } catch {}
+          }
+          for (const cid of remCols) {
+            try { await applyCollections([vid], cid, 'remove'); affected += 1; } catch {}
+          }
         }
       }
       // Sanitize & diff vs current
@@ -240,11 +249,12 @@ function ensureResolveSession(): { tried: Set<string> } {
 
 // --- Google Drive backup wiring ---
 registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
-  const [tags, tagGroups, groups, rules, chTags] = await Promise.all([
+  const [tags, tagGroups, groups, rules, collections, chTags] = await Promise.all([
     listTags().catch(() => []),
     listTagGroups().catch(() => []),
     listGroups().catch(() => []),
     listRulesCfg().catch(() => []),
+    listCollectionsCfg().catch(() => []),
     getChannelTagsMap().catch(() => ({} as Record<string, string[]>)),
   ]);
   const db = await openDB();
@@ -277,6 +287,7 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
         } catch {}
         if (ps != null) entry.progressSec = ps;
         if (r.channelId) entry.channelId = r.channelId;
+        if (Array.isArray(r.collectionIds) && r.collectionIds.length) entry.collectionIds = r.collectionIds.slice();
         videoIndex.push(entry);
         c.continue();
       };
@@ -323,6 +334,7 @@ registerSettingsProducer(async (): Promise<SettingsSnapshot> => {
     tagGroups: (tagGroups as any) || [],
     groups: (groups as any) || [],
     rules: (rules as any) || [],
+    collections: (collections as any) || [],
     videoIndex,
     channelIndex,
     pendingChannels,
@@ -987,6 +999,43 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
         recordEvent('groups/delete', { id }, { impact: { groups: 1 } });
         scheduleBackup();
         sendResponse?.({ ok: true });
+      } else if (raw.type === 'collections/list') {
+        const items = await listCollectionsCfg();
+        sendResponse?.({ ok: true, items });
+      } else if (raw.type === 'collections/create') {
+        const name = String(raw.payload?.name || '').trim();
+        const parentId = (raw.payload?.parentId ?? null) as (string | null);
+        const id = await createCollectionCfg(name, parentId);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
+        recordEvent('collections/create', { id, name, parentId }, { impact: { collections: 1 } });
+        scheduleBackup();
+        sendResponse?.({ ok: true, id });
+      } else if (raw.type === 'collections/update') {
+        const { id, patch } = raw.payload || {};
+        await updateCollectionCfg(id, patch);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
+        recordEvent('collections/update', { id, patch }, { impact: { collections: 1 } });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'collections/delete') {
+        const { id } = raw.payload || {};
+        await deleteCollectionCfg(id);
+        try { await removeCollectionFromAllRows(id); } catch {}
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'collections' } });
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        recordEvent('collections/delete', { id }, { impact: { collections: 1 } });
+        scheduleBackup();
+        sendResponse?.({ ok: true });
+      } else if (raw.type === 'videos/collections/apply') {
+        const ids: string[] = Array.isArray(raw.payload?.ids) ? raw.payload.ids.filter(Boolean) : [];
+        const collectionId: string = String(raw.payload?.collectionId || '').trim();
+        const op = (raw.payload?.op === 'remove') ? 'remove' : 'add';
+        if (!ids.length || !collectionId) { sendResponse?.({ ok: false, error: 'Invalid args' }); return; }
+        await applyCollections(ids, collectionId, op);
+        chrome.runtime.sendMessage({ type: 'db/change', payload: { entity: 'videos' } });
+        recordEvent('videos/applyCollections', { ids, collectionId, op }, { impact: { videos: ids.length } });
+        scheduleBackup();
+        sendResponse?.({ ok: true, count: ids.length });
       } else if (raw.type === 'videos/applyTags') {
         const { ids, addIds = [], removeIds = [] } = raw.payload || {};
         const add = sanitizeVideoTagAdds(addIds);
@@ -1630,6 +1679,7 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
                 } catch {}
                 if (ps != null) entry.progressSec = ps;
                 if (r.channelId) entry.channelId = r.channelId;
+                if (Array.isArray(r.collectionIds) && r.collectionIds.length) entry.collectionIds = r.collectionIds.slice();
                 videoIndex.push(entry);
                 c.continue();
               };
@@ -1659,7 +1709,8 @@ chrome.runtime.onMessage.addListener((raw: Msg, sender, sendResponse) => {
               tx.oncomplete = () => resolve();
               tx.onerror = () => reject(tx.error);
             });
-            return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any, videoIndex, channelIndex, pendingChannels };
+            const collections = await listCollectionsCfg().catch(() => []);
+            return { version: 1, at: Date.now(), tags: tags as any, tagGroups: tagGroups as any, groups: groups as any, rules: await listRulesCfg().catch(()=>[]), collections: collections as any, videoIndex, channelIndex, pendingChannels };
           })();
           await saveSettingsNow(snapshot, { interactive: true });
           try { void replayUnsyncedCommitsToDrive(); } catch {}

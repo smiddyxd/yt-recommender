@@ -3,7 +3,7 @@
 // Plaintext storage only (no encryption).
 
 import type { Group as GroupRec } from '../shared/conditions';
-import type { TagRec, TagGroupRec, RuleRec } from '../types/messages';
+import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../types/messages';
 
 // -------------------- Types --------------------
 export type VideoIndexEntry = {
@@ -12,6 +12,7 @@ export type VideoIndexEntry = {
   sources?: Array<{ type: string; id?: string | null }>;
   progressSec?: number | null;
   channelId?: string | null;
+  collectionIds?: string[];
 };
 
 export type ChannelIndexEntry = { id: string; tags?: string[] };
@@ -25,6 +26,7 @@ export type SettingsSnapshot = {
   tagGroups: TagGroupRec[];
   groups: GroupRec[]; // includes scrape?: boolean
   rules: RuleRec[];
+  collections: CollectionRec[];
   videoIndex: VideoIndexEntry[];
   channelIndex: ChannelIndexEntry[];
   pendingChannels: PendingChannelEntry[];

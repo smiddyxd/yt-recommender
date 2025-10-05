@@ -1,6 +1,6 @@
 // src/ui/options/components/FiltersBar.tsx
 import React from 'react';
-import type { TagRec, TagGroupRec } from '../../../types/messages';
+import type { TagRec, TagGroupRec, CollectionRec } from '../../../types/messages';
 import type { Group as GroupRec } from '../../../shared/conditions';
 import type { FilterEntry, FilterNode, DurationUI } from '../lib/filters';
 import { VIDEO_CATEGORIES } from '../lib/videoCategories';
@@ -22,6 +22,7 @@ type Props = {
   videoTagOptions?: TagOption[];
   channelTagOptions?: TagOption[];
   groups: GroupRec[];
+  collections?: CollectionRec[];
   // tag registry for grouping in tag chips
   tagsRegistry?: TagRec[];
   tagGroups?: TagGroupRec[];
@@ -45,6 +46,7 @@ export default function FiltersBar({
   videoTagOptions,
   channelTagOptions,
   groups,
+  collections = [],
   tagsRegistry,
   tagGroups,
   groupName,
@@ -69,6 +71,7 @@ export default function FiltersBar({
       kind === 'v_topics_any'  ? { kind: 'v_topics_any', itemsCsv: '' } as any :
       kind === 'v_topics_all'  ? { kind: 'v_topics_all', itemsCsv: '' } as any :
       kind === 'v_sources_any' ? { kind: 'v_sources_any', itemsCsv: '' } as any :
+      kind === 'v_collections_any' ? { kind: 'v_collections_any', ids: [] } as any :
       kind === 'v_flag'        ? { kind: 'v_flag', name: 'started', value: true } as any :
       kind === 'v_tags_any'    ? { kind: 'v_tags_any', tagsCsv: '' } as any :
       kind === 'v_tags_all'    ? { kind: 'v_tags_all', tagsCsv: '' } as any :
@@ -334,6 +337,41 @@ export default function FiltersBar({
                     </label>
                   ))}
                   {options.length > 30 && <div className="muted">…{options.length - 30} more, refine search</div>}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        // ---- COLLECTIONS CHIP ----
+        if (f.kind === 'v_collections_any') {
+          const opts = collections;
+          const toggle = (id: string) => setChain(arr => arr.map((e, i) => {
+            if (i !== idx || e.pred.kind !== 'v_collections_any') return e;
+            const ids = e.pred.ids.includes(id) ? e.pred.ids.filter(y => y !== id) : [...e.pred.ids, id];
+            return { ...e, pred: { ...e.pred, ids } };
+          }));
+          return (
+            <div className="filter-chip-row" key={idx}>
+              {OpToggle}
+              <div className="filter-chip">
+                <div className="chip-head">
+                  <span>Collections</span>
+                  <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+                    <label className="chip-not">
+                      <input type="checkbox" checked={!!entry.not} onChange={() => toggleNot(idx)} />
+                      NOT
+                    </label>
+                    <button className="chip-remove" onClick={() => removeFilter(idx)} title="Remove">A-</button>
+                  </span>
+                </div>
+                <div className="chip-list">
+                  {opts.map(c => (
+                    <label key={c.id} className="chip-check">
+                      <input type="checkbox" checked={f.ids.includes(c.id)} onChange={() => toggle(c.id)} />
+                      <span>{c.name}</span>
+                    </label>
+                  ))}
                 </div>
               </div>
             </div>
@@ -1165,3 +1203,11 @@ export default function FiltersBar({
     </div>
   );
 }
+      <div className="add-filter-row">
+        <select className="add-filter" value="" onChange={(e)=>{ const v=e.target.value as FilterNode['kind']|''; if(!v) return; addFilter(v); (e.target as HTMLSelectElement).value=''; }}>
+          <option value="">+ filter</option>
+          <option disabled>— Video —</option>
+          <option value="v_collections_any">Collections</option>
+          {/* existing entries omitted for brevity in this control */}
+        </select>
+      </div>

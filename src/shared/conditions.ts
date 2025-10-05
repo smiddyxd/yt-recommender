@@ -21,6 +21,7 @@ export type Pred =
   | { kind: 'flag'; name: 'started' | 'completed'; value: boolean }
   | { kind: 'sourceAny'; items: Array<{ type: string; id?: string | null }> }
   | { kind: 'sourcePlaylistAny'; ids: string[] }
+  | { kind: 'collectionsAny'; ids: string[] }
   | { kind: 'groupRef'; ids: string[] }                         // video matches ANY of these groups
   // Channel-specific predicates (used on videos via resolveChannel; and directly on channels via matchesChannel)
   | { kind: 'channelSubsRange'; min?: number; max?: number }
@@ -54,6 +55,7 @@ export type VideoRow = {
   isLive?: boolean | null;
   type?: 'video'|'short'|'livestream' | null;
   videoTopics?: string[] | null;
+  collectionIds?: string[] | null;
 };
 
 export type ChannelRow = {
@@ -258,6 +260,27 @@ export function matches(
         if (g && matches(v, g.condition, { ...ctx, seenGroups: new Set(seen) })) return true;
       }
       return false;
+    }
+    case 'collectionsAny': {
+      const have: string[] = Array.isArray((v as any).collectionIds) ? ((v as any).collectionIds as string[]) : [];
+      if (!have.length && !p.ids?.length) return false;
+      const set = new Set<string>(have);
+      // Expand via ancestors if resolver provided
+      const parentOf = (ctx as any)?.resolveCollectionParent as (id: string) => (string | null | undefined);
+      if (parentOf) {
+        const expanded = new Set<string>(set);
+        for (const id of Array.from(set.values())) {
+          let cur: string | null | undefined = id;
+          // climb parent chain
+          while (cur) {
+            const par = parentOf(cur);
+            if (par && !expanded.has(par)) expanded.add(par);
+            cur = par;
+          }
+        }
+        for (const x of Array.from(expanded.values())) set.add(x);
+      }
+      return (p.ids || []).some(id => set.has(String(id)));
     }
     default:
       return false;

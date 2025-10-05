@@ -1,5 +1,5 @@
 import type { Group as GroupRec, Condition } from '../shared/conditions';
-import type { TagRec, TagGroupRec, RuleRec } from '../types/messages';
+import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../types/messages';
 
 // Chrome storage keys
 const KEY = {
@@ -7,6 +7,7 @@ const KEY = {
   tagGroups: 'settings.tagGroups',
   groups: 'settings.groups',
   rules: 'settings.rules',
+  collections: 'settings.collections',
   channelTagsById: 'settings.channelTagsById',
   rev: 'settings.rev',
   updatedAt: 'settings.updatedAt',
@@ -21,6 +22,7 @@ type SettingsBundle = {
   tagGroups: TagGroupRec[];
   groups: GroupRec[];
   rules: RuleRec[];
+  collections: CollectionRec[];
   channelTagsById: ChannelTagsMap;
   rev: number;
   updatedAt: number;
@@ -37,15 +39,16 @@ async function withLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function readAll(): Promise<SettingsBundle> {
-  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.rules, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
+  const o = await chrome.storage.local.get([KEY.tags, KEY.tagGroups, KEY.groups, KEY.rules, KEY.collections, KEY.channelTagsById, KEY.rev, KEY.updatedAt]);
   const tags: TagRec[] = Array.isArray(o[KEY.tags]) ? o[KEY.tags] : [];
   const tagGroups: TagGroupRec[] = Array.isArray(o[KEY.tagGroups]) ? o[KEY.tagGroups] : [];
   const groups: GroupRec[] = Array.isArray(o[KEY.groups]) ? o[KEY.groups] : [];
   const rules: RuleRec[] = Array.isArray(o[KEY.rules]) ? o[KEY.rules] : [];
+  const collections: CollectionRec[] = Array.isArray(o[KEY.collections]) ? o[KEY.collections] : [];
   const channelTagsById: ChannelTagsMap = o[KEY.channelTagsById] && typeof o[KEY.channelTagsById] === 'object' ? (o[KEY.channelTagsById] as ChannelTagsMap) : {};
   const rev: number = Number.isFinite(o[KEY.rev]) ? Number(o[KEY.rev]) : 0;
   const updatedAt: number = Number.isFinite(o[KEY.updatedAt]) ? Number(o[KEY.updatedAt]) : 0;
-  return { tags, tagGroups, groups, rules, channelTagsById, rev, updatedAt };
+  return { tags, tagGroups, groups, rules, collections, channelTagsById, rev, updatedAt };
 }
 
 async function writeAll(next: SettingsBundle): Promise<void> {
@@ -54,6 +57,7 @@ async function writeAll(next: SettingsBundle): Promise<void> {
     [KEY.tagGroups]: next.tagGroups,
     [KEY.groups]: next.groups,
     [KEY.rules]: next.rules,
+    [KEY.collections]: next.collections,
     [KEY.channelTagsById]: next.channelTagsById,
     [KEY.rev]: next.rev,
     [KEY.updatedAt]: next.updatedAt,
@@ -225,6 +229,68 @@ export async function listRulesLocal(): Promise<RuleRec[]> {
   const { rules } = await readAll();
   // Keep original order; newest last
   return rules.slice();
+}
+
+// ---- Collections (local: chrome.storage.local) ----
+export async function listCollectionsLocal(): Promise<CollectionRec[]> {
+  const { collections } = await readAll();
+  return collections.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+}
+
+export async function createCollectionLocal(name: string, parentId?: string | null): Promise<string> {
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const rec: CollectionRec = { id, name: (name || '').trim() || 'collection', parentId: parentId ?? null, color: null, createdAt: now, updatedAt: now };
+  await withLock(async () => {
+    const cur = await readAll();
+    cur.collections.push(rec);
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+  return id;
+}
+
+export async function updateCollectionLocal(id: string, patch: Partial<CollectionRec>): Promise<void> {
+  const cid = (id || '').trim(); if (!cid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    const idx = cur.collections.findIndex(c => String(c.id) === cid);
+    if (idx === -1) return;
+    const prev = cur.collections[idx];
+    const next: CollectionRec = {
+      ...prev,
+      ...patch,
+      id: prev.id,
+      name: (patch.name ?? prev.name) as string,
+      parentId: (patch.parentId ?? prev.parentId) as (string | null | undefined),
+      updatedAt: Date.now(),
+    };
+    cur.collections[idx] = next;
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+}
+
+export async function deleteCollectionLocal(id: string): Promise<void> {
+  const cid = (id || '').trim(); if (!cid) return;
+  await withLock(async () => {
+    const cur = await readAll();
+    cur.collections = cur.collections.filter(c => String(c.id) !== cid);
+    // Also detach any children referencing this as parent
+    cur.collections = cur.collections.map(c => (c.parentId === cid ? { ...c, parentId: null, updatedAt: Date.now() } : c));
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
+}
+
+// Overwrite entire collections registry (preserve incoming ids). Used by restore/apply (overwrite mode) and merge helper.
+export async function setCollectionsLocal(list: CollectionRec[]): Promise<void> {
+  await withLock(async () => {
+    const cur = await readAll();
+    cur.collections = Array.isArray(list) ? list.slice() : [];
+    cur.rev += 1; cur.updatedAt = Date.now();
+    await writeAll(cur);
+  });
 }
 
 export async function createRuleLocal(input: { name: string; groupId: string; action: RuleRec['action']; channelIds?: string[]; enabled?: boolean }): Promise<string> {

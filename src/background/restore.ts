@@ -1,8 +1,9 @@
 import { openDB } from './db';
+import { listCollectionsLocal, setCollectionsLocal } from './settingsStorage';
 import type { SettingsSnapshot } from './driveBackup';
 
 export type RestoreMode = 'merge' | 'overwrite';
-export type ApplyFlags = { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean };
+export type ApplyFlags = { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean; collections?: boolean };
 
 export type RestoreSummary = {
   ok: true;
@@ -10,8 +11,9 @@ export type RestoreSummary = {
     tagsCreated?: number; tagsUpdated?: number; tagsCleared?: number;
     tagGroupsCreated?: number; tagGroupsUpdated?: number; tagGroupsCleared?: number;
     groupsCreated?: number; groupsUpdated?: number; groupsCleared?: number;
+    collectionsCreated?: number; collectionsUpdated?: number; collectionsCleared?: number;
     channelsUpserted?: number; channelTagUpdates?: number;
-    videosUpserted?: number; videoTagUpdates?: number; sourcesUpdated?: number; progressUpdated?: number;
+    videosUpserted?: number; videoTagUpdates?: number; sourcesUpdated?: number; progressUpdated?: number; videoCollectionUpdates?: number;
     pendingUpserted?: number;
   };
 };
@@ -74,6 +76,23 @@ export async function dryRunRestoreApply(snapshot: SettingsSnapshot, mode: Resto
     counts.groupsCreated = create; counts.groupsUpdated = update;
   }
 
+  // Collections (registry only)
+  try {
+    const cur = await listCollectionsLocal().catch(() => []);
+    if (mode === 'overwrite') {
+      counts.collectionsCleared = cur.length;
+      counts.collectionsCreated = (snapshot.collections || []).length;
+    } else {
+      const setNow = new Set((cur as any[]).map(r => (r?.id || '').toString()));
+      let create = 0, update = 0;
+      for (const c of snapshot.collections || []) {
+        const id = (c?.id || '').toString(); if (!id) continue;
+        if (!setNow.has(id)) create++; else update++;
+      }
+      counts.collectionsCreated = create; counts.collectionsUpdated = update;
+    }
+  } catch {}
+
   // Channels
   if (apply?.channelTags) {
     const ids = uniq((snapshot.channelIndex || []).map(c => (c?.id || '').toString()).filter(Boolean));
@@ -84,12 +103,13 @@ export async function dryRunRestoreApply(snapshot: SettingsSnapshot, mode: Resto
   }
 
   // Videos
-  if (apply?.videoTags || apply?.sources || apply?.progress) {
+  if (apply?.videoTags || apply?.sources || apply?.progress || apply?.collections) {
     const ids = uniq((snapshot.videoIndex || []).map(v => (v?.id || '').toString()).filter(Boolean));
     counts.videosUpserted = ids.length;
     counts.videoTagUpdates = (apply.videoTags ? (snapshot.videoIndex || []).filter(v => Array.isArray(v.tags) && v.tags.length).length : 0);
     counts.sourcesUpdated = (apply.sources ? (snapshot.videoIndex || []).filter(v => Array.isArray(v.sources) && v.sources.length).length : 0);
     counts.progressUpdated = (apply.progress ? (snapshot.videoIndex || []).filter(v => (v as any).progressSec != null).length : 0);
+    counts.videoCollectionUpdates = (apply.collections ? (snapshot.videoIndex || []).filter(v => Array.isArray((v as any).collectionIds) && (v as any).collectionIds.length).length : 0);
   }
 
   // Pending channels
@@ -110,6 +130,22 @@ export async function applyRestore(snapshot: SettingsSnapshot, mode: RestoreMode
     counts.tagGroupsCleared = await countStore(db, 'tag_groups');
     counts.groupsCleared = await countStore(db, 'groups');
   }
+
+  // Collections registry
+  try {
+    const incoming = (snapshot.collections || []).map(c => ({ id: String(c.id), name: String(c.name || ''), parentId: (c.parentId ?? null) as any, color: (c as any).color ?? null, createdAt: c.createdAt, updatedAt: c.updatedAt }));
+    if (mode === 'overwrite') {
+      await setCollectionsLocal(incoming);
+      counts.collectionsCleared = (await listCollectionsLocal().catch(()=>incoming)).length - incoming.length; // approximate
+      counts.collectionsCreated = incoming.length;
+    } else {
+      const cur = await listCollectionsLocal().catch(()=>[]);
+      const byId = new Map<string, any>(cur.map(c => [String(c.id), c] as [string, any]));
+      for (const it of incoming) byId.set(it.id, { ...(byId.get(it.id) || {}), ...it });
+      await setCollectionsLocal(Array.from(byId.values()));
+      counts.collectionsUpdated = incoming.length;
+    }
+  } catch {}
   // Upsert tag groups first (ids referenced by tags)
   if (mode === 'overwrite') {
     await putAll(db, 'tag_groups', snapshot.tagGroups || [], (r: any) => (r && r.id));
@@ -227,7 +263,7 @@ export async function applyRestore(snapshot: SettingsSnapshot, mode: RestoreMode
   }
 
   // Video tags/sources/progress
-  if (apply?.videoTags || apply?.sources || apply?.progress) {
+  if (apply?.videoTags || apply?.sources || apply?.progress || apply?.collections) {
     const items = snapshot.videoIndex || [];
     if (items.length) counts.videosUpserted = items.length;
     await new Promise<void>((resolve, reject) => {
@@ -267,6 +303,17 @@ export async function applyRestore(snapshot: SettingsSnapshot, mode: RestoreMode
               next.progress = { ...(prev.progress || {}), sec: Math.max(0, Math.floor(Number(ps))) };
               counts.progressUpdated = (counts.progressUpdated || 0) + 1;
             }
+          }
+          if (apply.collections) {
+            const inc: string[] = Array.isArray((it as any).collectionIds) ? Array.from(new Set(((it as any).collectionIds as string[]).map(String).filter(Boolean))) : [];
+            if (mode === 'overwrite') next.collectionIds = inc;
+            else {
+              const have: string[] = Array.isArray(prev.collectionIds) ? prev.collectionIds : [];
+              const set = new Set<string>(have);
+              for (const c of inc) set.add(c);
+              next.collectionIds = Array.from(set.values());
+            }
+            counts.videoCollectionUpdates = (counts.videoCollectionUpdates || 0) + (inc.length ? 1 : 0);
           }
           vs.put(next);
         };

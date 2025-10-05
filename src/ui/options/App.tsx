@@ -6,7 +6,7 @@ import type { FilterEntry } from './lib/filters';
 import { chainToCondition, conditionToChainSimple } from './lib/filters';
 import { getAll as idbGetAll, pageVideosByUploadedAt } from '../lib/idb';
 import { send as sendBg } from '../lib/messaging';
-import type { TagRec, TagGroupRec } from '../../types/messages';
+import type { TagRec, TagGroupRec, CollectionRec } from '../../types/messages';
 import Sidebar from './components/Sidebar';
 import { toHex6, darken, textColorBW } from '../lib/colors';
 import VideoList from './components/VideoList';
@@ -38,6 +38,7 @@ type Video = {
   visibility?: 'public' | 'unlisted' | 'private' | null;
   isLive?: boolean | null;
   videoTopics?: string[] | null;
+  collectionIds?: string[];
 };
 
 
@@ -79,6 +80,8 @@ async function getAll(store: 'videos' | 'trash'): Promise<Video[]> {
     visibility: (r.visibility === 'public' || r.visibility === 'unlisted' || r.visibility === 'private') ? r.visibility : null,
     isLive: typeof r.isLive === 'boolean' ? r.isLive : null,
     videoTopics: Array.isArray(r.videoTopics) ? r.videoTopics : null,
+    // not surfaced as badges yet; used for filtering
+    ...(Array.isArray(r.collectionIds) ? { collectionIds: r.collectionIds as string[] } : {}),
   }));
   // Sort: trash by deletedAt desc; videos by uploadedAt (or fetchedAt) desc
   if (store === 'trash') slim.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
@@ -129,6 +132,9 @@ export default function App() {
   const [newSidebarTag, setNewSidebarTag] = useState('');
 
   const [groups, setGroups] = useState<GroupRec[]>([]);
+  const [collections, setCollections] = useState<CollectionRec[]>([]);
+  const [activeCollectionId, setActiveCollectionId] = useState<string | null>(null);
+  const [applyCollectionId, setApplyCollectionId] = useState<string>('');
   const [channels, setChannels] = useState<Array<{
     id: string;
     name: string;
@@ -511,6 +517,21 @@ function startEditFromGroup(g: GroupRec) {
     });
   }
 
+  // Collections registry: load, state setter, and view toggle
+  async function loadCollections() {
+    try {
+      const r: any = await sendBg('collections/list', {} as any);
+      setCollections(Array.isArray(r?.items) ? (r.items as CollectionRec[]) : []);
+    } catch {
+      setCollections([]);
+    }
+  }
+
+  function openCollection(id: string | null) {
+    setActiveCollectionId(id);
+    setPage(1);
+  }
+
   function clearSelection() {
     setSelected(new Set());
   }
@@ -553,6 +574,7 @@ function startEditFromGroup(g: GroupRec) {
     refresh(); // reload from the correct store (videos vs trash)
     loadTags();
     loadTagGroups();
+    loadCollections();
     if (inChannels || inChannelsTrash) loadChannelsDir();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, inChannels, inChannelsTrash]);
@@ -571,6 +593,7 @@ useEffect(() => {
           }, 200) as unknown as number;
         }
       }
+      if (ent === 'collections') loadCollections();
       if (ent === 'tags')   loadTags();
       if (ent === 'tagGroups') loadTagGroups();
       if (ent === 'groups') loadGroups();
@@ -692,13 +715,30 @@ const groupsById = useMemo(() => {
 const filtered = useMemo(() => {
   let base = videos;
   if (showStubsOnly) base = base.filter(v => !Number.isFinite(v.fetchedAt || undefined));
+  if (activeCollectionId && !inChannels && !inChannelsTrash) {
+    const parentMap = new Map<string, string | null>((collections || []).map(c => [c.id, (c.parentId ?? null) as (string|null)] as [string, string|null]));
+    base = base.filter((v: any) => {
+      const list: string[] = Array.isArray((v as any).collectionIds) ? (v as any).collectionIds : [];
+      if (!list.length) return false;
+      for (const cid of list) {
+        let cur: string | null | undefined = cid;
+        while (cur) {
+          if (cur === activeCollectionId) return true;
+          cur = parentMap.get(cur);
+        }
+      }
+      return false;
+    });
+  }
 
   const cond = chainToCondition(chain);
   if (cond) {
+    const parentMap = new Map<string, string | null>((collections || []).map(c => [c.id, (c.parentId ?? null) as (string|null)] as [string, string|null]));
     base = base.filter(v => matches(v as any, cond, {
       resolveGroup: (id) => groups.find(g => g.id === id),
-      resolveChannel: (id) => channels.find(c => c.id === id) as any
-    }));
+      resolveChannel: (id) => channels.find(c => c.id === id) as any,
+      resolveCollectionParent: (id: string) => parentMap.get(id)
+    } as any));
   }
 
   // Exclude videos tagged 'hide' by default unless the tag filter explicitly includes 'hide'
@@ -722,7 +762,7 @@ const filtered = useMemo(() => {
     (v.title || '').toLowerCase().includes(needle) ||
     (v.channelName || v.channelId || '').toLowerCase().includes(needle)
   );
-}, [videos, chain, q, groups, showStubsOnly]);
+}, [videos, chain, q, groups, showStubsOnly, activeCollectionId, inChannels, inChannelsTrash]);
 
 const channelsFiltered = useMemo(() => {
   // Apply boolean filter condition first (channel + video cross-scope), then search filter by text
@@ -1445,6 +1485,9 @@ const channelsFiltered = useMemo(() => {
   onOpenHistory={openBackups}
   mode={mode}
   onModeChange={setMode}
+  collections={collections}
+  activeCollectionId={activeCollectionId}
+  onOpenCollection={openCollection}
 />
       <div className="content">
         {/* Non-manager content (Subs / Recommender) */}
@@ -1490,6 +1533,19 @@ const channelsFiltered = useMemo(() => {
                 <button type="button" className="btn-ghost" title="Tag 'hide' on selected" onClick={() => applyTagToSubsSelection('hide')} disabled={subsSelectedVisibleSetDisplay.size === 0}>hide</button>
                 {/* Tags opener */}
                 <button type="button" className="btn-ghost" title="Open tagger" onClick={() => setShowTagger(v => !v)} disabled={subsSelectedVisibleSetDisplay.size === 0}>tags</button>
+                {/* Collections quick apply (Subs) */}
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <select className="side-input" value={applyCollectionId} onChange={(e)=> setApplyCollectionId(e.currentTarget.value)} title="Select collection">
+                    <option value="">(collection)</option>
+                    {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                  </select>
+                  <button type="button" className="btn-ghost" title="Add to collection" disabled={subsSelectedVisibleSetDisplay.size === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(subsSelectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any); }}>
+                    +
+                  </button>
+                  <button type="button" className="btn-ghost" title="Remove from collection" disabled={subsSelectedVisibleSetDisplay.size === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(subsSelectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any); }}>
+                    -
+                  </button>
+                </span>
                 <span className="sel-info">{subsSelectedVisibleSetDisplay.size}{subsSelectedHiddenCount > 0 ? ` -${subsSelectedHiddenCount}` : ''}</span>
               </div>
               )}
@@ -1503,7 +1559,20 @@ const channelsFiltered = useMemo(() => {
                 </div>
               ) : (
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+                  {/* Recommender placeholder controls + collections quick apply */}
                   <button type="button" className="btn-ghost" title="Shuffle (coming soon)">Shuffle</button>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <select className="side-input" value={applyCollectionId} onChange={(e)=> setApplyCollectionId(e.currentTarget.value)} title="Select collection">
+                      <option value="">(collection)</option>
+                      {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                    </select>
+                    <button type="button" className="btn-ghost" title="Add to collection" disabled={selected.size === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(selected); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any); }}>
+                      +
+                    </button>
+                    <button type="button" className="btn-ghost" title="Remove from collection" disabled={selected.size === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(selected); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any); }}>
+                      -
+                    </button>
+                  </span>
                 </div>
               )}
             </div>
@@ -1534,7 +1603,7 @@ const channelsFiltered = useMemo(() => {
                   list.push(t.name);
                 }
                 const parentEntries = Array.from(parentBuckets.entries());
-                return parentEntries.map(([parentId, childMap]) => (
+    return parentEntries.map(([parentId, childMap]) => (
                   <details key={parentId || 'ungrouped'} className="tag-dropdown">
                     <summary>{parentId ? (groupById.get(parentId)?.name || '') : 'Ungrouped'}</summary>
                     <div style={{ display: 'flex', gap: 12, paddingTop: 6, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -1594,7 +1663,7 @@ const channelsFiltered = useMemo(() => {
             </div>
 
             {/* Subs list */}
-            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} variant="compact" />
+            <VideoList items={subsPageItems} layout={layout} loading={loading} selected={selected} onToggle={toggleSelect} tagGroups={tagGroups} tagsRegistry={tags} collections={collections} variant="compact" />
 
             {/* Subs pager (bottom) */}
             <div className="toolbar-2">
@@ -1746,15 +1815,30 @@ const channelsFiltered = useMemo(() => {
                 Restore
               </button>
             )}
-            <button
-              type="button"
-              className="btn-ghost"
-              title="Tag selected"
-              onClick={() => setShowTagger(v => !v)}
-              disabled={selectedVisibleCountDisplay === 0}
-            >
-              tags
-            </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                title="Tag selected"
+                onClick={() => setShowTagger(v => !v)}
+                disabled={selectedVisibleCountDisplay === 0}
+              >
+                tags
+              </button>
+              {/* Collections quick apply */}
+              {!inChannels && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <select className="side-input" value={applyCollectionId} onChange={(e)=> setApplyCollectionId(e.currentTarget.value)} title="Select collection">
+                    <option value="">(collection)</option>
+                    {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                  </select>
+                  <button type="button" className="btn-ghost" title="Add to collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(selectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any); }}>
+                    +
+                  </button>
+                  <button type="button" className="btn-ghost" title="Remove from collection" disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId} onClick={async ()=>{ const ids = Array.from(selectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any); }}>
+                    -
+                  </button>
+                </span>
+              )}
             {/* Search & refresh */}
             <input
               id="q"
@@ -1964,6 +2048,34 @@ const channelsFiltered = useMemo(() => {
             {availableTags.length === 0 && (
               <span className="muted">No tags yet. Add tags in the sidebar.</span>
             )}
+            {/* Collections apply (to the right of tags) */}
+            {!inChannels && collections.length > 0 && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 16 }}>
+                <span>Collections:</span>
+                <select className="side-input" value={applyCollectionId} onChange={(e)=> setApplyCollectionId(e.currentTarget.value)}>
+                  <option value="">- select -</option>
+                  {collections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={async () => { const ids = Array.from(selectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'add' } as any); }}
+                  disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId}
+                  title="Add selected to collection"
+                >
+                  +
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={async () => { const ids = Array.from(selectedVisibleSetDisplay); const cid = applyCollectionId; if (!ids.length || !cid) return; await sendBg('videos/collections/apply', { ids, collectionId: cid, op: 'remove' } as any); }}
+                  disabled={selectedVisibleCountDisplay === 0 || !applyCollectionId}
+                  title="Remove selected from collection"
+                >
+                  -
+                </button>
+              </div>
+            )}
           </div>
         )}
     <FiltersBar
@@ -1973,6 +2085,7 @@ const channelsFiltered = useMemo(() => {
     videoTagOptions={videoTagOptions}
     videoSourceOptions={videoSourcesOptionsMemo}
     channelTagOptions={channelTagOptions}
+    collections={collections}
     tagsRegistry={tags}
     tagGroups={tagGroups}
     topicOptions={topicOptions}
@@ -2154,6 +2267,7 @@ const channelsFiltered = useMemo(() => {
     onToggle={toggleSelect}
     tagGroups={tagGroups}
     tagsRegistry={tags}
+    collections={collections}
   />
 )}
 
@@ -2207,3 +2321,4 @@ const channelsFiltered = useMemo(() => {
 
 
 
+  

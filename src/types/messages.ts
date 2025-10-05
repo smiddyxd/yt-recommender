@@ -1,9 +1,20 @@
 ﻿// add near top
 import type { Condition, Group } from '../shared/conditions';
 
+// ---- Collections ----
+export interface CollectionRec {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  color?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
 // ---- Rules ----
 export type RuleAction =
-  | { kind: 'tags'; add?: string[]; remove?: string[] };
+  | { kind: 'tags'; add?: string[]; remove?: string[] }
+  | { kind: 'collections'; add?: string[]; remove?: string[] };
 
 export interface RuleRec {
   id: string;
@@ -31,7 +42,7 @@ export type Msg =
   | { type: 'scrape/subscriptionsManager'; payload: {} }
   | { type: 'scrape/history'; payload: { max?: number } }
   | { type: 'page/GET_CONTEXT'; payload: {} }
-  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' } } // optional push event
+  | { type: 'db/change'; payload: { entity: 'videos' | 'tags' | 'rules' | 'groups' | 'tagGroups' | 'collections' } } // optional push event
   | { type: 'videos/delete';  payload: { ids: string[] } }
   | { type: 'videos/restore'; payload: { ids: string[] } }
   | { type: 'videos/applyTags'; payload: { ids: string[]; addIds?: string[]; removeIds?: string[] } }
@@ -72,6 +83,13 @@ export type Msg =
   | { type: 'groups/create'; payload: { name: string; condition: Condition } }
   | { type: 'groups/update'; payload: { id: string; patch: Partial<Group> } }
   | { type: 'groups/delete'; payload: { id: string } }
+  // COLLECTIONS
+  | { type: 'collections/list'; payload: {} }
+  | { type: 'collections/create'; payload: { name: string; parentId?: string | null } }
+  | { type: 'collections/update'; payload: { id: string; patch: Partial<CollectionRec> } }
+  | { type: 'collections/delete'; payload: { id: string } }
+  // VIDEO <-> COLLECTIONS
+  | { type: 'videos/collections/apply'; payload: { ids: string[]; collectionId: string; op: 'add'|'remove' } }
   // TAG GROUPS (for organizing tags)
   | { type: 'tagGroups/list';   payload: {} }
   | { type: 'tagGroups/create'; payload: { name: string } }
@@ -105,7 +123,7 @@ export type Msg =
   | { type: 'backup/history/snapshotNow'; payload: { interactive?: boolean; name?: string } }
   // RESTORE & APPLY
   | { type: 'backup/restore/dryRun'; payload: { name?: string; snapshot?: any; mode: 'merge'|'overwrite'; apply?: { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean } } }
-  | { type: 'backup/restore/apply';  payload: { name?: string; snapshot?: any; mode: 'merge'|'overwrite'; apply?: { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean } } };
+  | { type: 'backup/restore/apply';  payload: { name?: string; snapshot?: any; mode: 'merge'|'overwrite'; apply?: { channelTags?: boolean; videoTags?: boolean; sources?: boolean; progress?: boolean; collections?: boolean } } };
 
 export interface VideoSeed {
   id: string;

@@ -1,7 +1,7 @@
 ﻿// src/ui/options/components/Sidebar.tsx
 import React from 'react';
 import type { Group as GroupRec } from '../../../shared/conditions';
-import type { TagRec, TagGroupRec, RuleRec } from '../../../types/messages';
+import type { TagRec, TagGroupRec, RuleRec, CollectionRec } from '../../../types/messages';
 import { send as sendBg } from '../../lib/messaging';
 
 // NOTE: "Groups" are called "Presets" in the UI. Keep this comment forever.
@@ -42,6 +42,10 @@ type Props = {
   // Top-level Options mode
   mode: 'manager' | 'subs' | 'recommender';
   onModeChange: (m: 'manager' | 'subs' | 'recommender') => void;
+  // Collections
+  collections?: CollectionRec[];
+  activeCollectionId?: string | null;
+  onOpenCollection?: (id: string | null) => void;
 };
 
 export default function Sidebar(props: Props) {
@@ -78,6 +82,9 @@ export default function Sidebar(props: Props) {
   onOpenHistory,
   mode,
   onModeChange,
+  collections,
+  activeCollectionId,
+  onOpenCollection,
 } = props;
 
   const fileRef = React.useRef<HTMLInputElement | null>(null);
@@ -205,7 +212,7 @@ export default function Sidebar(props: Props) {
                         <select
                           className="side-input"
                           value={(t.groupId === 'tagGroup.default' || !t.groupId) ? '' : (t.groupId as any)}
-                          onChange={(e) => onAssignTagToGroup(t.name, e.currentTarget.value ? e.currentTarget.value : null)}
+                          onChange={(ev) => onAssignTagToGroup(t.name, (ev && (ev.target as HTMLSelectElement)?.value) ? (ev.target as HTMLSelectElement).value : null)}
                           title="Assign to tag group"
                           disabled={['no fetch','hide','subscribed','unsubscribed','tagged','scrape'].includes(String(t.name).toLowerCase())}
                         >
@@ -261,7 +268,7 @@ export default function Sidebar(props: Props) {
                           className="side-input"
                           title={parentTitle}
                           value={isParent ? '' : (g.parentId as string)}
-                          onChange={(e) => onUpdateTagGroup?.(g.id, { parentId: e.currentTarget.value ? e.currentTarget.value : null })}
+                          onChange={(ev) => onUpdateTagGroup?.(g.id, { parentId: (ev && (ev.target as HTMLSelectElement)?.value) ? (ev.target as HTMLSelectElement).value : null })}
                           style={{ minWidth: 110 }}
                         >
                           <option value="">parent</option>
@@ -274,7 +281,7 @@ export default function Sidebar(props: Props) {
                           type="color"
                           title="Tag group color"
                           value={color || '#888888'}
-                          onChange={(e) => onUpdateTagGroup?.(g.id, { color: e.currentTarget.value })}
+                          onChange={(ev) => onUpdateTagGroup?.(g.id, { color: (ev.target as HTMLInputElement)?.value || '' })}
                           style={{ width: 23, height: 26, padding: 0, border: '1px solid var(--border)', background: '#111' }}
                         />
                         <button className="btn-ghost" onClick={()=>{ setEditingGroupId(g.id); setGroupEditName(g.name); }} disabled={g.id === 'tagGroup.default'} style={{ width: 22, height: 22, lineHeight: '20px', padding: 0 }}>R</button>
@@ -335,7 +342,14 @@ export default function Sidebar(props: Props) {
         </div>
 
         {/* Rules section (below Presets) */}
-        <RulesSection tags={tags} groups={groups} />
+        <RulesSection tags={tags} groups={groups} collections={collections || []} />
+
+        {/* Collections section (below Rules) */}
+        <CollectionsSection
+          collections={collections || []}
+          onOpenCollection={onOpenCollection}
+          activeCollectionId={activeCollectionId || null}
+        />
 
         {mode === 'manager' && (
           <div className="side-section">
@@ -361,9 +375,9 @@ export default function Sidebar(props: Props) {
 }
 
 // ---- Rules UI ----
-function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) {
+function RulesSection({ tags, groups, collections }: { tags: TagRec[]; groups: GroupRec[]; collections: CollectionRec[] }) {
   const [rules, setRules] = React.useState<RuleRec[]>([]);
-  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true });
+  const [creating, setCreating] = React.useState<{ name: string; groupId: string; add: string[]; remove: string[]; channelsText: string; enabled: boolean; actionKind: 'tags'|'collections' }>({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true, actionKind: 'tags' });
 
   const load = React.useCallback(async () => {
     try { const r: any = await sendBg('rules/list', {} as any); setRules(Array.isArray(r?.items) ? r.items as RuleRec[] : []); } catch { setRules([]); }
@@ -376,6 +390,7 @@ function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) 
   }, [load]);
 
   const allTagNames = React.useMemo(() => (tags || []).map(t => String(t.name)).filter(Boolean), [tags]);
+  const allCollections = React.useMemo(() => (collections || []).map(c => ({ id: c.id, name: c.name })), [collections]);
 
   function addTo(list: 'add'|'remove', name: string) {
     if (!name) return;
@@ -390,7 +405,9 @@ function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) 
     const groupId = creating.groupId.trim();
     if (!name || !groupId) return;
     const channelIds = creating.channelsText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
-    const action = { kind: 'tags', add: creating.add, remove: creating.remove } as const;
+    const action = creating.actionKind === 'collections'
+      ? ({ kind: 'collections', add: creating.add, remove: creating.remove } as const)
+      : ({ kind: 'tags', add: creating.add, remove: creating.remove } as const);
     const r: any = await sendBg('rules/create', { name, groupId, action, channelIds, enabled: creating.enabled } as any);
     if (r?.ok) {
       setCreating({ name: '', groupId: '', add: [], remove: [], channelsText: '', enabled: true });
@@ -416,40 +433,87 @@ function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) 
       </div>
       {/* Creator */}
       <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
-        <input className="side-input" style={{ flex: 1 }} placeholder="Rule name" value={creating.name} onChange={(e)=> setCreating(p=> ({ ...p, name: e.currentTarget.value }))} />
-        <select className="side-input" value={creating.groupId} onChange={(e)=> setCreating(p=> ({ ...p, groupId: e.currentTarget.value }))}>
-          <option value="">— preset —</option>
+        <input className="side-input" style={{ flex: 1 }} placeholder="Rule name" value={creating.name} onChange={(ev)=> { const v = (ev.target as HTMLInputElement)?.value ?? ''; setCreating(p=> ({ ...p, name: v })); }} />
+        <select
+          className="side-input"
+          value={creating.groupId}
+          onChange={(ev)=> {
+            const v = (ev && (ev.target as HTMLSelectElement)?.value) || '';
+            setCreating(p => ({ ...p, groupId: v }));
+          }}
+        >
+          <option value="">- preset -</option>
           {groups.map(g => (<option key={g.id} value={g.id}>{g.name}</option>))}
         </select>
+        <select
+          className="side-input"
+          value={creating.actionKind}
+          onChange={(ev)=> {
+            const v = (ev && (ev.target as HTMLSelectElement)?.value) || 'tags';
+            setCreating(p => ({ ...p, actionKind: (v === 'collections' ? 'collections' : 'tags') }));
+          }}
+        >
+          <option value="tags">Tags</option>
+          <option value="collections">Collections</option>
+        </select>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={creating.enabled} onChange={(e)=> setCreating(p=> ({ ...p, enabled: e.currentTarget.checked }))} />
+          <input
+            type="checkbox"
+            checked={creating.enabled}
+            onChange={(ev)=> {
+              const next = !!(ev && (ev.target as HTMLInputElement)?.checked);
+              setCreating(p => ({ ...p, enabled: next }));
+            }}
+          />
           enabled
         </label>
       </div>
       <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
         <span className="muted" style={{ width: 60 }}>Add</span>
-        <select className="side-input" value="" onChange={(e) => { const v = e.currentTarget.value; (e.currentTarget as HTMLSelectElement).value=''; if (v) addTo('add', v); }}>
-          <option value="">+ tag</option>
-          {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
-        </select>
+        {creating.actionKind === 'collections' ? (
+          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('add', v); }}>
+            <option value="">+ collection</option>
+            {allCollections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+          </select>
+        ) : (
+          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('add', v); }}>
+            <option value="">+ tag</option>
+            {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
+          </select>
+        )}
         <span className="muted" style={{ width: 60 }}>Remove</span>
-        <select className="side-input" value="" onChange={(e) => { const v = e.currentTarget.value; (e.currentTarget as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
-          <option value="">- tag</option>
-          {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
-        </select>
+        {creating.actionKind === 'collections' ? (
+          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
+            <option value="">- collection</option>
+            {allCollections.map(c => (<option key={c.id} value={c.id}>{c.name}</option>))}
+          </select>
+        ) : (
+          <select className="side-input" value="" onChange={(ev) => { const v = (ev.target as HTMLSelectElement)?.value || ''; (ev.target as HTMLSelectElement).value=''; if (v) addTo('remove', v); }}>
+            <option value="">- tag</option>
+            {allTagNames.map(n => (<option key={n} value={n}>{n}</option>))}
+          </select>
+        )}
       </div>
       {(creating.add.length > 0 || creating.remove.length > 0) && (
         <div className="side-row" style={{ gap: 6, flexWrap: 'wrap' }}>
-          {creating.add.map(n => (
-            <span key={`+${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('add', n)}>+{n}</span>
-          ))}
-          {creating.remove.map(n => (
-            <span key={`-${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('remove', n)}>-{n}</span>
-          ))}
+          {(() => {
+            const map = new Map<string, CollectionRec>((collections || []).map(c => [c.id, c] as [string, CollectionRec]));
+            const nameOf = (val: string) => creating.actionKind === 'collections' ? (map.get(val)?.name || val) : val;
+            return (
+              <>
+                {creating.add.map(n => (
+                  <span key={`+${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('add', n)}>+{nameOf(n)}</span>
+                ))}
+                {creating.remove.map(n => (
+                  <span key={`-${n}`} className="chip" title="click to remove" onClick={()=> removeFrom('remove', n)}>-{nameOf(n)}</span>
+                ))}
+              </>
+            );
+          })()}
         </div>
       )}
       <div className="side-row" style={{ gap: 6 }}>
-        <input className="side-input" style={{ flex: 1 }} placeholder="Channel IDs (optional, comma/space-separated)" value={creating.channelsText} onChange={(e)=> setCreating(p=> ({ ...p, channelsText: e.currentTarget.value }))} />
+        <input className="side-input" style={{ flex: 1 }} placeholder="Channel IDs (optional, comma/space-separated)" value={creating.channelsText} onChange={(ev)=> { const v = (ev.target as HTMLInputElement)?.value ?? ''; setCreating(p=> ({ ...p, channelsText: v })); }} />
         <button className="btn-ghost" disabled={!creating.name.trim() || !creating.groupId} onClick={onCreate}>Create</button>
       </div>
       {/* List */}
@@ -460,11 +524,99 @@ function RulesSection({ tags, groups }: { tags: TagRec[]; groups: GroupRec[] }) 
           return (
             <div className="group-row" key={r.id}>
               <button className="side-btn" title={preset ? `Preset: ${preset.name}` : 'Preset not found'}>{r.name}</button>
-              <button className="btn-ghost" aria-pressed={r.enabled !== false} title="Enable/disable rule" onClick={() => onToggle(r, (r.enabled === false))}>E</button>
+              <span className="muted" style={{ fontSize: 12, flex: 1, textAlign: 'left' }}>
+                {r.action?.kind === 'collections'
+                  ? `Collections: ${Array.isArray((r.action as any).add) && (r.action as any).add.length ? `+${(r.action as any).add.length}` : ''}${Array.isArray((r.action as any).remove) && (r.action as any).remove.length ? ` -${(r.action as any).remove.length}` : ''}`
+                  : `Tags: ${Array.isArray((r.action as any).add) && (r.action as any).add.length ? `+${(r.action as any).add.join(', ')}` : ''}${Array.isArray((r.action as any).remove) && (r.action as any).remove.length ? ` -${(r.action as any).remove.join(', ')}` : ''}`}
+              </span>
+              <button className="btn-ghost" aria-pressed={r.enabled !== false} title="Enabled rules run when you click 'Run'. Disabled rules are skipped." onClick={() => onToggle(r, (r.enabled === false))}>E</button>
               <button className="btn-ghost" onClick={() => onDelete(r)}>x</button>
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+// ---- Collections UI ----
+function CollectionsSection({ collections, onOpenCollection, activeCollectionId }: { collections: CollectionRec[]; onOpenCollection?: (id: string | null) => void; activeCollectionId: string | null }) {
+  const [items, setItems] = React.useState<CollectionRec[]>(collections || []);
+  const [creating, setCreating] = React.useState<string>('');
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editName, setEditName] = React.useState<string>('');
+
+  React.useEffect(() => { setItems(collections || []); }, [collections]);
+  React.useEffect(() => {
+    const h = (msg: any) => { if (msg?.type === 'db/change' && msg?.payload?.entity === 'collections') reload(); };
+    chrome.runtime.onMessage.addListener(h);
+    return () => chrome.runtime.onMessage.removeListener(h);
+  }, []);
+  const reload = React.useCallback(async () => {
+    try { const r: any = await sendBg('collections/list', {} as any); setItems(Array.isArray(r?.items) ? r.items as CollectionRec[] : []); } catch { setItems([]); }
+  }, []);
+
+  async function onCreate() {
+    const name = creating.trim(); if (!name) return;
+    await sendBg('collections/create', { name } as any);
+    setCreating('');
+  }
+  async function onRename(id: string) {
+    const name = editName.trim(); if (!name) { setEditingId(null); return; }
+    await sendBg('collections/update', { id, patch: { name } } as any);
+    setEditingId(null); setEditName('');
+  }
+  async function onDelete(id: string) {
+    if (!confirm('Delete this collection? The videos remain; membership will be removed.')) return;
+    await sendBg('collections/delete', { id } as any);
+    if (activeCollectionId === id) onOpenCollection?.(null);
+  }
+  async function onSetParent(id: string, parentId: string | null) {
+    await sendBg('collections/update', { id, patch: { parentId } } as any);
+  }
+
+  const byId = new Map<string, CollectionRec>((items || []).map(c => [c.id, c] as [string, CollectionRec]));
+
+  return (
+    <div className="side-section">
+      <div className="side-title">Collections</div>
+      <div className="side-row" style={{ gap: 6 }}>
+        <input className="side-input" style={{ flex: 1 }} placeholder="New collection name" value={creating} onChange={(ev)=> setCreating((ev.target as HTMLInputElement)?.value || '')} />
+        <button className="btn-ghost" onClick={onCreate} disabled={!creating.trim()}>Create</button>
+      </div>
+      <div className="group-list">
+        {items.length === 0 && <div className="muted">No collections yet.</div>}
+        {items.map(c => (
+          <div key={c.id} className="group-row">
+            {editingId === c.id ? (
+              <>
+                <input className="side-input" value={editName} onChange={(ev)=> setEditName((ev.target as HTMLInputElement)?.value || '')} style={{ flex: 1 }} />
+                <button className="btn-ghost" onClick={() => onRename(c.id)} disabled={!editName.trim()}>Save</button>
+                <button className="btn-ghost" onClick={() => { setEditingId(null); setEditName(''); }}>x</button>
+              </>
+            ) : (
+              <>
+                <button
+                  className="side-btn"
+                  aria-pressed={activeCollectionId === c.id}
+                  onClick={() => onOpenCollection?.(activeCollectionId === c.id ? null : c.id)}
+                  title="Show only videos in this collection"
+                >
+                  {c.name}
+                </button>
+                <select className="side-input" value={String(c.parentId || '')} onChange={(ev)=> onSetParent(c.id, (ev && (ev.target as HTMLSelectElement)?.value) ? (ev.target as HTMLSelectElement).value : null)}>
+                  <option value="">(no parent)</option>
+                  {items.filter(x => x.id !== c.id).map(x => (
+                    <option key={x.id} value={x.id}>{x.name}</option>
+                  ))}
+                </select>
+                <input type="color" className="side-input" value={c.color || '#333333'} onChange={(ev)=> sendBg('collections/update', { id: c.id, patch: { color: (ev.target as HTMLInputElement)?.value || '#333333' } } as any)} title="Collection color" />
+                <button className="btn-ghost" onClick={() => { setEditingId(c.id); setEditName(c.name); }}>R</button>
+                <button className="btn-ghost" onClick={() => onDelete(c.id)}>x</button>
+              </>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

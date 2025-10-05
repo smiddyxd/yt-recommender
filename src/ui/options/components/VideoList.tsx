@@ -2,7 +2,7 @@
 import React, { useMemo, useState } from 'react';
 import { fmtDate, secToClock, thumbUrl, watchUrl } from '../../lib/format';
 import { getOne as idbGetOne } from '../../lib/idb';
-import type { TagGroupRec, TagRec } from '../../../types/messages';
+import type { TagGroupRec, TagRec, CollectionRec } from '../../../types/messages';
 import { toHex6, darken, textColorBW } from '../../lib/colors';
 
 type Video = {
@@ -26,13 +26,15 @@ type Props = {
   tagGroups?: TagGroupRec[];
   tagsRegistry?: TagRec[];
   variant?: 'manager' | 'compact';
+  collections?: CollectionRec[];
 };
 
-export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager' }: Props) {
+export default function VideoList({ items, layout, loading, selected, onToggle, tagGroups = [], tagsRegistry = [], variant = 'manager', collections = [] }: Props) {
   const [openDebug, setOpenDebug] = useState<Set<string>>(new Set());
   const [fullData, setFullData] = useState<Record<string, any>>({});
   const groupById = useMemo(() => new Map<string, TagGroupRec>(tagGroups.map(g => [g.id, g] as [string, TagGroupRec])), [tagGroups]);
   const tagReg = useMemo(() => new Map<string, TagRec>(tagsRegistry.map(t => [t.name, t] as [string, TagRec])), [tagsRegistry]);
+  const collById = useMemo(() => new Map<string, CollectionRec>(collections.map(c => [c.id, c] as [string, CollectionRec])), [collections]);
   const getParentColor = (tag: string): { bg?: string; fg?: string; br?: string } => {
     const t = tagReg.get(tag);
     const gid = (t?.groupId || '') as string;
@@ -145,6 +147,16 @@ export default function VideoList({ items, layout, loading, selected, onToggle, 
                 {v.flags?.completed && <span className="badge">completed</span>}
                 {Array.isArray(v.tags) && v.tags.length > 0 && (
                   <>{v.tags.map(tag => { const c = getParentColor(tag); return (<span key={tag} className="badge" style={{ background: c.bg, color: c.fg, border: c.br ? `1px solid ${c.br}` : undefined }}>{tag}</span>); })}</>
+                )}
+                {Array.isArray((v as any).collectionIds) && ((v as any).collectionIds as string[]).length > 0 && (
+                  <> {((v as any).collectionIds as string[]).map(cid => {
+                    const c = collById.get(cid);
+                    const bg = c?.color || undefined;
+                    const fg = bg ? textColorBW(bg) : undefined;
+                    const br = bg ? darken(bg as string, 0.25) : undefined;
+                    return (<span key={`col-${cid}`} className="badge" style={{ background: bg || undefined, color: fg, border: br ? `1px solid ${br}` : undefined }}>{c?.name || 'collection'}</span>);
+                  })}
+                  </>
                 )}
               </div>
               <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>

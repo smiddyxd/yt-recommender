@@ -1,7 +1,7 @@
 import { dlog, derr } from '../types/debug';
 import type { Condition, Group } from '../shared/conditions';
 const DB_NAME = 'yt-recommender';
-const DB_VERSION = 15;
+const DB_VERSION = 16;
 
 export async function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -14,6 +14,7 @@ export async function openDB(): Promise<IDBDatabase> {
         os.createIndex('byChannel', 'channelId', { unique: false });
         os.createIndex('byTag', 'tags', { unique: false, multiEntry: true });
         try { os.createIndex('byUploadedAt', ['uploadedAt','id'], { unique: false }); } catch {}
+        try { os.createIndex('byCollection', 'collectionIds', { unique: false, multiEntry: true }); } catch {}
       } else {
         try {
           const tx = (req as any).transaction as IDBTransaction;
@@ -22,6 +23,9 @@ export async function openDB(): Promise<IDBDatabase> {
           if (names.includes('byLastSeen')) os.deleteIndex('byLastSeen');
           if (!names.includes('byUploadedAt')) {
             try { os.createIndex('byUploadedAt', ['uploadedAt','id'], { unique: false }); } catch {}
+          }
+          if (!names.includes('byCollection')) {
+            try { os.createIndex('byCollection', 'collectionIds', { unique: false, multiEntry: true }); } catch {}
           }
         } catch { /* ignore */ }
       }
@@ -840,6 +844,98 @@ function applyYouTubeFields(row: any, yt: any) {
     if ('yt' in row) delete (row as any).yt;
     if ('thumbUrl' in row) delete (row as any).thumbUrl;
   } catch { /* ignore malformed payloads */ }
+}
+
+export async function applyCollections(ids: string[], collectionId: string, op: 'add'|'remove') {
+  const cid = String(collectionId || '').trim();
+  if (!ids?.length || !cid) return;
+  const add = (op === 'add');
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['videos', 'trash'], 'readwrite');
+    const vs = tx.objectStore('videos');
+    const ts = tx.objectStore('trash');
+    (async () => {
+      for (const id of ids) {
+        await new Promise<void>((res, rej) => {
+          const g = vs.get(id);
+          g.onsuccess = () => {
+            const row = g.result as any;
+            if (row) {
+              const list: string[] = Array.isArray(row.collectionIds) ? row.collectionIds.slice() : [];
+              const has = list.includes(cid);
+              if (add && !has) list.push(cid);
+              if (!add && has) {
+                for (let i = list.length - 1; i >= 0; i--) if (list[i] === cid) list.splice(i, 1);
+              }
+              row.collectionIds = list;
+              vs.put(row);
+              return res();
+            }
+            const g2 = ts.get(id);
+            g2.onsuccess = () => {
+              const trow = g2.result as any;
+              if (trow) {
+                const list: string[] = Array.isArray(trow.collectionIds) ? trow.collectionIds.slice() : [];
+                const has = list.includes(cid);
+                if (add && !has) list.push(cid);
+                if (!add && has) {
+                  for (let i = list.length - 1; i >= 0; i--) if (list[i] === cid) list.splice(i, 1);
+                }
+                trow.collectionIds = list;
+                ts.put(trow);
+              }
+              res();
+            };
+            g2.onerror = () => rej(g2.error);
+          };
+          g.onerror = () => rej(g.error);
+        });
+      }
+    })().then(() => (tx as any).commit?.());
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function removeCollectionFromAllRows(collectionId: string): Promise<void> {
+  const cid = String(collectionId || '').trim(); if (!cid) return;
+  const db = await openDB();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['videos', 'trash'], 'readwrite');
+    const vs = tx.objectStore('videos');
+    const ts = tx.objectStore('trash');
+    // Videos
+    try {
+      const curV = vs.openCursor();
+      curV.onsuccess = () => {
+        const c = curV.result as IDBCursorWithValue | null;
+        if (!c) return;
+        const row = c.value as any;
+        if (Array.isArray(row.collectionIds) && row.collectionIds.includes(cid)) {
+          row.collectionIds = row.collectionIds.filter((x: string) => x !== cid);
+          try { c.update(row); } catch {}
+        }
+        c.continue();
+      };
+    } catch {}
+    // Trash
+    try {
+      const curT = ts.openCursor();
+      curT.onsuccess = () => {
+        const c = curT.result as IDBCursorWithValue | null;
+        if (!c) return;
+        const row = c.value as any;
+        if (Array.isArray(row.collectionIds) && row.collectionIds.includes(cid)) {
+          row.collectionIds = row.collectionIds.filter((x: string) => x !== cid);
+          try { c.update(row); } catch {}
+        }
+        c.continue();
+      };
+    } catch {}
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 function parseIsoDate(s?: string | null): number | null {
